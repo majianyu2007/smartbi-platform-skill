@@ -89,6 +89,19 @@ Minimum reconciliation after ETL:
 - primary-key uniqueness;
 - a small safe sample checked against rules.
 
+Verified hybrid pattern for a flat survey table:
+
+1. Build and save the source node in the UI.
+2. Read the saved DAG with `smartbi.mjs etl-get <flowId>`.
+3. If the source has no stable identifier, add a deterministic row key with
+   `smartbi.mjs etl-row-number <flowId> row_number`; choose a name that does
+   not collide with an existing field.
+4. Run with `smartbi.mjs etl-run <flowId>`.
+5. Require flow state `FINISH`, every node `FINISH`, and a terminal preview
+   containing the new key plus all expected source fields.
+6. Keep this as a non-materialized preparation flow unless a downstream
+   requirement specifically needs a new physical table.
+
 ## Stage 3: Data model
 
 Official sequence:
@@ -113,6 +126,10 @@ AI model checklist:
 - Record every calculated measure formula, format, and business definition.
 - Use a generated date table only when its range covers all facts.
 
+
+For one-row-per-respondent survey data, a single-table model is valid. Add the
+owned table once, do not invent joins, preserve respondent grain, and reconcile
+an unweighted count plus the sum of the survey weight before saving.
 Competition examples:
 
 - Higher-education scenario: four activity/fact tables connect to student base information by student ID; most are many-to-one, tuition record is one-to-one.
@@ -158,6 +175,15 @@ Recommended AI build order:
 
 Do not mechanically copy the manuals' chart types. Select a chart that answers the project's decision question.
 
+Verified minimal first-round pattern:
+
+- pivot rows: one categorical dimension (for example, survey city);
+- pivot measure: explicit `SUM(sample_weight)`;
+- dashboard: one bar chart bound to the same dimension and measure;
+- title: state the population and metric rather than using a generic chart name;
+- acceptance: saved dashboard preview displays the expected categories and
+  weighted values, matching the independent aggregate.
+
 ## Stage 5: AIChat
 
 ### Build a model graph
@@ -185,6 +211,16 @@ Using <model>, for <population> during <time range>, calculate <metric definitio
 group by <dimensions>, apply <filters>, return <table/chart>, and state the exact
 filters and aggregation used. Do not infer causes not supported by the data.
 ```
+
+Verified graph/query acceptance:
+
+- Select only useful low-cardinality dimensions for vectorization; exclude IDs.
+- Require `校验通过`, then wait for graph status `成功`.
+- Reload AIChat if the new model is not present in its cached model catalog.
+- Confirm the exact model name in the prompt footer before sending.
+- Completion is when the stop button disappears and the result table is shown.
+- Reconcile every returned value against the validated pivot or local weighted
+  aggregate before using the prose conclusion.
 
 ### Analysis report
 

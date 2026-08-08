@@ -13,8 +13,9 @@ workflow with two execution engines:
 1. **Direct HTTP API** (preferred): reverse-engineered RMI protocol. Login,
    catalog traversal, and file import run without a browser. See
    `references/api.md` for the full wire format.
-2. **Playwright over CDP** (fallback): UI-only operations (ETL node wiring,
-   dashboard canvas, AIChat graph build). See `references/playwright-patterns.md`.
+2. **Playwright over CDP** (fallback): UI-only construction (initial ETL
+   source selection, data-model canvas, dashboard canvas, model-graph fields).
+   Saved ETL flows can be inspected and run through the direct Smartbix API.
 
 Core chain: `login → 数据连接(import) → 自助ETL → 数据模型 → 透视/仪表盘 → AIChat → validation`.
 
@@ -115,6 +116,9 @@ TMPDIR=/tmp node scripts/smartbi.mjs health         # workspace
 TMPDIR=/tmp node scripts/smartbi.mjs tree           # catalog root
 TMPDIR=/tmp node scripts/smartbi.mjs tree DS.input  # 可导入数据库
 TMPDIR=/tmp node scripts/smartbi.mjs upload <csv> <name>   # import as new table (auto-namespaced)
+TMPDIR=/tmp node scripts/smartbi.mjs etl-get <flowId>       # inspect saved ETL DAG
+TMPDIR=/tmp node scripts/smartbi.mjs etl-row-number <flowId> row_number
+TMPDIR=/tmp node scripts/smartbi.mjs etl-run <flowId>       # run and verify terminal preview
 TMPDIR=/tmp node scripts/smartbi.mjs nav 数据准备     # browser fallback
 TMPDIR=/tmp node scripts/smartbi.mjs manuals        # official manual links
 ```
@@ -130,6 +134,9 @@ TMPDIR=/tmp node scripts/smartbi.mjs manuals        # official manual links
 | `invoke <class> <method> [json]` | Raw RMI call | decoded `{retCode, result, ...}` |
 | `tree [id]` | List catalog children of node | `{parent, nodes:[{id,name,alias,type,hasChild}]}` |
 | `upload <file> [tableName]` | Upload+import CSV/TXT/XLSX as `TEAM_<name>` table | `{ok, table, rows, clientId}` |
+| `etl-get <flowId>` | Inspect a saved ETL DAG without changing it | flow state, nodes, links |
+| `etl-row-number <flowId> [column]` | Idempotently append/update `增加序列号` on one owned flow | `{changed,nodeId,column}` |
+| `etl-run <flowId>` | Run one owned saved flow and poll to terminal state | node states + terminal preview shape |
 | `nav <module>` | Browser module navigation (CDP) | `{state:"module", module, url}` |
 | `manuals` | Official wiki links | map |
 
@@ -167,39 +174,63 @@ Dataset readiness notes (verified):
 
 ### 2. Self-service ETL (数据准备)
 
-UI path (API not yet mapped): 数据准备 → 自助ETL → team folder → 新建 →
-`关系数据源` (choose the TEAM_ table) → run current node → add transformations
-(去除重复值/数据清洗/行过滤/派生列/列选择/元数据编辑) → run each node →
-output node (`插入/更新关系表` or `覆盖到关系表`) → save.
+Hybrid path, verified live:
+
+1. In the UI: 数据准备 → 自助ETL → team folder → 新建 → 自助ETL.
+2. Add `关系数据源`, choose the owned `TEAM_` table, and save the flow with an
+   `TEAM_` name. A one-source saved flow is a valid starting point.
+3. Prefer the CLI for deterministic inspection and execution:
+   `etl-get <flowId>` → `etl-row-number <flowId> row_number` → `etl-run <flowId>`.
+4. Use the UI for transformations not yet exposed by the CLI
+   (`去除重复值`/`数据清洗`/`行过滤`/`派生列`/`列选择`/`元数据编辑`).
+5. Run and verify after every coherent DAG change. `FINISH` and a terminal
+   preview with expected fields/rows are the acceptance signal.
+6. Add an output node only when a materialized cleaned table is required.
+   Creating a new relational output can require a primary key.
 
 Rules:
-- Every node runs immediately after configuration; green check = success.
-- Derived columns and custom filters use Spark SQL syntax — verify before running.
-- Output table requires a primary key when creating new.
+- API mutation/run is refused unless the flow name has the configured namespace.
+- `etl-row-number` is idempotent and requires exactly one connectable sink.
+- Derived columns and custom filters use Spark SQL syntax; verify null/type behavior.
 - Never open or edit flows owned by other members.
 
 ### 3. Data model (数据准备)
 
-1. 数据模型 → add TEAM_ tables.
-2. Treat auto-detected joins as proposals; verify keys, cardinality, grain.
-3. Time hierarchies only on validated date fields; identifiers as unique-count measures.
-4. Calculated columns/measures with named formulas and explicit formats.
-5. Save under team folder.
+1. 数据模型 → `数据源` → `数据表` → select the owned `TEAM_` table.
+2. Flat survey files may use a one-table model; do not invent joins. For
+   multi-table models, treat detected joins as proposals and verify keys,
+   cardinality, and grain.
+3. Confirm the model field count and reconcile a base total before saving.
+4. Time hierarchies only on validated date fields; identifiers as unique-count
+   measures; weights as summed measures when estimating weighted populations.
+5. Save under the team folder with an `TEAM_` name.
 
 ### 4. Analysis and dashboard (分析展现)
 
-1. 透视分析 first for validation; 交互式仪表盘 for the final view.
-2. Build order: KPI cards → core trend/comparison → risk distribution → detail table → filters.
-3. Configure aggregation, sorting, filter scope explicitly; cross-component filters scoped to intended components.
-4. Every chart answers a named decision question; no decoration.
+1. Build a pivot first. Place the grouping dimension in rows and set the
+   measure aggregation explicitly; run and reconcile against an independent
+   computation.
+2. Save the pivot, then create an interactive dashboard from the model/pivot.
+3. Bind the same validated dimension and measure to a chart. Use exact titles
+   that name the metric and population; verify the preview after saving.
+4. For larger deliverables, continue with KPI cards, comparison/risk charts,
+   detail tables, filters, and linkage. Every component must answer a named
+   decision question.
 
 ### 5. AIChat
 
-1. 运维设置 → AIChat系统选项 → 全部资源 → 数据集 → team folder → target model → 构建模型图谱.
-2. Select meaningful dimensions; wait for graph completion.
-3. AIChat opens a separate tab (`/aichat/`); select the validated model.
-4. Ask narrow questions (metric, population, time range, grouping, output).
-5. For reports: 技能 → 分析报告; verify every claim against data.
+1. 运维设置 → AIChat系统选项 → 新建 → 全部资源 → 数据集 → team folder →
+   target model → `构建模型图谱`.
+2. Select meaningful low-cardinality dimensions only (for example, city);
+   never vectorize record IDs. Click `校验`, require `校验通过`, then confirm.
+3. Close the resource picker, refresh the graph list, and require the exact
+   `TEAM_` model row to show `成功` plus a build time/duration.
+4. Open AIChat. If the newly built model is absent from the picker, refresh the
+   picker and reload the AIChat page; then verify the exact selected model text.
+5. Ask narrow questions naming the measure, aggregation, grouping, filters, and
+   output precision. Wait until the stop button disappears, then reconcile the
+   returned table against the pivot/independent calculation.
+6. For reports: 技能 → 分析报告; verify every claim against data.
 
 ## AI Decision Rules
 
@@ -214,10 +245,10 @@ Rules:
 ## Completion Evidence
 
 - import → `upload` ok + table visible in personal acquisition tree + row/field check;
-- ETL → terminal node success + output table check;
-- model → join and total reconciliation;
-- dashboard → filters/linkage/detail path exercised;
-- AIChat → exact model selected and one reproducible query checked.
+- ETL → terminal node success + expected field/row preview (and output table if materialized);
+- model → grain and total reconciliation, plus join checks when joins exist;
+- pivot/dashboard → saved preview with reconciled values; filters/linkage exercised when present;
+- AIChat → graph status success, exact model selected, and one reproducible query reconciled.
 
 Report exact artifacts created (all `TEAM_`-prefixed), validation performed, and
 unresolved blockers. Never report credentials, account identifiers, raw

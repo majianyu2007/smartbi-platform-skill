@@ -2,9 +2,11 @@
 
 ## Browser Lifecycle
 
-### First login only: headed Chrome
+### Primary mode: headed Chrome over CDP
 
-Start Chrome as a managed long-running process with a dedicated profile:
+The project currently prefers a visible, headed Chrome so the user can inspect
+the same browser that automation controls. Start exactly one managed process
+with a dedicated profile:
 
 ```text
 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
@@ -16,25 +18,17 @@ Start Chrome as a managed long-running process with a dedicated profile:
   https://smartbi.example.com/smartbi/vision/index.jsp
 ```
 
-The user enters credentials locally. Do not inspect login input values.
+Keep it running for the whole workflow. Do not launch a second Chrome against
+the same profile. Do not switch to headless unless the user asks; both modes
+provide CDP control, but the headed process is the observable work surface.
 
-### Normal operation: headless Chrome
+For this authorized demo tenant, authentication may read the configured
+two-line credentials file. Prefer `node scripts/smartbi.mjs login`; if UI login
+is required, fill from the file without printing, returning, or inspecting the
+password. Never take a screenshot while credential fields contain values.
 
-After successful login, stop headed Chrome gracefully and restart with the same profile:
-
-```text
-/Applications/Google Chrome.app/Contents/MacOS/Google Chrome
-  --headless=new
-  --remote-debugging-port=9222
-  --user-data-dir=/tmp/smartbi-playwright-profile-cdp
-  --no-first-run
-  --no-default-browser-check
-  https://smartbi.example.com/smartbi/vision/index.jsp
-```
-
-Reusing the profile preserves the authenticated session. Headless mode prevents automation from taking macOS focus.
-
-Do not run headed and headless Chrome simultaneously against the same profile.
+Headless is an optional unattended mode using the same arguments plus
+`--headless=new`, but only after the headed profile owner is stopped.
 
 ## Connection Pattern
 
@@ -182,12 +176,43 @@ For ETL nodes, model tables, fields, and dashboard components:
 5. If native drag fails, inspect pointer events before using mouse coordinates.
 6. Never continue after an unverified drag.
 
+## Verified QTP And State Markers (2026-08-08)
+
+Prefer these stable semantic attributes after checking page URL and visible
+panel. Generated IDs and resource node IDs are session/resource-specific.
+
+| Surface | Marker/action |
+|---|---|
+| ETL canvas | `.dataprepare_graph-alias`; save `[qtp="toolbar-btn-SAVED"]`; run control text `运行` |
+| Data model | source card `[qtp="SlideTaskPanel-AUGMENTED_DATASET"]`; basic table menu `[qtp="pop-menu_BASIC_TABLE"]`; save `[qtp="AugmentedToolbar-save"]` |
+| Pivot | URL contains `#/adhocanalysis/create`; field nodes expose QTPs ending in the exact field name; run then save |
+| Dashboard | URL contains `#/dashboard/`; bar chart card `[qtp="ECHARTS_BAR"]`; properties `[qtp="COMPONENT_SETTING"]`; save dialog under `.SaveDialogContent` |
+| Graph manager | create `[bofid="btnNewResource"]`; build action `[key="KNOWLEDGE_GRAPH_BUILD"]`; validate `[bofid="btnValidate"]`; refresh `[bofid="btnRefresh"]` |
+| AIChat | model selector `[qtp="ask-model-select-button"]`; editor `[qtp="chat-input-tiptap"] [contenteditable="true"]`; send `[qtp="chat-send-button"]`; running marker `[qtp="chat-stop-send-button"]` |
+
+Live behavior:
+
+- Data-model and analysis creation often open new pages. Re-enumerate
+  `context.pages()` and select by URL hash, not array index.
+- A saved model can immediately create pivot/dashboard analyses from the
+  follow-up dialog; dashboard title edits occur in the component property
+  panel, not by replacing canvas text.
+- Model-graph field checkboxes use `tree-checkbox0` (off) and `tree-checkbox1`
+  (on). Select low-cardinality business dimensions, click `校验`, and require
+  visible `校验通过` before confirming.
+- After graph build, close the resource picker, refresh the list, and inspect
+  the exact row for `成功`, build timestamp, and duration.
+- AIChat may cache its model catalog. Refresh the picker and reload the AIChat
+  page after a graph build; verify the exact model text before typing.
+- AIChat completion is the disappearance of `chat-stop-send-button`, not a
+  fixed sleep. Capture the answer table and reconcile its values independently.
+
 ## Error Recovery
 
 | Symptom | Recovery |
 |---|---|
 | CDP connection refused | Confirm Chrome process and port 9222; do not launch a second profile owner |
-| Login form visible | Ask user to log in; never fill credentials |
+| Login form visible | Authenticate only from the configured credentials file; never emit field values |
 | Locator missing | Verify current page, tab, dialog, and exact visible label |
 | Locator duplicated | Scope to panel/dialog/folder; do not choose arbitrary first match |
 | Click waits indefinitely | Check overlay and new-tab behavior; use `noWaitAfter` only with an explicit subsequent state check |
