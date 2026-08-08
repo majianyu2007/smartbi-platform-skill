@@ -1828,32 +1828,93 @@ async function cmdTree(rootId) {
   safeOutput({ parent: id, nodes });
 }
 
+async function cmdFolderCreate(parentId, requestedName, description = '') {
+  if (!parentId || !requestedName) {
+    throw new Error('folder-create requires <parentId> <name> [description]');
+  }
+  await ensureSession();
+  const name = applyNamespace(requestedName);
+  const existingResult = await rmi('CatalogService', 'getChildElements', [parentId]);
+  if (existingResult.retCode !== 0) {
+    throw new Error(`cannot list folder parent: ${JSON.stringify(existingResult)}`);
+  }
+  const existing = (existingResult.result || []).find((node) => (
+    ['DEFAULT_TREENODE', 'SELF_TREENODE'].includes(node.type)
+    && (node.name === name || node.alias === name)
+  ));
+  if (existing) {
+    if (!hasNamespace(existing.name || existing.alias)) {
+      throw new Error(`refusing to reuse non-namespaced folder: ${existing.alias || existing.name}`);
+    }
+    safeOutput({ ok: true, created: false, id: existing.id, name: existing.name, alias: existing.alias });
+    return;
+  }
+  const created = await rmi('CatalogService', 'createFolderElement', [
+    parentId,
+    name,
+    name,
+    description,
+    null,
+    false,
+    'DEFAULT_TREENODE.png',
+  ]);
+  if (created.retCode !== 0 || !created.result?.id) {
+    throw new Error(`folder creation failed: ${JSON.stringify(created)}`);
+  }
+  const savedResult = await rmi('CatalogService', 'getChildElements', [parentId]);
+  const saved = (savedResult.result || []).find((node) => node.id === created.result.id);
+  if (!saved || !hasNamespace(saved.name || saved.alias)) {
+    throw new Error(`created folder was not visible or owned: ${created.result.id}`);
+  }
+  safeOutput({ ok: true, created: true, id: saved.id, name: saved.name, alias: saved.alias });
+}
+
+
 // Walk the import tree to locate the personal acquisition space under 可导入数据库.
 async function locatePersonalFolder() {
-  // DS.input -> SCHEMA -> 数据采集空间 -> <personal node>
+  const currentUser = await rmi('AIextRemoteService', 'getCurrentUserName', [], 15000);
+  if (currentUser.retCode !== 0 || !currentUser.result) {
+    throw new Error('cannot resolve the authenticated Smartbi user');
+  }
   const dsKids = await rmi('CatalogService', 'getChildElements', ['DS.input']);
-  const schema = (dsKids.result || []).find((n) => n.type === 'SCHEMA');
+  if (dsKids.retCode !== 0) throw new Error('cannot list the import data source');
+  const schema = (dsKids.result || []).find((node) => node.type === 'SCHEMA');
   if (!schema) throw new Error('可导入数据库 schema not found');
   const schemaKids = await rmi('CatalogService', 'getChildElements', [schema.id]);
-  const space = (schemaKids.result || []).find((n) => n.alias === '数据采集空间');
+  if (schemaKids.retCode !== 0) throw new Error('cannot list the import schema');
+  const space = (schemaKids.result || []).find((node) => node.alias === '数据采集空间');
   if (!space) throw new Error('数据采集空间 not found');
   const spaceKids = await rmi('CatalogService', 'getChildElements', [space.id]);
-  // our personal node is the one matching the logged-in user's account number
-  const me = (spaceKids.result || []).find((n) => /^\d{6,}$/.test(n.alias || ''));
-  if (!me) throw new Error('personal acquisition folder not found');
-  return { dsId: 'DS.input', schemaId: schema.name, catalog: schema.name, folderId: me.id, folderAlias: me.alias };
+  if (spaceKids.retCode !== 0) throw new Error('cannot list the acquisition space');
+  const account = String(currentUser.result);
+  const personal = (spaceKids.result || []).find((node) => (
+    String(node.alias || '') === account || String(node.name || '') === account
+  ));
+  if (!personal) throw new Error('authenticated personal acquisition folder not found');
+  return {
+    dsId: 'DS.input',
+    schemaId: schema.name,
+    catalog: schema.name,
+    folderId: personal.id,
+  };
 }
 
 // Upload a local CSV/TXT/XLSX and import as a new table named <namespace><name>
 // (namespace configurable: prefix or suffix). Returns table info after import.
-async function cmdUpload(filePath, tableName, { previewRows = 30, sheetIndex = 0 } = {}) {
+async function cmdUpload(
+  filePath,
+  tableName,
+  { previewRows = 30, sheetIndex = 0, replace = false } = {},
+) {
+  if (!filePath) throw new Error('upload requires <file> [tableName] [--replace]');
   const stats = (await import('node:fs')).statSync(filePath);
   if (!stats.isFile()) throw new Error(`not a file: ${filePath}`);
+  if (!/\.(csv|txt|xlsx|xls)$/i.test(filePath)) {
+    throw new Error('upload supports CSV, TXT, XLSX, or XLS files');
+  }
   const base = tableName || filePath.split('/').pop().replace(/\.[^.]+$/, '');
   const table = applyNamespace(base);
-  if (table.length > MAX_TABLE_NAME) {
-    console.warn(`table name truncated to ${table.length} chars: ${table}`);
-  }
+  if (!table) throw new Error('resolved table name is empty');
 
   await ensureSession();
   const folder = await locatePersonalFolder();
@@ -1863,76 +1924,144 @@ async function cmdUpload(filePath, tableName, { previewRows = 30, sheetIndex = 0
     tableId: `TAB.${folder.catalog}.${folder.schemaId}.null.${physicalTable}`,
     tableName: physicalTable,
   };
+  const existingResponse = await rmi('CatalogService', 'getChildElements', [folder.folderId]);
+  if (existingResponse.retCode !== 0) throw new Error('cannot inspect the personal acquisition folder');
+  const existing = (existingResponse.result || []).find((node) => (
+    String(node.id || '').toLocaleLowerCase() === tableRef.tableId.toLocaleLowerCase()
+    || String(node.name || '').toLocaleLowerCase() === physicalTable
+    || String(node.alias || '').toLocaleLowerCase() === table.toLocaleLowerCase()
+  ));
+  if (existing && !replace) {
+    throw new Error(`table already exists; pass --replace to overwrite the owned table: ${table}`);
+  }
+  if (existing && !hasNamespace(existing.alias || existing.name)) {
+    throw new Error(`refusing to replace non-namespaced table: ${existing.alias || existing.name}`);
+  }
 
-  // 1. upload (multipart)
-  const { Blob } = await import('node:buffer');
   const form = new FormData();
   form.append('action', 'UPLOAD_FILE');
+  const { Blob } = await import('node:buffer');
   form.append('file', new Blob([readFileSync(filePath)]), filePath.split('/').pop());
-  const up = await fetch(`${BASE_URL}/DataPackageServlet`, {
+  const uploaded = await fetch(`${BASE_URL}/DataPackageServlet`, {
     method: 'POST',
     headers: { Cookie: cookieHeader() },
     body: form,
     signal: AbortSignal.timeout(120000),
   });
-  const upJson = await up.json();
-  if (upJson.retCode !== 0) throw new Error(`upload failed: ${JSON.stringify(upJson)}`);
-  const { clientId, sheetNames } = upJson.result;
-  console.warn(`uploaded: clientId=${clientId} sheets=${JSON.stringify(sheetNames)}`);
+  const uploadJson = await uploaded.json();
+  if (uploadJson.retCode !== 0) throw new Error(`upload failed: ${JSON.stringify(uploadJson)}`);
+  const { clientId } = uploadJson.result || {};
+  if (!clientId) throw new Error('upload did not return a client id');
 
-  // 2. preview to learn column types
-  const prev = await fetch(`${BASE_URL}/DataPackageServlet`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', Cookie: cookieHeader() },
-    body: `action=GET_PREVIEW_DATA&clientId=${clientId}&previewRows=${previewRows}&sheetIndex=${sheetIndex}`,
-  });
-  const prevJson = await prev.json();
-  if (prevJson.retCode !== 0) throw new Error(`preview failed: ${JSON.stringify(prevJson)}`);
-  const { fieldTypeList, fieldNameList, fieldAliasList, rowCount } = prevJson.result;
+  try {
+    const preview = await fetch(`${BASE_URL}/DataPackageServlet`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        Cookie: cookieHeader(),
+      },
+      body: `action=GET_PREVIEW_DATA&clientId=${clientId}&previewRows=${previewRows}&sheetIndex=${sheetIndex}`,
+      signal: AbortSignal.timeout(120000),
+    });
+    const previewJson = await preview.json();
+    if (previewJson.retCode !== 0) {
+      throw new Error(`preview failed: ${JSON.stringify(previewJson)}`);
+    }
+    const {
+      fieldTypeList,
+      fieldNameList,
+      fieldAliasList,
+      datas,
+      rowCount,
+    } = previewJson.result || {};
+    const header = Array.isArray(datas?.[0]) ? datas[0] : null;
+    const resolvedFieldNames = Array.isArray(fieldNameList) && fieldNameList.length > 0
+      ? fieldNameList
+      : (header || []).map((value) => String(value));
+    if (
+      resolvedFieldNames.length === 0
+      || !Array.isArray(fieldTypeList)
+      || fieldTypeList.length !== resolvedFieldNames.length
+    ) {
+      throw new Error(
+        `preview field contract mismatch: names=${resolvedFieldNames.length}, `
+        + `types=${fieldTypeList?.length || 0}`,
+      );
+    }
 
-  // 3. import
-  const settings = [{
-    createTable: true,
-    sheetIndex: String(sheetIndex),
-    headerRowIndex: 0,
-    fieldTypeList,
-    dsId: folder.dsId,
-    schemaId: folder.schemaId,
-    catalog: folder.catalog,
-    folderId: folder.folderId,
-    tableName: table,
-    tableAlias: table,
-    fieldAliasList: fieldAliasList || fieldNameList,
-    fieldNameList,
-    importType: 'REPLACE',
-    keepUniqueData: true,
-    fileName: filePath.split('/').pop(),
-    primaryKeyIndexs: [],
-  }];
-  const ins = await fetch(`${BASE_URL}/DataPackageServlet`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', Cookie: cookieHeader() },
-    body: `action=INSERT_DATA&clientId=${clientId}&settings=${encodeURIComponent(JSON.stringify(settings))}`,
-  });
-  const insJson = await ins.json();
-  if (insJson.retCode !== 0) throw new Error(`insert failed: ${JSON.stringify(insJson)}`);
+    const settings = [{
+      createTable: true,
+      sheetIndex: String(sheetIndex),
+      headerRowIndex: 0,
+      fieldTypeList,
+      dsId: folder.dsId,
+      schemaId: folder.schemaId,
+      catalog: folder.catalog,
+      folderId: folder.folderId,
+      tableName: table,
+      tableAlias: table,
+      fieldAliasList: fieldAliasList || resolvedFieldNames,
+      fieldNameList: resolvedFieldNames,
+      importType: 'REPLACE',
+      keepUniqueData: true,
+      fileName: filePath.split('/').pop(),
+      primaryKeyIndexs: [],
+    }];
+    const inserted = await fetch(`${BASE_URL}/DataPackageServlet`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        Cookie: cookieHeader(),
+      },
+      body: `action=INSERT_DATA&clientId=${clientId}&settings=${encodeURIComponent(JSON.stringify(settings))}`,
+      signal: AbortSignal.timeout(120000),
+    });
+    const insertJson = await inserted.json();
+    if (insertJson.retCode !== 0) throw new Error(`insert failed: ${JSON.stringify(insertJson)}`);
 
-  // 4. poll import status
-  for (let i = 0; i < 60; i += 1) {
-    await new Promise((r) => setTimeout(r, 5000));
-    const st = await rmi('DataPackageModule', 'getImportStatus', [clientId]);
-    if (st.retCode === 0 && st.result) {
-      const r = st.result;
-      if (r.retCode === 0) {
-        safeOutput({ ok: true, table, tableRef, rows: r.rowCount ?? rowCount, clientId, folder: folder.folderAlias });
+    for (let attempt = 0; attempt < 60; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+      const status = await rmi('DataPackageModule', 'getImportStatus', [clientId]);
+      if (status.retCode !== 0 || !status.result) continue;
+      if (status.result.retCode === 0) {
+        safeOutput({
+          ok: true,
+          table,
+          tableRef,
+          rows: status.result.rowCount ?? rowCount,
+          fields: resolvedFieldNames,
+          replaced: Boolean(existing),
+        });
         return;
       }
-      if (r.retCode !== undefined && r.retCode !== 0) {
-        throw new Error(`import status error: ${JSON.stringify(r)}`);
+      if (status.result.retCode !== undefined) {
+        throw new Error(`import status error: ${JSON.stringify(status.result)}`);
       }
     }
+    throw new Error('import status was not confirmed within 5 minutes');
+  } catch (error) {
+    try {
+      await fetch(`${BASE_URL}/DataPackageServlet`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+          Cookie: cookieHeader(),
+        },
+        body: `action=DELETE_FILE&clientId=${encodeURIComponent(clientId)}`,
+        signal: AbortSignal.timeout(30000),
+      });
+    } catch {}
+    throw error;
   }
-  safeOutput({ ok: true, table, tableRef, clientId, note: 'import submitted, status not confirmed within 5min' });
+}
+
+async function cmdUploadArgs(argsList) {
+  const unknown = argsList.filter((value) => value.startsWith('--') && value !== '--replace');
+  if (unknown.length > 0) throw new Error(`unknown upload option: ${unknown[0]}`);
+  const replace = argsList.includes('--replace');
+  const positional = argsList.filter((value) => value !== '--replace');
+  if (positional.length > 2) throw new Error('upload accepts only <file> [tableName] [--replace]');
+  await cmdUpload(positional[0], positional[1], { replace });
 }
 
 function parseImportedTableId(tableId) {
@@ -2718,7 +2847,8 @@ try {
     case 'agent-run': await cmdAgentRun(args[0], args.slice(1).join(' ')); break;
     case 'agent-deploy': await cmdAgentDeploy(args[0]); break;
     case 'tree': await cmdTree(args[0]); break;
-    case 'upload': await cmdUpload(args[0], args[1]); break;
+    case 'folder-create': await cmdFolderCreate(args[0], args[1], args.slice(2).join(' ')); break;
+    case 'upload': await cmdUploadArgs(args); break;
     case 'etl-create': await cmdEtlCreate(args[0], args[1], args[2], args[3], args[4], args[5]); break;
     case 'etl-node-list': await cmdEtlNodeList(args.join(' ')); break;
     case 'etl-insert': await cmdEtlInsert(args[0], args[1], args[2], args[3]); break;
@@ -2736,7 +2866,7 @@ try {
       orderRiskWarning: 'https://wiki.smartbi.com.cn/pages/viewpage.action?pageId=168629228',
     }); break;
     default:
-      throw new Error(`Unknown command: ${command}\nusage: smartbi.mjs <setup|login|health|config|invoke|api-get|api-post|plain-get|plain-post|tree|upload|etl-node-list|etl-create|etl-insert|etl-get|etl-run|etl-row-number|model-get|model-create|model-clone|analysis-get|analysis-create|analysis-run|analysis-clone|dashboard-get|dashboard-create|dashboard-clone|aichat-graph-list|aichat-graph-fields|aichat-graph-status|aichat-graph-build|aichat-query|aichat-report|aichat-export|agent-get|agent-create|agent-run|agent-deploy|nav|manuals> ...`);
+      throw new Error(`Unknown command: ${command}\nusage: smartbi.mjs <setup|login|health|config|invoke|api-get|api-post|plain-get|plain-post|tree|folder-create|upload|etl-node-list|etl-create|etl-insert|etl-get|etl-run|etl-row-number|model-get|model-create|model-clone|analysis-get|analysis-create|analysis-run|analysis-clone|dashboard-get|dashboard-create|dashboard-clone|aichat-graph-list|aichat-graph-fields|aichat-graph-status|aichat-graph-build|aichat-query|aichat-report|aichat-export|agent-get|agent-create|agent-run|agent-deploy|nav|manuals> ...`);
   }
   process.exit(0);
 } catch (error) {

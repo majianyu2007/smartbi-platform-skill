@@ -139,7 +139,11 @@ test('generic API and ETL commands reject unsafe or incomplete input before auth
     const etl = runCli(['etl-insert'], { SMARTBI_CONFIG_FILE: workspace.config });
     assert.equal(etl.status, 1);
     assert.match(etl.stderr, /etl-insert requires <flowId> <nodeName>/);
-    assert.doesNotMatch(`${plain.stderr}${etl.stderr}`, /password|cookie/i);
+
+    const folder = runCli(['folder-create'], { SMARTBI_CONFIG_FILE: workspace.config });
+    assert.equal(folder.status, 1);
+    assert.match(folder.stderr, /folder-create requires <parentId> <name>/);
+    assert.doesNotMatch(`${plain.stderr}${etl.stderr}${folder.stderr}`, /password|cookie/i);
   } finally {
     workspace.cleanup();
   }

@@ -151,6 +151,7 @@ TMPDIR=/tmp node scripts/smartbi.mjs manuals        # official manual links
 | `api-get <path>` / `api-post <path> [json]` | Guarded Smartbix API discovery/replay | decoded response |
 | `plain-get <path>` / `plain-post <path> [json]` | Guarded `/smartbi/` plain-JSON API replay | JSON/text response |
 | `tree [id]` | List catalog children of node | `{parent, nodes:[...]}` |
+| `folder-create <parentId> <name> [description]` | Idempotently create one namespaced catalog folder | `{created,id,name,alias}` |
 | `upload <file> [tableName]` | Import CSV/TXT/XLSX as a namespaced table | `{ok, table, rows, clientId}` |
 | `etl-create <parentId> <sourceTableId> <targetTableId> <name> [rowNumber|-] [description]` | Build an owned source→optional row-number→materialized-output ETL | saved DAG |
 | `etl-get <flowId>` / `etl-run <flowId>` | Inspect or execute one owned saved ETL | DAG / terminal node states |

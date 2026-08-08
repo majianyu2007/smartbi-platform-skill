@@ -72,6 +72,10 @@ Node shape: `{id, name, alias, type, hasChild, ...}`. Key root ids:
 
 Personal acquisition folder under `可导入数据库 > input > 数据采集空间 > <account>`.
 
+Folder creation uses `CatalogService.createFolderElement` with
+`[parentId, name, alias, description, null, false, "DEFAULT_TREENODE.png"]`.
+The CLI namespaces the name and verifies the saved child before returning.
+
 ## 4. File import chain (DataPackageServlet)
 
 All requests `POST /smartbi/vision/DataPackageServlet` with session cookie.
