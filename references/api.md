@@ -164,7 +164,7 @@ action=DELETE_FILE&clientId=<id>
 | `DataPackageModule` | `getChildElementsWithoutUnionDBChilds` |
 | `SessionLogService` | `flushUserLogs`, `addClientLog` |
 
-## 6. Smartbix data-mining API (saved ETL flows)
+## 6. Smartbix API
 
 Base path: `/smartbi/smartbix/api/`. Use the same authenticated cookie jar.
 Requests send `SMX-Encode: encode`; JSON POST bodies are ReplaceCoder-encoded.
@@ -173,6 +173,7 @@ Responses may be plain JSON or ReplaceCoder-encoded JSON, so decode both forms.
 | Method and path | Purpose | Verified result |
 |---|---|---|
 | `GET datamining/flow/{flowId}/no` | Load a saved flow | wrapper with `processDag.define` JSON DAG |
+| `GET datamining/nodes` | Load live ETL node templates, ports, and config contracts |
 | `POST dataprocess/processflowdefine/define` | Save a changed DAG | saved flow metadata |
 | `POST datamining/processflowdefine` | Start a run | execution `instanceId` |
 | `GET datamining/flowstate/{instanceId}` | Poll execution | terminal `FINISH`/`ERROR`/`FAILED`/`KILLED` plus node states |
@@ -186,11 +187,87 @@ Safety invariant implemented by `scripts/smartbi.mjs`: mutation and execution
 refuse any flow whose saved name does not match the configured namespace.
 `etl-row-number` appends an `增加序列号` node only when the graph has exactly one
 connectable sink, then saves through the endpoint above.
+`etl-node-list` exposes those live contracts. `etl-insert` inserts or updates a
+named unary transformation immediately before the single materialized target,
+preserves the target wiring, and marks the graph `INITED`. Its `instanceKey`
+makes retries idempotent; multi-input/output nodes remain explicit workflows
+because their port semantics cannot be inferred safely.
+
+### 6.1 Data models, analyses, dashboards, AIChat, and model graphs
+
+The model/report/dashboard paths use the `/smartbi/smartbix/api/` base. Paths
+beginning `cgi/` or `sdk/` below use the `/smartbi/` base and plain JSON.
+Use `plain-get`/`plain-post` for guarded discovery and replay of the latter;
+use `api-get`/`api-post` for Smartbix paths.
+
+| Method and path | Purpose |
+|---|---|
+| `GET augmentedDataSet/{id}` | Load a model with nodes, fields, measures, and views |
+| `POST augmentedDataSet/{parentId}` | Create a model |
+| `GET report/{id}` / `POST report/{parentId}` | Load/create pivot analysis |
+| `POST freequery/queryData` | Execute a pivot definition |
+| `GET pages/beans?id={id}` / `POST pages/beans/create?pid={parentId}` | Load/create dashboard |
+| `POST cgi/aichat-train/list-knowledge-graph-node` | List built/building model graphs |
+| `POST cgi/aichat-train/get-resource-field-tree/{modelId}` | Resolve selectable, fully qualified graph field IDs |
+| `POST cgi/aichat-train/validate_field_data_count/{modelId}` | Validate selected field cardinalities |
+| `POST cgi/aichat-train/train-resource/{modelId}` | Start or rebuild a model graph |
+| `POST cgi/aichat-train/get-trained-knowledge-graph-by-id/{modelId}` | Load one trained graph definition |
+| `POST sdk/api/v1/aichat/conv/query-rpc` | Stream AIChat text/table/file artifacts |
+
+Model/report/dashboard creation is implemented from live saved-resource
+contracts. Exact field IDs and `refDataSetFieldId` values are fully qualified;
+do not fabricate bare IDs. Reconcile generated analysis/dashboard values
+against an independently validated aggregate.
+
+Model-graph build contract:
+
+```json
+POST cgi/aichat-train/validate_field_data_count/<modelId>
+{"fieldIds":["AUGMENTED_DATASET_FIELD.<modelId>.<qualified-field>"]}
+
+POST cgi/aichat-train/train-resource/<modelId>
+{"trainOption":{"resourceType":"AUGMENTED_DATASET","fields":["<qualified-field-id>"],"background":""}}
+```
+
+Poll `list-knowledge-graph-node` with statuses `SUCCESS`, `FAILED`, `BUILDING`,
+and `PENDING`. The terminal state and selected fields are stored in the
+returned node's JSON `extended` property. `scripts/smartbi.mjs` resolves field
+names to IDs, validates cardinality before training, refuses non-namespaced
+models, polls to `SUCCESS`, and skips an identical successful rebuild:
+
+```bash
+node scripts/smartbi.mjs aichat-graph-list TEAM_
+node scripts/smartbi.mjs aichat-graph-fields <modelId>
+node scripts/smartbi.mjs aichat-graph-build <modelId> survey_city,age_code
+node scripts/smartbi.mjs aichat-graph-status <modelId>
+```
+
+### 6.2 Agent graph API
+
+| Method and path | Purpose |
+|---|---|
+| `GET dataagent/getNodeOptions` | Live Agent node templates |
+| `GET dataagent/graph/{id}` | Load graph, prompts, parameters, and metadata |
+| `POST dataagent/graph/create/{parentId}` | Create an Agent resource |
+| `POST dataagent/graph/update` | Persist graph edits |
+| `POST dataagent/test/flow` | Start a test run |
+| `GET dataagent/flow/nodestate/{instanceId}` | Poll run state and node states |
+| `GET dataagent/output/{nodeId-instanceId}` | Read LLM result content and tokens |
+| `GET dataagent/deploy/agent/{agentId}` | Read deployment relation |
+| `POST dataagent/relation/create` | Publish `{id:null,agentId,resId:null}` |
+| `DELETE dataagent/relation/offline/{agentId}` | Take an Agent offline |
+
+The test body is `{query, queryType:"customagent_"+flowId,
+currentInstanceId, flowId, convId}` with `convId === currentInstanceId`.
+For the basic Start→LLM→Finish graph, bind the LLM variable named `question` to
+`["sessionVar","query"]`; the Start node's custom field does not carry the
+test-dialog question.
+
 
 ## 7. UI-only fallback (Playwright CDP)
 
-Operations not yet exposed via API (dashboard canvas editing, ETL node drag-drop,
-AIChat graph construction) require the browser:
+Operations not yet exposed by a stable command (arbitrary visual canvas
+editing and uncommon ETL transformations) require the browser:
 
 - CDP endpoint `http://127.0.0.1:9222`, dedicated profile `/tmp/smartbi-playwright-profile-cdp`.
 - Login is done by the API tool first; the browser session then shares the same cookies.

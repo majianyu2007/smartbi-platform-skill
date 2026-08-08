@@ -20,7 +20,7 @@ import { homedir } from 'node:os';
 import { randomBytes } from 'node:crypto';
 import { join, dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -80,18 +80,45 @@ function hasNamespace(name) {
 const CODE_ARRAY = [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,80,0,0,0,47,0,110,65,69,115,43,0,102,113,37,55,49,117,78,75,74,77,57,39,109,123,0,0,0,0,0,0,79,86,116,84,97,120,72,114,99,118,108,56,70,51,111,76,89,106,87,42,122,90,33,66,41,85,93,0,91,0,121,0,40,126,105,104,112,95,45,73,82,46,71,83,100,54,119,53,48,52,68,107,81,103,98,67,50,88,58,0,0,101,0];
 const ENCODE_MAP = {};
 const DECODE_MAP = {};
-for (let i = 0; i < CODE_ARRAY.length; i++) {
-  const c = CODE_ARRAY[i];
-  if (c) {
-    const ic = String.fromCharCode(i);
-    DECODE_MAP[ic] = ENCODE_MAP[ic] = String.fromCharCode(c);
+for (let i = 0; i < CODE_ARRAY.length; i += 1) {
+  const codePoint = CODE_ARRAY[i];
+  if (codePoint) {
+    const source = String.fromCharCode(i);
+    const encoded = String.fromCharCode(codePoint);
+    ENCODE_MAP[source] = encoded;
+    DECODE_MAP[source] = encoded;
   }
 }
 DECODE_MAP['/'] = '/';
 DECODE_MAP['%'] = '%';
 
-const replaceEncode = (d) => String(d).split('').map((ch) => ENCODE_MAP[ch] || ch).join('');
-const replaceDecode = (d) => String(d).split('').map((ch) => DECODE_MAP[ch] || ch).join('');
+const replaceEncode = (data) => String(data).split('').map((character) => ENCODE_MAP[character] || character).join('');
+const replaceDecode = (data) => String(data).split('').map((character) => DECODE_MAP[character] || character).join('');
+
+function parseTransportJson(text) {
+  const knownKeys = new Set([
+    'id', 'originId', 'name', 'alias', 'fields', 'views', 'nodes', 'dataSource',
+    'retCode', 'result', 'detail', 'succeeded', 'success', 'report', 'macros',
+    'processDag', 'define', 'columns', 'rowMap', 'hierarchyFieldMap', 'total',
+  ]);
+  const parsed = [];
+  const candidates = [...new Set([String(text), replaceDecode(text), replaceEncode(text)])];
+  for (const candidate of candidates) {
+    try {
+      const value = JSON.parse(candidate);
+      const root = Array.isArray(value) ? value[0] : value;
+      const score = root && typeof root === 'object'
+        ? Object.keys(root).filter((key) => knownKeys.has(key)).length
+        : 0;
+      parsed.push({ value, score });
+    } catch {}
+  }
+  if (parsed.length > 0) {
+    parsed.sort((left, right) => right.score - left.score);
+    return parsed[0].value;
+  }
+  throw new Error('response is not valid raw or ReplaceCoder JSON');
+}
 
 // ---- session / cookie jar ----
 const jar = new Map();
@@ -122,10 +149,11 @@ async function rmi(className, methodName, params = [], timeoutMs = 60000) {
   });
   grabCookies(res);
   const text = await res.text();
-  const decoded = replaceDecode(text);
-  let json;
-  try { json = JSON.parse(decoded); } catch { json = { retCode: 'PARSE_ERROR', result: decoded.slice(0, 400) }; }
-  return { status: res.status, ...json };
+  try {
+    return { status: res.status, ...parseTransportJson(text) };
+  } catch {
+    return { status: res.status, retCode: 'PARSE_ERROR', result: text.slice(0, 400) };
+  }
 }
 
 const SMARTBIX_API = `${BASE_URL.replace(/\/vision\/?$/, '')}/smartbix/api`;
@@ -155,16 +183,58 @@ async function smartbixApi(path, { method = 'GET', body, timeoutMs = 60000 } = {
   const text = await res.text();
   let parsed;
   try {
-    parsed = JSON.parse(text);
+    parsed = parseTransportJson(text);
   } catch {
-    try {
-      parsed = JSON.parse(replaceDecode(text));
-    } catch {
-      throw new Error(`Smartbix API returned non-JSON (${res.status} ${path}): ${text.slice(0, 240)}`);
-    }
+    if (res.ok) return text;
+    throw new Error(`Smartbix API returned non-JSON (${res.status} ${path}): ${text.slice(0, 240)}`);
   }
   if (!res.ok) throw new Error(`Smartbix API failed (${res.status} ${path}): ${JSON.stringify(parsed)}`);
   return parsed;
+}
+
+const SMARTBI_ROOT = BASE_URL.replace(/\/vision\/?$/, '');
+
+async function plainJsonRequest(path, {
+  method = 'POST',
+  body,
+  accept = 'application/json, text/plain, */*',
+  timeoutMs = 120000,
+} = {}) {
+  if (!path || /^https?:/i.test(path) || String(path).includes('..')) {
+    throw new Error('plain API request requires a relative Smartbi path');
+  }
+  const headers = {
+    Accept: accept,
+    'Cache-Control': 'no-cache',
+    Pragma: 'no-cache',
+    'X-Requested-With': 'XMLHttpRequest',
+    Cookie: cookieHeader(),
+  };
+  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  const response = await fetch(`${SMARTBI_ROOT}/${String(path).replace(/^\/+/, '')}`, {
+    method,
+    headers,
+    body: body === undefined ? undefined : JSON.stringify(body),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  grabCookies(response);
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(`Smartbi API failed (${response.status} ${path}): ${text.slice(0, 500)}`);
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+function resourceId() {
+  return randomBytes(16).toString('hex');
+}
+
+function shortId(bytes = 9) {
+  return randomBytes(bytes).toString('base64url');
 }
 
 // ---- commands ----
@@ -207,6 +277,1514 @@ async function cmdInvoke(className, methodName, paramsJson) {
   safeOutput(ret);
 }
 
+async function cmdApiGet(path) {
+  if (!path || /^https?:/i.test(path) || String(path).includes('..')) {
+    throw new Error('api-get requires a relative Smartbix API path');
+  }
+  await ensureSession();
+  safeOutput(await smartbixApi(path));
+}
+
+async function cmdApiPost(path, bodyJson = '{}') {
+  if (!path || /^https?:/i.test(path) || String(path).includes('..')) {
+    throw new Error('api-post requires a relative Smartbix API path');
+  }
+  await ensureSession();
+  safeOutput(await smartbixApi(path, { method: 'POST', body: JSON.parse(bodyJson) }));
+}
+
+async function cmdPlainGet(path) {
+  if (!path || /^https?:/i.test(path) || String(path).includes('..')) {
+    throw new Error('plain-get requires a relative Smartbi root API path');
+  }
+  await ensureSession();
+  safeOutput(await plainJsonRequest(path, { method: 'GET' }));
+}
+
+async function cmdPlainPost(path, bodyJson = '{}') {
+  if (!path || /^https?:/i.test(path) || String(path).includes('..')) {
+    throw new Error('plain-post requires a relative Smartbi root API path');
+  }
+  await ensureSession();
+  safeOutput(await plainJsonRequest(path, { body: JSON.parse(bodyJson) }));
+}
+
+function replaceExactStrings(value, replacements) {
+  if (typeof value === 'string') {
+    let replaced = value;
+    for (const [source, target] of replacements) replaced = replaced.split(source).join(target);
+    return replaced;
+  }
+  if (Array.isArray(value)) return value.map((item) => replaceExactStrings(item, replacements));
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [key, replaceExactStrings(item, replacements)]),
+  );
+}
+
+function createdResourceId(result, fallback) {
+  if (typeof result === 'string' && result) return result;
+  if (Array.isArray(result)) {
+    const candidate = result.find((item) => typeof item === 'string' && item);
+    if (candidate) return candidate;
+  }
+  return result?.id || result?.result?.id || fallback;
+}
+
+function makeTreeNode({
+  id,
+  name,
+  aliasFromDb,
+  descFromDb = null,
+  type,
+  group,
+  level,
+  order,
+  parentId,
+  valueType = null,
+  dataFormat = '',
+  viewId = null,
+  alias,
+  desc = null,
+  aggregator = null,
+  refDataSetFieldId = null,
+}) {
+  return {
+    id,
+    name,
+    aliasFromDb,
+    descFromDb,
+    useFromDb: false,
+    type,
+    group,
+    level,
+    order,
+    visible: 1,
+    parentId,
+    valueType,
+    dataFormat,
+    extended: null,
+    refDataSetFieldId,
+    referenceFieldId: null,
+    originalDataType: null,
+    aggregator,
+    businessCaliber: null,
+    children: [],
+    reportVisible: true,
+    desc,
+    alias,
+    creatorId: null,
+    ...(viewId ? { viewId } : {}),
+  };
+}
+
+function buildSingleTableModel(table, requestedName, description = '') {
+  if (!table?.fields?.length || !table?.dataSource?.id || !table?.originId) {
+    throw new Error(`table metadata is incomplete; keys=${Object.keys(table || {}).join(',')} dataSourceKeys=${Object.keys(table?.dataSource || {}).join(',')} originId=${Boolean(table?.originId)} fields=${table?.fields?.length || 0}`);
+  }
+  const id = resourceId();
+  const viewId = resourceId();
+  const name = applyNamespace(requestedName);
+  const viewFields = table.fields.map((field) => ({
+    id: field.id,
+    name: field.name,
+    aliasFromDb: field.alias || field.name,
+    descFromDb: field.desc || field.name,
+    useFromDb: false,
+    valueType: field.dataType,
+    dataFormat: field.dataFormat || '',
+    sqlColumnName: null,
+    maskingRule: field.maskingRule,
+    viewId: null,
+    viewAlias: null,
+    resType: null,
+    desc: field.desc || field.name,
+    alias: field.alias || field.name,
+    creatorId: null,
+  }));
+  const modelFields = table.fields.map((field, order) => ({
+    ...viewFields[order],
+    sqlColumnName: field.name,
+    maskingRule: field.maskingRule || '',
+    viewId,
+    visible: 1,
+    referenceFieldId: field.id,
+    extended: null,
+    transformRule: field.transformRule || '',
+    needExtract: true,
+    type: 'FIELD',
+    order,
+    parentId: viewId,
+    group: 'DIMENSION',
+    children: [],
+  }));
+  const dimensionNodes = table.fields.map((field, order) => makeTreeNode({
+    id: field.id,
+    name: field.name,
+    aliasFromDb: field.alias || field.name,
+    descFromDb: field.desc || field.name,
+    type: 'FIELD',
+    group: 'DIMENSION',
+    level: 2,
+    order,
+    parentId: viewId,
+    valueType: field.dataType,
+    viewId,
+    alias: field.alias || field.name,
+    desc: field.desc || field.name,
+  }));
+  const numericTypes = new Set([
+    'BYTE', 'SHORT', 'SMALLINT', 'INTEGER', 'INT', 'LONG', 'BIGINT',
+    'FLOAT', 'DOUBLE', 'DECIMAL', 'BIGDECIMAL', 'NUMBER',
+  ]);
+  const numericFields = table.fields.filter((field) => numericTypes.has(String(field.dataType).toUpperCase()));
+  const measures = numericFields.map((field, order) => {
+    const sourceType = String(field.dataType).toUpperCase();
+    const valueType = ['BYTE', 'SHORT', 'SMALLINT', 'INTEGER', 'INT', 'LONG'].includes(sourceType)
+      ? 'BIGINT'
+      : sourceType;
+    return {
+      id: `${field.id}_${Date.now() + order}`,
+      name: `${field.name}_m`,
+      aliasFromDb: field.alias || field.name,
+      descFromDb: null,
+      useFromDb: false,
+      valueType,
+      dataFormat: field.dataFormat || '',
+      sqlColumnName: null,
+      maskingRule: null,
+      viewId,
+      viewAlias: null,
+      visible: 1,
+      aggregator: 'sum',
+      refDataSetFieldId: field.id,
+      transformRule: null,
+      extended: null,
+      resType: null,
+      desc: null,
+      alias: field.alias || field.name,
+      creatorId: null,
+      type: 'MEASURE',
+      level: 0,
+      order,
+      parentId: 'measure',
+      group: 'MEASURE',
+      children: [],
+    };
+  });
+  const view = {
+    id: viewId,
+    alias: table.alias || table.name,
+    name: table.name,
+    desc: table.desc || '',
+    parameters: [],
+    fields: viewFields,
+    extractSetting: {
+      type: 'FULL',
+      clearBeforeExtract: true,
+      failHandler: { failModel: 'STOP' },
+      incremental: {
+        currentDay: false,
+        type: null,
+        rows: null,
+        parameters: null,
+        settings: { reExtract: null, reExtractTimeUnit: null },
+      },
+      orderSettings: null,
+      clusterSetting: { type: '', field: '', extended: null },
+      bucketSetting: { count: 1, field: '' },
+      parameters: [],
+      scheduleInfo: null,
+    },
+    storeType: 'DIRECT',
+    showHiddenAttr: false,
+    showAlias: true,
+    limit: 100,
+    dataSource: table.dataSource.id,
+    catalog: '',
+    schema: '',
+    tableName: '',
+    define: {
+      dbtype: table.dataType || table.dataSource?.type?.name,
+      dataSource: table.dataSource.id,
+      catalog: table.catalog,
+      schema: table.schema,
+      tableId: table.originId,
+      tableName: table.name,
+      _dataSource: { ...table, fields: null },
+    },
+    enable: true,
+    type: 'BASIC_TABLE',
+    reload: true,
+  };
+  const dimensionRoot = makeTreeNode({
+    id: 'dimension',
+    name: 'dimension',
+    aliasFromDb: '维度',
+    type: 'DIMENSION_FOLDER',
+    group: 'DIMENSION',
+    level: 0,
+    order: 0,
+    parentId: null,
+    alias: '维度',
+  });
+  const viewFolder = makeTreeNode({
+    id: viewId,
+    name: table.name,
+    aliasFromDb: table.alias || table.name,
+    descFromDb: table.desc || '',
+    type: 'FOLDER',
+    group: 'DIMENSION',
+    level: 1,
+    order: 0,
+    parentId: 'dimension',
+    alias: table.alias || table.name,
+    desc: table.desc || '',
+  });
+  const measureRoot = makeTreeNode({
+    id: 'measure',
+    name: 'measure',
+    aliasFromDb: '度量',
+    type: 'MEASURE_FOLDER',
+    group: 'MEASURE',
+    level: 0,
+    order: 1,
+    parentId: null,
+    alias: '度量',
+  });
+  return {
+    id,
+    alias: name,
+    name,
+    desc: description,
+    storeType: 'DIRECT',
+    views: [view],
+    relationGraph: {
+      relations: [],
+      positions: [{ viewId, x: 36, y: 36, width: 160, height: 42 }],
+      layouts: [],
+      activeLayout: '0',
+    },
+    deletedViews: [],
+    fields: modelFields,
+    levels: [],
+    measures,
+    calcMembers: [],
+    calcMeasures: [],
+    namedSets: [],
+    nodes: [dimensionRoot, viewFolder, ...dimensionNodes, measureRoot, ...measures],
+    parameters: [],
+    aggregatorTypes: [
+      'SUM', 'AVG', 'MAX', 'MIN', 'COUNT', 'DISTINCT_COUNT', 'NONE',
+      'FIRST_MEMBER', 'LAST_MEMBER', 'STDDEV_POP', 'STDDEV_SAMP',
+      'VAR_POP', 'VAR_SAMP', 'ATTR',
+    ],
+    preAggregates: [],
+    directPartitions: [],
+    extractStatus: 'INIT',
+    cacheSetting: null,
+    fieldTreeSetting: null,
+    augmentedDataSetSetting: null,
+    smartCubeSetting: null,
+    duckDbSetting: null,
+    _extendProps: { options: {}, batchId: resourceId() },
+    relationSetting: null,
+    mppTypeName: 'CLICK_HOUSE',
+  };
+}
+
+async function loadModel(modelId) {
+  if (!modelId) throw new Error('model id is required');
+  await ensureSession();
+  const model = await smartbixApi(`augmentedDataSet/${encodeURIComponent(modelId)}`);
+  if (!model?.id || !model?.name) throw new Error(`model not found or incomplete: ${modelId}`);
+  return model;
+}
+
+async function cmdModelGet(modelId) {
+  safeOutput(await loadModel(modelId));
+}
+
+async function cmdModelCreate(parentId, dataSourceId, tableId, tableName, requestedName, description = '') {
+  if (![parentId, dataSourceId, tableId, tableName, requestedName].every(Boolean)) {
+    throw new Error('model-create requires <parentId> <dataSourceId> <tableId> <tableName> <name> [description]');
+  }
+  await ensureSession();
+  const table = await smartbixApi('datasets/table', {
+    method: 'POST',
+    body: { dataSourceId, tableId, tableName },
+  });
+  if (!table.dataSource?.id) {
+    table.dataSource = { id: dataSourceId, type: { name: table.dataType || null } };
+  }
+  const model = buildSingleTableModel(table, requestedName, description);
+  const result = await smartbixApi(`augmentedDataSet/${encodeURIComponent(parentId)}`, {
+    method: 'POST',
+    body: model,
+  });
+  const createdId = createdResourceId(result, model.id);
+  const saved = await smartbixApi(`augmentedDataSet/${encodeURIComponent(createdId)}`);
+  safeOutput({
+    ok: true,
+    id: saved.id,
+    name: saved.name,
+    fieldCount: saved.fields?.length || 0,
+    measureCount: saved.measures?.length || 0,
+    viewCount: saved.views?.length || 0,
+  });
+}
+
+async function cmdModelClone(parentId, sourceModelId, requestedName, description = '') {
+  if (![parentId, sourceModelId, requestedName].every(Boolean)) {
+    throw new Error('model-clone requires <parentId> <sourceModelId> <name> [description]');
+  }
+  const source = await loadModel(sourceModelId);
+  const replacements = new Map([[source.id, resourceId()]]);
+  for (const view of source.views || []) replacements.set(view.id, resourceId());
+  const model = replaceExactStrings(source, replacements);
+  model.id = replacements.get(source.id);
+  model.name = model.alias = applyNamespace(requestedName);
+  model.desc = description || source.desc || '';
+  model._extendProps = { ...(model._extendProps || {}), batchId: resourceId() };
+  const result = await smartbixApi(`augmentedDataSet/${encodeURIComponent(parentId)}`, {
+    method: 'POST',
+    body: model,
+  });
+  const createdId = createdResourceId(result, model.id);
+  const saved = await smartbixApi(`augmentedDataSet/${encodeURIComponent(createdId)}`);
+  safeOutput({
+    ok: true,
+    id: saved.id,
+    name: saved.name,
+    fieldCount: saved.fields?.length || 0,
+    measureCount: saved.measures?.length || 0,
+    viewCount: saved.views?.length || 0,
+  });
+}
+
+async function loadAnalysis(analysisId) {
+  if (!analysisId) throw new Error('analysis id is required');
+  await ensureSession();
+  const wrapper = await smartbixApi(`adhocanalysis/getReport/${encodeURIComponent(analysisId)}`);
+  if (!wrapper?.report?.id) throw new Error(`analysis not found or incomplete: ${analysisId}`);
+  return wrapper;
+}
+
+async function cmdAnalysisGet(analysisId) {
+  safeOutput(await loadAnalysis(analysisId));
+}
+
+function buildAnalysisQuery(report) {
+  const portlet = report?.define?.portlets?.find((item) => item.type === 'CROSS_TABLE');
+  if (!portlet?.extended?.dataSource || !portlet?.extended?.fields) {
+    throw new Error('analysis has no runnable CROSS_TABLE portlet');
+  }
+  const extended = portlet.extended;
+  return {
+    queryBatchId: resourceId(),
+    queryType: 'PORTLET_CROSS_TABLE',
+    clientId: resourceId(),
+    dataSource: extended.dataSource,
+    pagination: { num: 0, size: 100 },
+    calculateTotalRowCount: false,
+    conditionRelation: { relation: 'AND', childNodes: [] },
+    queryFields: extended.fields,
+    privateDataset: report.define.privateDataset || { folders: [], fields: [] },
+    colSubtotalPosition: 'right',
+    groupOrderByState: extended.viewState?.groupOrderByState || null,
+    useAdvancedSort: true,
+    querySortSetting: {
+      rowSorts: extended.sortSetting?.row?.sorts || [],
+      colSorts: extended.sortSetting?.col?.sorts || [],
+    },
+    tableHeader: report.define.reportSetting?.tableHeader || null,
+    tableFooter: report.define.reportSetting?.tableFooter || null,
+  };
+}
+
+function qualifyModelResource(modelId, type, id) {
+  const source = String(id || '');
+  return source.startsWith('AUGMENTED_DATASET_')
+    ? source
+    : `AUGMENTED_DATASET_${type}.${modelId}.${source}`;
+}
+
+function analysisDimension(model, field) {
+  return {
+    id: qualifyModelResource(model.id, 'FIELD', field.id),
+    name: field.name,
+    alias: field.alias || field.name,
+    desc: field.desc || '',
+    label: field.alias || field.name,
+    type: 'FIELD',
+    dataType: field.valueType,
+    fieldType: 'DIMENSION',
+    hierarchy: 'FIELD',
+    group: 'DIMENSION',
+    children: [],
+    dataFormat: field.dataFormat || '',
+    orderByType: null,
+    orderBySettings: null,
+    maskingRule: field.maskingRule || null,
+    originalMaskingRule: null,
+    maskingRuleAlias: null,
+    transformRule: field.transformRule || null,
+    parentId: model.nodes?.find((node) => node.id === field.id)?.parentId
+      || `AUGMENTED_DATASET_FOLDER.${model.id}.${field.viewId}`,
+    order: model.nodes?.find((node) => node.id === field.id)?.order || field.order || 0,
+    visible: true,
+    originalDataType: field.originalDataType || null,
+    refDataSetFieldId: field.refDataSetFieldId || null,
+    extended: field.extended || null,
+    businessCaliber: field.businessCaliber || null,
+    aggregate: null,
+    aggregatedCalcField: false,
+    creatorId: null,
+    uniqueId: resourceId(),
+    originAggregate: null,
+  };
+}
+
+function analysisMeasure(model, measure) {
+  const aggregate = String(measure.aggregator || 'sum').toUpperCase();
+  return {
+    id: qualifyModelResource(model.id, 'MEASURE', measure.id),
+    name: measure.name,
+    alias: measure.alias || measure.name,
+    desc: measure.desc || '',
+    label: measure.alias || measure.name,
+    type: 'MEASURE',
+    dataType: measure.valueType,
+    fieldType: 'MEASURE',
+    hierarchy: 'MEASURE',
+    group: 'MEASURE',
+    children: [],
+    dataFormat: measure.dataFormat || '',
+    orderByType: null,
+    orderBySettings: null,
+    maskingRule: measure.maskingRule || null,
+    originalMaskingRule: null,
+    maskingRuleAlias: null,
+    transformRule: measure.transformRule || null,
+    parentId: model.nodes?.find((node) => node.id === measure.id)?.parentId
+      || `AUGMENTED_DATASET_FOLDER.${model.id}.measure`,
+    order: model.nodes?.find((node) => node.id === measure.id)?.order || measure.order || 0,
+    visible: true,
+    originalDataType: measure.valueType,
+    refDataSetFieldId: measure.refDataSetFieldId
+      ? qualifyModelResource(model.id, 'FIELD', measure.refDataSetFieldId)
+      : null,
+    extended: measure.extended || null,
+    businessCaliber: measure.businessCaliber || null,
+    aggregate,
+    aggregatedCalcField: false,
+    creatorId: null,
+    contentClass: 'sx-measure-content',
+    uniqueId: resourceId(),
+    originAggregate: aggregate,
+  };
+}
+
+function buildAnalysisReport(model, rowFieldName, measureFieldName, requestedName, description = '') {
+  const dimensionField = (model.fields || []).find(
+    (field) => field.name === rowFieldName || field.alias === rowFieldName,
+  );
+  if (!dimensionField) throw new Error(`dimension field not found: ${rowFieldName}`);
+  const modelMeasure = (model.measures || []).find(
+    (measure) => measure.name === measureFieldName || measure.alias === measureFieldName,
+  );
+  if (!modelMeasure) throw new Error(`measure not found: ${measureFieldName}`);
+  const dimension = analysisDimension(model, dimensionField);
+  const measure = analysisMeasure(model, modelMeasure);
+  const dataSource = { id: model.id, type: 'AUGMENTED' };
+  const sortSetting = { row: { sorts: [] }, col: { sorts: [] } };
+  return {
+    name: applyNamespace(requestedName),
+    alias: applyNamespace(requestedName),
+    desc: description,
+    define: {
+      reportSetting: { refresh: {}, tableHeader: null, tableFooter: null },
+      portlets: [
+        {
+          id: resourceId(),
+          name: '表格',
+          type: 'CROSS_TABLE',
+          extended: {
+            fields: {
+              cols: [{
+                id: 'MEASURE_GROUP_NAME',
+                name: 'MEASURE_GROUP_NAME',
+                alias: '度量名称',
+                label: '度量名称',
+                type: 'MEASURE_GROUP_NAME',
+                hierarchy: 'MEASURE_GROUP_NAME',
+                group: 'DIMENSION',
+                fieldType: 'DIMENSION',
+                dataType: 'STRING',
+                uniqueId: resourceId(),
+              }],
+              rows: [dimension],
+              measures: [measure],
+            },
+            sortSetting,
+            dataSource,
+            viewState: { groupOrderByState: null },
+          },
+        },
+        {
+          id: resourceId(),
+          name: 'filterPanel',
+          type: 'FILTER_PANEL',
+          extended: {
+            children: [],
+            impactMap: {},
+            whereConditionalRelation: {},
+            havingConditionalRelation: {},
+            setting: {},
+            sortSetting,
+            dataSource,
+          },
+        },
+      ],
+      privateDataset: { folders: [], fields: [] },
+    },
+  };
+}
+
+async function cmdAnalysisCreate(
+  parentId,
+  modelId,
+  rowFieldName,
+  measureFieldName,
+  requestedName,
+  description = '',
+) {
+  if (![parentId, modelId, rowFieldName, measureFieldName, requestedName].every(Boolean)) {
+    throw new Error('analysis-create requires <parentId> <modelId> <rowField> <measure> <name> [description]');
+  }
+  const model = await loadModel(modelId);
+  const report = buildAnalysisReport(
+    model,
+    rowFieldName,
+    measureFieldName,
+    requestedName,
+    description,
+  );
+  const result = await smartbixApi(
+    `adhocanalysis/createReport?pid=${encodeURIComponent(parentId)}`,
+    { method: 'POST', body: report },
+  );
+  const createdId = createdResourceId(result);
+  if (!createdId) throw new Error(`analysis create returned no id: ${JSON.stringify(result)}`);
+  const saved = await loadAnalysis(createdId);
+  const queryResult = await smartbixApi(`adhocanalysis/data/${encodeURIComponent(createdId)}`, {
+    method: 'POST',
+    body: buildAnalysisQuery(saved.report),
+    timeoutMs: 120000,
+  });
+  safeOutput({
+    ok: true,
+    id: saved.report.id,
+    name: saved.report.name,
+    rowField: rowFieldName,
+    measure: measureFieldName,
+    validation: {
+      total: queryResult.total ?? null,
+      rowKeys: Object.keys(queryResult.rowMap || {}),
+      columns: (queryResult.columns || []).filter(Boolean).map((column) => column.label || column.value),
+    },
+  });
+}
+
+async function cmdAnalysisRun(analysisId) {
+  const { report } = await loadAnalysis(analysisId);
+  const result = await smartbixApi(`adhocanalysis/data/${encodeURIComponent(analysisId)}`, {
+    method: 'POST',
+    body: buildAnalysisQuery(report),
+    timeoutMs: 120000,
+  });
+  safeOutput({ ok: true, analysisId, name: report.name, result });
+}
+
+async function cmdAnalysisClone(parentId, sourceAnalysisId, requestedName, description = '') {
+  if (![parentId, sourceAnalysisId, requestedName].every(Boolean)) {
+    throw new Error('analysis-clone requires <parentId> <sourceAnalysisId> <name> [description]');
+  }
+  const { report: source } = await loadAnalysis(sourceAnalysisId);
+  const report = structuredClone(source);
+  delete report.id;
+  delete report.creatorId;
+  report.name = report.alias = applyNamespace(requestedName);
+  report.desc = description || source.desc || '';
+  for (const portlet of report.define?.portlets || []) portlet.id = resourceId();
+  const result = await smartbixApi(
+    `adhocanalysis/createReport?pid=${encodeURIComponent(parentId)}`,
+    { method: 'POST', body: report },
+  );
+  const createdId = createdResourceId(result);
+  if (!createdId) throw new Error(`analysis create returned no id: ${JSON.stringify(result)}`);
+  const saved = await loadAnalysis(createdId);
+  safeOutput({
+    ok: true,
+    id: saved.report.id,
+    name: saved.report.name,
+    portletCount: saved.report.define?.portlets?.length || 0,
+  });
+}
+
+function dashboardDimension(model, field) {
+  const parentId = model.nodes?.find((node) => node.id === field.id)?.parentId
+    || `AUGMENTED_DATASET_FOLDER.${model.id}.${field.viewId}`;
+  return {
+    id: qualifyModelResource(model.id, 'FIELD', field.id),
+    alias: field.alias || field.name,
+    label: field.alias || field.name,
+    label0: field.alias || field.name,
+    showName: null,
+    aggregatedCalcField: false,
+    aggregate: 'NONE',
+    originAggregate: null,
+    orderBy: null,
+    orderBySettings: null,
+    align: null,
+    dataFormat: null,
+    orderPriority: 0,
+    subtotal: null,
+    group: 'DIMENSION',
+    dataType: field.valueType,
+    type: 'FIELD',
+    fieldType: 'DIMENSION',
+    uniqueId: resourceId(),
+    parentId,
+    parentNodeName: null,
+    order: model.nodes?.find((node) => node.id === field.id)?.order || 0,
+    name: field.name,
+    originalDataType: field.originalDataType || null,
+    businessCaliber: field.businessCaliber || null,
+    fieldLabelStatus: { aggregate: '' },
+  };
+}
+
+function dashboardMeasure(model, measure) {
+  const aggregate = String(measure.aggregator || 'sum').toUpperCase();
+  const parentId = model.nodes?.find((node) => node.id === measure.id)?.parentId
+    || `AUGMENTED_DATASET_FOLDER.${model.id}.measure`;
+  return {
+    id: qualifyModelResource(model.id, 'MEASURE', measure.id),
+    alias: measure.alias || measure.name,
+    label: measure.alias || measure.name,
+    label0: measure.alias || measure.name,
+    showName: null,
+    aggregatedCalcField: false,
+    aggregate,
+    originAggregate: aggregate,
+    orderBy: null,
+    orderBySettings: null,
+    align: null,
+    dataFormat: null,
+    orderPriority: 0,
+    subtotal: null,
+    group: 'MEASURE',
+    dataType: measure.valueType,
+    type: 'MEASURE',
+    fieldType: 'MEASURE',
+    uniqueId: resourceId(),
+    parentId,
+    parentNodeName: null,
+    order: model.nodes?.find((node) => node.id === measure.id)?.order || 0,
+    name: measure.name,
+    originalDataType: measure.valueType,
+    businessCaliber: measure.businessCaliber || null,
+    refDataSetFieldId: measure.refDataSetFieldId
+      ? qualifyModelResource(model.id, 'FIELD', measure.refDataSetFieldId)
+      : null,
+    fieldLabelStatus: { aggregate },
+  };
+}
+
+function buildBarDashboard(model, dimensionName, measureName, requestedName, chartTitle) {
+  const field = (model.fields || []).find(
+    (item) => item.name === dimensionName || item.alias === dimensionName,
+  );
+  if (!field) throw new Error(`dashboard dimension field not found: ${dimensionName}`);
+  const measure = (model.measures || []).find(
+    (item) => item.name === measureName || item.alias === measureName,
+  );
+  if (!measure) throw new Error(`dashboard measure not found: ${measureName}`);
+  const pageId = resourceId();
+  const portletId = resourceId();
+  const name = applyNamespace(requestedName);
+  return {
+    id: pageId,
+    name,
+    alias: name,
+    desc: chartTitle || `${measureName} by ${dimensionName}`,
+    define: {
+      devices: {
+        default: {
+          gridLine: null,
+          style: { background: {}, theme: 'fashion_light_blue', padding: {} },
+          layout: {
+            type: 'FREE',
+            define: {
+              floats: {
+                1: {
+                  portletId,
+                  type: 'ECHARTS_BAR',
+                  left: 0,
+                  top: 0,
+                  width: 720,
+                  height: 420,
+                  'z-index': 1000,
+                  id: '1',
+                },
+              },
+              table: { direction: 'vertical', slots: [] },
+            },
+            mobileDeviceLayoutType: null,
+            size: { width: 1280, height: 720, scaleType: 'FIT_WIDTH' },
+            mobileDevice: null,
+            screenType: null,
+            useMobileFilters: null,
+          },
+        },
+      },
+      portlets: [{
+        id: portletId,
+        name: String(Date.now()),
+        type: 'ECHARTS_BAR',
+        displayMode: 'ECHARTS_BAR',
+        style: null,
+        macros: [],
+        extended: {
+          asFilter: false,
+          title: { text: chartTitle || `${measureName} by ${dimensionName}` },
+          datasetIds: [model.id],
+          fields: {
+            cols: [dashboardDimension(model, field)],
+            rows: [dashboardMeasure(model, measure)],
+            filters: [],
+          },
+          markFieldGroups: { GLOBAL_MARK: {} },
+          linkedSelectionValue: 'KeepSelectedValue',
+          pagination: {},
+          layoutType: 'FREE',
+          sortSetting: { row: { sorts: [] }, col: { sorts: [] } },
+          providerName: 'AUGMENTED',
+          markFieldGroupsCfg: {
+            sum: {},
+            color: { GLOBAL_MARK: {}, PRIVATE_MARK: {}, isPreview: false },
+            size: { value: 1 },
+            angle: {},
+            label: {},
+            tooltip: {},
+            shape: { GLOBAL_MARK: {}, PRIVATE_MARK: {} },
+          },
+          table: {},
+          chartDefine: {
+            tooltip: {},
+            seriesConfig: { global: { label: {}, stack: false } },
+            xAxis: { axisLabel: {} },
+            yAxis: { axisLabel: {} },
+          },
+          refresh: { enable: false },
+          viewState: {},
+        },
+        invalidField: null,
+      }],
+      containers: [],
+      datasetRelations: null,
+      privateDatasets: [],
+      pageOptions: {},
+      globalExtended: {},
+      pageThemeDefine: {
+        version: '1',
+        page: {},
+        portlet: {},
+        chart: {},
+        table: {},
+        filter: {},
+        indicator: {},
+      },
+      themeStyleOptions: null,
+      refresh: { systemOpenRefresh: true, systemFilterChangeRefresh: true },
+      macros: [],
+      activeDevice: 'default',
+    },
+    editDefine: {
+      rulerLineConfigs: [{ layoutId: 'default', state: 'show', lines: [] }],
+    },
+  };
+}
+
+async function cmdDashboardCreate(
+  parentId,
+  modelId,
+  dimensionName,
+  measureName,
+  requestedName,
+  chartTitle,
+) {
+  if (![parentId, modelId, dimensionName, measureName, requestedName].every(Boolean)) {
+    throw new Error('dashboard-create requires <parentId> <modelId> <dimension> <measure> <name> [chartTitle]');
+  }
+  const model = await loadModel(modelId);
+  const dashboard = buildBarDashboard(
+    model,
+    dimensionName,
+    measureName,
+    requestedName,
+    chartTitle,
+  );
+  const result = await smartbixApi(
+    `pages/beans/create?pid=${encodeURIComponent(parentId)}`,
+    { method: 'POST', body: dashboard },
+  );
+  const createdId = createdResourceId(result, dashboard.id);
+  const saved = await loadDashboard(createdId);
+  safeOutput({
+    ok: true,
+    id: saved.id,
+    name: saved.name,
+    model: { id: model.id, name: model.name },
+    portletCount: saved.define?.portlets?.length || 0,
+  });
+}
+async function loadDashboard(dashboardId) {
+
+  if (!dashboardId) throw new Error('dashboard id is required');
+  await ensureSession();
+  const result = await smartbixApi(`pages/beans?id=${encodeURIComponent(dashboardId)}`);
+  const dashboard = Array.isArray(result) ? result[0] : result;
+  if (!dashboard?.id) throw new Error(`dashboard not found or incomplete: ${dashboardId}`);
+  return dashboard;
+}
+
+async function cmdDashboardGet(dashboardId) {
+  safeOutput(await loadDashboard(dashboardId));
+}
+
+async function cmdDashboardClone(parentId, sourceDashboardId, requestedName, description = '') {
+  if (![parentId, sourceDashboardId, requestedName].every(Boolean)) {
+    throw new Error('dashboard-clone requires <parentId> <sourceDashboardId> <name> [description]');
+  }
+  const source = await loadDashboard(sourceDashboardId);
+  const replacements = new Map([[source.id, resourceId()]]);
+  for (const portlet of source.define?.portlets || []) replacements.set(portlet.id, resourceId());
+  const dashboard = replaceExactStrings(source, replacements);
+  dashboard.id = replacements.get(source.id);
+  dashboard.name = dashboard.alias = applyNamespace(requestedName);
+  dashboard.desc = description || source.desc || '';
+  const result = await smartbixApi(
+    `pages/beans/create?pid=${encodeURIComponent(parentId)}`,
+    { method: 'POST', body: dashboard },
+  );
+  const createdId = createdResourceId(result, dashboard.id);
+  const saved = await loadDashboard(createdId);
+  safeOutput({
+    ok: true,
+    id: saved.id,
+    name: saved.name,
+    portletCount: saved.define?.portlets?.length || 0,
+  });
+}
+
+function parseAichatStream(text) {
+  const messages = [];
+  for (const line of String(text).split(/\r?\n/)) {
+    if (!line.startsWith('data:')) continue;
+    try {
+      messages.push(JSON.parse(line.slice(5)));
+    } catch {
+      // Ignore malformed incremental frames; later frames carry the complete artifact.
+    }
+  }
+  const artifacts = new Map();
+  let state = null;
+  for (const message of messages) {
+    const result = message.result;
+    if (result?.kind === 'artifact-update' && result.artifact?.artifactId) {
+      artifacts.set(result.artifact.artifactId, result.artifact);
+    }
+    if (result?.kind === 'status-update' && result.taskId === message.id) {
+      state = result.status?.state || state;
+    }
+  }
+  const answers = [];
+  const tables = [];
+  const files = [];
+  for (const artifact of artifacts.values()) {
+    const mimeType = artifact.metadata?.mimeType;
+    for (const part of artifact.parts || []) {
+      if (part.kind === 'text' && part.text && mimeType === 'text/plain') answers.push(part.text);
+      if (part.kind === 'data' && Array.isArray(part.data) && mimeType === 'json/table') {
+        tables.push({ title: artifact.metadata?.title || null, rows: part.data });
+      }
+      if (part.kind === 'file' && part.file) {
+        files.push({
+          name: part.file.name || null,
+          display: part.file.display?.split('/').pop() || null,
+          mimeType: part.file.mimeType || null,
+          size: part.file.size ?? null,
+        });
+      }
+    }
+  }
+  return {
+    ok: state === 'completed',
+    state,
+    answer: answers.at(-1) || null,
+    tables: [...new Map(tables.map((table) => [JSON.stringify(table), table])).values()],
+    files: [...new Map(files.map((file) => [JSON.stringify(file), file])).values()],
+    eventCount: messages.length,
+  };
+}
+
+async function cmdAichat(modelId, question, { report = false, outputPath = null } = {}) {
+  if (!modelId || !question) {
+    throw new Error(`${report ? 'aichat-report' : 'aichat-query'} requires <modelId> <prompt>`);
+  }
+  const model = await loadModel(modelId);
+  const llmConfig = await plainJsonRequest('cgi/aichat-llm-config/list-llm-config', {
+    body: { filterOption: { keyword: '' } },
+  });
+  const llmId = llmConfig?.result?.find((item) => item.isDefault)?.id || llmConfig?.result?.[0]?.id;
+  if (!llmId) throw new Error('AIChat has no available LLM configuration');
+  const skillsResponse = await plainJsonRequest('sdk/cgi/v1/aichat/skill/get-skill-items', { body: undefined });
+  const wanted = new Set([
+    'SKILL_BUILTIN_DATA_MODEL_OR_REPORT_FETCH',
+    ...(report ? ['SKILL_BUILTIN_NO_TEMPLATE_REPORT', 'SKILL_BUILTIN_TEMPLATE_REPORT'] : []),
+  ]);
+  const skills = (skillsResponse?.result || [])
+    .filter((item) => wanted.has(item.id))
+    .map((item) => ({ id: item.id, name: item.alias || item.name, type: item.type }));
+  const conversationId = shortId();
+  const taskId = shortId(6);
+  const payload = {
+    jsonRpcStreamReq: {
+      jsonrpc: '2.0',
+      method: 'message/stream',
+      params: {
+        message: {
+          messageId: shortId(6),
+          kind: 'message',
+          role: 'user',
+          metadata: {
+            agentId: 'customagent_AGENT_DATA_INSIGHT_ASSISTANT',
+            convId: conversationId,
+            datasets: [{ id: model.id, type: 'AUGMENTED_DATASET', name: model.name }],
+            queryGridData: true,
+            params: [
+              { singleRound: false },
+              { use_personal_knowledge: false },
+              { reports: [] },
+              { projectId: '' },
+              { project_desc: '' },
+              {},
+              { webSearch: false },
+              { crossDatasetQuery: true },
+              { uploadFile: false },
+              { need_inquiry: true },
+              { is_recommend_dataset: false },
+              { LLMConfigId: llmId },
+              { skills },
+            ],
+          },
+          parts: [
+            { kind: 'text', text: question },
+            { kind: 'knowledge', knowledge: '[]' },
+          ],
+        },
+      },
+      id: taskId,
+    },
+  };
+  const stream = await plainJsonRequest('sdk/api/v1/aichat/conv/query-rpc', {
+    body: payload,
+    accept: 'text/event-stream',
+    timeoutMs: 300000,
+  });
+  const parsed = parseAichatStream(stream);
+  const output = {
+    ...parsed,
+    conversationId,
+    model: { id: model.id, name: model.name },
+    mode: report ? 'report' : 'query',
+  };
+  if (outputPath) {
+    writeFileSync(outputPath, `${JSON.stringify(output, null, 2)}\n`);
+    safeOutput({
+      ok: output.ok,
+      state: output.state,
+      mode: output.mode,
+      path: outputPath,
+      tableCount: output.tables.length,
+      fileCount: output.files.length,
+      eventCount: output.eventCount,
+    });
+    return;
+  }
+  safeOutput(output);
+}
+
+const AICHAT_GRAPH_LEAF_TYPES = new Set([
+  'FIELD', 'GEO', 'LEVEL_GEO', 'LEVEL_TIME_YEAR', 'LEVEL_TIME_QUARTER',
+  'LEVEL_TIME_MONTH', 'LEVEL_TIME_DAY', 'LEVEL_TIME_HALFYEAR', 'LEVEL_TIME_WEEK',
+  'LEVEL', 'CALC', 'CALC_GROUP', 'GEO_LON', 'GEO_LAT', 'BUSINESS_ATTRIBUTE',
+  'TABULAR_DATASET',
+]);
+
+const AICHAT_GRAPH_FILTER_TYPES = [
+  'DIMENSION_FOLDER', 'FOLDER', 'HIERARCHY', 'HIERARCHY_TIME', 'BUSINESS_OBJECT',
+  ...AICHAT_GRAPH_LEAF_TYPES,
+];
+
+function graphResult(response, operation) {
+  if (!response || typeof response !== 'object') {
+    throw new Error(`${operation} returned an invalid response`);
+  }
+  if (response.success === false) {
+    throw new Error(`${operation} failed: ${response.message || response.error || JSON.stringify(response)}`);
+  }
+  return response.result;
+}
+
+function collectGraphFields(node, output = []) {
+  if (!node || typeof node !== 'object') return output;
+  if (AICHAT_GRAPH_LEAF_TYPES.has(node.type)) {
+    output.push({
+      id: node.id,
+      name: node.name || null,
+      alias: node.alias || node.label || node.name || null,
+      type: node.type,
+      parentId: node.parentId || null,
+    });
+  }
+  for (const child of node.children || []) collectGraphFields(child, output);
+  return output;
+}
+
+function parseGraphExtended(node) {
+  if (!node?.extended) return {};
+  try {
+    return typeof node.extended === 'string' ? JSON.parse(node.extended) : node.extended;
+  } catch {
+    return {};
+  }
+}
+
+async function listAichatGraphNodes(keyword = '') {
+  await ensureSession();
+  const response = await plainJsonRequest('cgi/aichat-train/list-knowledge-graph-node', {
+    body: {
+      option: {
+        filterEmptyFolder: true,
+        keyword,
+        types: ['AUGMENTED_DATASET'],
+        statuses: ['SUCCESS', 'FAILED', 'BUILDING', 'PENDING'],
+      },
+    },
+  });
+  return graphResult(response, 'list model graphs') || [];
+}
+
+async function loadOwnedGraphModel(modelId) {
+  const model = await loadModel(modelId);
+  if (!hasNamespace(model.name)) {
+    throw new Error(`refusing to modify non-namespaced model graph: ${model.name}`);
+  }
+  return model;
+}
+
+async function loadAichatGraphFields(modelId, { requireOwned = false } = {}) {
+  const model = requireOwned ? await loadOwnedGraphModel(modelId) : await loadModel(modelId);
+  const response = await plainJsonRequest(
+    `cgi/aichat-train/get-resource-field-tree/${encodeURIComponent(model.id)}`,
+    { body: { fieldTreeOption: { filterTypes: AICHAT_GRAPH_FILTER_TYPES } } },
+  );
+  const tree = graphResult(response, 'load model graph fields');
+  if (!tree) throw new Error(`model graph field tree is unavailable: ${model.name}`);
+  return { model, tree, fields: collectGraphFields(tree) };
+}
+
+async function cmdAichatGraphList(keyword = '') {
+  const nodes = await listAichatGraphNodes(keyword);
+  safeOutput({
+    ok: true,
+    count: nodes.length,
+    graphs: nodes.map((node) => {
+      const extended = parseGraphExtended(node);
+      return {
+        id: node.id,
+        name: node.name,
+        type: node.type,
+        path: node.path || null,
+        status: extended.status || node.status || node.lastBuildStatus || 'NOTBUILD',
+        updateTime: extended.updateTime || node.lastModifiedDate || null,
+        duration: extended.duration ?? null,
+        fieldCount: extended.trainOption?.fields?.length || 0,
+      };
+    }),
+  });
+}
+
+async function cmdAichatGraphFields(modelId) {
+  if (!modelId) throw new Error('aichat-graph-fields requires <modelId>');
+  const { model, fields } = await loadAichatGraphFields(modelId);
+  safeOutput({
+    ok: true,
+    model: { id: model.id, name: model.name },
+    fieldCount: fields.length,
+    fields,
+  });
+}
+
+async function cmdAichatGraphStatus(modelId) {
+  if (!modelId) throw new Error('aichat-graph-status requires <modelId>');
+  const model = await loadModel(modelId);
+  const node = (await listAichatGraphNodes(model.name)).find((item) => item.id === model.id);
+  if (!node) {
+    safeOutput({ ok: true, id: model.id, name: model.name, status: 'NOTBUILD', fieldCount: 0 });
+    return;
+  }
+  const extended = parseGraphExtended(node);
+  safeOutput({
+    ok: true,
+    id: node.id,
+    name: node.name,
+    status: extended.status || node.status || node.lastBuildStatus || 'NOTBUILD',
+    updateTime: extended.updateTime || node.lastModifiedDate || null,
+    duration: extended.duration ?? null,
+    fields: extended.trainOption?.fields || [],
+  });
+}
+
+function resolveGraphFields(fields, selectors) {
+  return selectors.map((selector) => {
+    const normalized = selector.toLocaleLowerCase();
+    const matches = fields.filter((field) => (
+      field.id === selector
+      || field.name?.toLocaleLowerCase() === normalized
+      || field.alias?.toLocaleLowerCase() === normalized
+    ));
+    if (matches.length === 0) throw new Error(`model graph field not found: ${selector}`);
+    if (matches.length > 1) {
+      throw new Error(`model graph field is ambiguous: ${selector}; use the exact field id`);
+    }
+    return matches[0];
+  });
+}
+
+async function cmdAichatGraphBuild(modelId, fieldSelectorsCsv) {
+  if (!modelId || !fieldSelectorsCsv) {
+    throw new Error('aichat-graph-build requires <modelId> <fieldNameOrId,...>');
+  }
+  const selectors = [...new Set(
+    String(fieldSelectorsCsv).split(',').map((value) => value.trim()).filter(Boolean),
+  )];
+  if (selectors.length === 0) throw new Error('aichat-graph-build requires at least one field');
+  const { model, fields } = await loadAichatGraphFields(modelId, { requireOwned: true });
+  const selected = resolveGraphFields(fields, selectors);
+  const fieldIds = selected.map((field) => field.id);
+  const existing = (await listAichatGraphNodes(model.name)).find((item) => item.id === model.id);
+  const existingExtended = parseGraphExtended(existing);
+  const existingFields = existingExtended.trainOption?.fields || [];
+  if (
+    existingExtended.status === 'SUCCESS'
+    && fieldIds.length === existingFields.length
+    && fieldIds.every((id) => existingFields.includes(id))
+  ) {
+    safeOutput({
+      ok: true,
+      id: model.id,
+      name: model.name,
+      status: 'SUCCESS',
+      reused: true,
+      fields: selected,
+    });
+    return;
+  }
+  const validation = graphResult(
+    await plainJsonRequest(
+      `cgi/aichat-train/validate_field_data_count/${encodeURIComponent(model.id)}`,
+      { body: { fieldIds } },
+    ),
+    'validate model graph fields',
+  );
+  if (!validation?.valid) {
+    throw new Error(`model graph field validation failed: ${validation?.message || 'unknown reason'}`);
+  }
+  const trainResult = graphResult(
+    await plainJsonRequest(
+      `cgi/aichat-train/train-resource/${encodeURIComponent(model.id)}`,
+      {
+        body: {
+          trainOption: {
+            resourceType: 'AUGMENTED_DATASET',
+            fields: fieldIds,
+            background: '',
+          },
+        },
+        timeoutMs: 300000,
+      },
+    ),
+    'build model graph',
+  );
+  if (!trainResult) throw new Error('model graph build was not accepted');
+  const deadline = Date.now() + 300000;
+  let node;
+  let extended = {};
+  while (Date.now() < deadline) {
+    node = (await listAichatGraphNodes(model.name)).find((item) => item.id === model.id);
+    extended = parseGraphExtended(node);
+    const status = extended.status || node?.status || node?.lastBuildStatus;
+    if (status === 'SUCCESS') break;
+    if (status === 'FAILED') {
+      throw new Error(`model graph build failed: ${extended.exceptionMessage || 'unknown reason'}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+  const status = extended.status || node?.status || node?.lastBuildStatus || 'PENDING';
+  if (status !== 'SUCCESS') throw new Error(`model graph build timed out with status ${status}`);
+  safeOutput({
+    ok: true,
+    id: model.id,
+    name: model.name,
+    status,
+    reused: false,
+    updateTime: extended.updateTime || node?.lastModifiedDate || null,
+    duration: extended.duration ?? null,
+    fields: selected,
+  });
+}
+
+async function loadAgent(agentId, requireOwned = false) {
+  if (!agentId) throw new Error('agent id is required');
+  await ensureSession();
+  const agent = await smartbixApi(`dataagent/graph/${encodeURIComponent(agentId)}`);
+  if (!agent?.id) throw new Error(`Agent not found or incomplete: ${agentId}`);
+  if (requireOwned && !hasNamespace(agent.name)) {
+    throw new Error(`refusing to modify or run non-namespaced Agent: ${agent.name}`);
+  }
+  return {
+    ...agent,
+    define: typeof agent.define === 'string' ? JSON.parse(agent.define) : agent.define,
+    params: typeof agent.params === 'string' ? JSON.parse(agent.params) : agent.params,
+    setting: typeof agent.setting === 'string' ? JSON.parse(agent.setting) : agent.setting,
+  };
+}
+
+function setAgentConfig(node, name, value) {
+  const config = node.configs?.find((item) => item.name === name);
+  if (!config) throw new Error(`${node.name} template is missing config: ${name}`);
+  config.value = value;
+}
+
+function instantiateAgentNode(template, x, color) {
+  const node = structuredClone(template);
+  node.id = resourceId();
+  node.type = node.name;
+  node.x = x;
+  node.y = 0;
+  node.needCache = false;
+  node.state = 'INITED';
+  node.color = color;
+  for (const port of [...(node.inputs || []), ...(node.outputs || [])]) {
+    port.id = resourceId();
+    port.label ||= `${port === node.inputs?.[0] ? '输入' : '输出'}${(port.order || 0) + 1}`;
+    if (port.varOptions) port.varOptions.value = port.id;
+  }
+  return node;
+}
+
+async function buildBasicAgent(systemPrompt, userPrompt) {
+  const catalog = await smartbixApi('dataagent/getNodeOptions');
+  const findTemplate = (name) => catalog?.basic?.find((item) => item.name === name);
+  const templates = ['StartNode', 'LLM', 'FinishNode'].map(findTemplate);
+  if (templates.some((template) => !template)) {
+    throw new Error('Agent node catalog does not contain StartNode, LLM, and FinishNode');
+  }
+
+  const start = instantiateAgentNode(templates[0], 0, '#5E9F76');
+  const llm = instantiateAgentNode(templates[1], 290, '#3F99E7');
+  const finish = instantiateAgentNode(templates[2], 580, '#5E9F76');
+  start.outputs[0].varOptions = {
+    label: `${start.alias}-输出1`,
+    value: start.outputs[0].id,
+    children: [{ label: '用户分析问题', type: 'String', value: 'question' }],
+  };
+  llm.outputs[0].varOptions = {
+    ...(llm.outputs[0].varOptions || {}),
+    label: `${llm.alias}-输出1`,
+    value: llm.outputs[0].id,
+  };
+
+  setAgentConfig(
+    start,
+    'param',
+    JSON.stringify([{ selectLeftOption: 'question', selectRightOption: 'String', descOption: '用户分析问题' }]),
+  );
+  setAgentConfig(llm, 'llmConfigSelect', JSON.stringify({ id: 'default', value: 'default', type: 'default' }));
+  setAgentConfig(
+    llm,
+    'varSetting',
+    JSON.stringify([{ selectLeftOption: 'question', selectRightOption: ['sessionVar', 'query'] }]),
+  );
+  setAgentConfig(llm, 'mcpSetting', JSON.stringify([{ selectValue: null }]));
+  setAgentConfig(llm, 'systemPrompt', systemPrompt);
+  setAgentConfig(llm, 'userPrompt', userPrompt);
+  setAgentConfig(llm, 'outputType', JSON.stringify(['summary']));
+  setAgentConfig(finish, 'outputMode', JSON.stringify(['any']));
+  setAgentConfig(
+    finish,
+    'finishSetting',
+    JSON.stringify([{
+      selectLeftOption: 'update_attachment_markdown',
+      selectRightOption: [llm.outputs[0].id, 'result_content'],
+    }]),
+  );
+
+  return {
+    nodes: [start, llm, finish],
+    links: [
+      {
+        from: start.id,
+        to: llm.id,
+        outputPortName: llm.inputs[0].label,
+        inputPortName: start.outputs[0].label,
+        inputPortId: start.outputs[0].id,
+        outputPortId: llm.inputs[0].id,
+      },
+      {
+        from: llm.id,
+        to: finish.id,
+        outputPortName: finish.inputs[0].label,
+        inputPortName: llm.outputs[0].label,
+        inputPortId: llm.outputs[0].id,
+        outputPortId: finish.inputs[0].id,
+      },
+    ],
+    top: 0,
+    left: 0,
+  };
+}
+
+async function cmdAgentGet(agentId) {
+  const agent = await loadAgent(agentId);
+  const deployment = await smartbixApi(`dataagent/deploy/agent/${encodeURIComponent(agent.id)}`);
+  safeOutput({
+    ...agent,
+    deployed: Array.isArray(deployment) && deployment.length > 0,
+    deployment,
+  });
+}
+
+async function cmdAgentCreate(
+  parentId,
+  requestedName,
+  description = '',
+  systemPrompt = '你是数据分析助手。仅基于已提供的数据和上下文回答，区分事实、推断与建议；不编造指标或因果结论。',
+  userPrompt = '请回答以下用户问题，并给出可核验的分析：{{question}}',
+) {
+  if (!parentId || !requestedName) {
+    throw new Error('agent-create requires <parentId> <name> [description] [systemPrompt] [userPrompt]');
+  }
+  await ensureSession();
+  const name = applyNamespace(requestedName);
+  const define = await buildBasicAgent(systemPrompt, userPrompt);
+  const body = {
+    id: null,
+    name,
+    alias: name,
+    desc: description,
+    define: JSON.stringify(define),
+    params: JSON.stringify({ sysParam: [], customParam: [] }),
+  };
+  const result = await smartbixApi(`dataagent/graph/create/${encodeURIComponent(parentId)}`, {
+    method: 'POST',
+    body,
+  });
+  const id = createdResourceId(result);
+  if (!id) throw new Error(`Agent create returned no id: ${JSON.stringify(result)}`);
+  const saved = await loadAgent(id, true);
+  safeOutput({
+    ok: true,
+    id: saved.id,
+    name: saved.name,
+    nodeCount: saved.define?.nodes?.length || 0,
+    linkCount: saved.define?.links?.length || 0,
+  });
+}
+
+async function cmdAgentRun(agentId, question) {
+  if (!agentId || !question) throw new Error('agent-run requires <agentId> <question>');
+  const agent = await loadAgent(agentId, true);
+  const instanceId = resourceId();
+  await smartbixApi('dataagent/test/flow', {
+    method: 'POST',
+    body: {
+      query: question,
+      queryType: `customagent_${agent.id}`,
+      currentInstanceId: instanceId,
+      flowId: agent.id,
+      convId: instanceId,
+    },
+  });
+
+  let state = null;
+  for (let attempt = 0; attempt < 180; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    state = await smartbixApi(`dataagent/flow/nodestate/${encodeURIComponent(instanceId)}`);
+    if (['FINISH', 'ERROR', 'FAILED', 'KILLED', 'STOP'].includes(state?.state)) break;
+  }
+  if (!state || !['FINISH', 'ERROR', 'FAILED', 'KILLED', 'STOP'].includes(state.state)) {
+    throw new Error(`Agent run timed out: ${instanceId}`);
+  }
+
+  const outputs = [];
+  for (const node of state.nodeStates || []) {
+    if (node.name !== 'LLM') continue;
+    const values = await smartbixApi(`dataagent/output/${encodeURIComponent(node.id)}`);
+    for (const item of Array.isArray(values) ? values : []) {
+      if (item?.value?.result_content) {
+        outputs.push({
+          nodeId: node.id,
+          node: node.alias || node.name,
+          content: item.value.result_content,
+          inputTokens: item.value.input_tokens ?? null,
+          outputTokens: item.value.output_tokens ?? null,
+        });
+      }
+    }
+  }
+  safeOutput({
+    ok: state.state === 'FINISH',
+    id: instanceId,
+    agent: { id: agent.id, name: agent.name },
+    state: state.state,
+    answer: outputs.at(-1)?.content || null,
+    outputs,
+    nodeStates: state.nodeStates,
+  });
+}
+
+async function cmdAgentDeploy(agentId) {
+  const agent = await loadAgent(agentId, true);
+  let deployment = await smartbixApi(`dataagent/deploy/agent/${encodeURIComponent(agent.id)}`);
+  if (!Array.isArray(deployment) || deployment.length === 0) {
+    await smartbixApi('dataagent/relation/create', {
+      method: 'POST',
+      body: { id: null, agentId: agent.id, resId: null },
+    });
+    deployment = await smartbixApi(`dataagent/deploy/agent/${encodeURIComponent(agent.id)}`);
+  }
+  if (!Array.isArray(deployment) || deployment.length === 0) {
+    throw new Error(`Agent deployment was not persisted: ${agent.id}`);
+  }
+  safeOutput({ ok: true, id: agent.id, name: agent.name, deployed: true, deployment });
+}
+
+
 async function cmdTree(rootId) {
   await ensureSession();
   const id = rootId || '';
@@ -247,6 +1825,12 @@ async function cmdUpload(filePath, tableName, { previewRows = 30, sheetIndex = 0
 
   await ensureSession();
   const folder = await locatePersonalFolder();
+  const physicalTable = table.toLowerCase();
+  const tableRef = {
+    dataSourceId: folder.dsId,
+    tableId: `TAB.${folder.catalog}.${folder.schemaId}.null.${physicalTable}`,
+    tableName: physicalTable,
+  };
 
   // 1. upload (multipart)
   const { Blob } = await import('node:buffer');
@@ -308,7 +1892,7 @@ async function cmdUpload(filePath, tableName, { previewRows = 30, sheetIndex = 0
     if (st.retCode === 0 && st.result) {
       const r = st.result;
       if (r.retCode === 0) {
-        safeOutput({ ok: true, table, rows: r.rowCount ?? rowCount, clientId, folder: folder.folderAlias });
+        safeOutput({ ok: true, table, tableRef, rows: r.rowCount ?? rowCount, clientId, folder: folder.folderAlias });
         return;
       }
       if (r.retCode !== undefined && r.retCode !== 0) {
@@ -316,7 +1900,188 @@ async function cmdUpload(filePath, tableName, { previewRows = 30, sheetIndex = 0
       }
     }
   }
-  safeOutput({ ok: true, table, clientId, note: 'import submitted, status not confirmed within 5min' });
+  safeOutput({ ok: true, table, tableRef, clientId, note: 'import submitted, status not confirmed within 5min' });
+}
+
+function parseImportedTableId(tableId) {
+  const parts = String(tableId || '').split('.');
+  if (parts.length < 5 || parts[0] !== 'TAB') {
+    throw new Error(`expected an imported table id such as TAB.input.input.null.table_name: ${tableId}`);
+  }
+  const [, catalog, schema, nullMarker, ...tableNameParts] = parts;
+  return {
+    dataSourceId: `DS.${catalog}`,
+    schemaId: `SCHEMA.${catalog}.${schema}.${nullMarker}`,
+    tableName: tableNameParts.join('.'),
+  };
+}
+
+function instantiateEtlNode(template, x, y) {
+  const node = structuredClone(template);
+  node.id = resourceId();
+  node.type ||= node.name;
+  node.inputs = (node.inputs || []).map((port) => ({ ...port, id: resourceId() }));
+  node.outputs = (node.outputs || []).map((port) => ({ ...port, id: resourceId() }));
+  node.needCache = false;
+  node.state = 'INITED';
+  node.x = x;
+  node.y = y;
+  return node;
+}
+
+function connectEtlNodes(left, right) {
+  if (!left.outputs?.[0]?.id || !right.inputs?.[0]?.id) {
+    throw new Error(`cannot connect ETL nodes ${left.alias || left.name} -> ${right.alias || right.name}`);
+  }
+  return {
+    from: left.id,
+    to: right.id,
+    inputPortId: left.outputs[0].id,
+    outputPortId: right.inputs[0].id,
+  };
+}
+
+async function cmdEtlCreate(
+  parentId,
+  sourceTableId,
+  targetTableId,
+  requestedName,
+  rowNumber = '-',
+  description = '',
+) {
+  if (![parentId, sourceTableId, targetTableId, requestedName].every(Boolean)) {
+    throw new Error(
+      'etl-create requires <parentId> <sourceTableId> <targetTableId> <name> [rowNumber|-] [description]',
+    );
+  }
+  const addRowNumber = rowNumber !== '-';
+  if (addRowNumber && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(rowNumber)) {
+    throw new Error(`invalid row-number column name: ${rowNumber}`);
+  }
+
+  await ensureSession();
+  const [sourceMeta, targetMeta, nodeCatalog] = await Promise.all([
+    smartbixApi(`miningdatasource/table?tableId=${encodeURIComponent(sourceTableId)}`),
+    smartbixApi(`miningdatasource/table?tableId=${encodeURIComponent(targetTableId)}`),
+    smartbixApi('datamining/nodes'),
+  ]);
+  if (!hasNamespace(sourceMeta?.alias || sourceMeta?.name)) {
+    throw new Error(`refusing to read non-namespaced source table: ${sourceMeta?.alias || sourceTableId}`);
+  }
+  if (!hasNamespace(targetMeta?.alias || targetMeta?.name)) {
+    throw new Error(`refusing to overwrite non-namespaced target table: ${targetMeta?.alias || targetTableId}`);
+  }
+
+  const templates = nodeCatalog.defaultOptions || [];
+  const sourceTemplate = templates.find((node) => node.name === 'JDBC_DATASOURCE');
+  const rowNumberTemplate = templates.find((node) => node.name === 'DATAPREPARE_ROW_NUMBER');
+  if (!sourceTemplate || (addRowNumber && !rowNumberTemplate)) {
+    throw new Error('required ETL node templates are unavailable');
+  }
+
+  const sourceRef = parseImportedTableId(sourceTableId);
+  const source = instantiateEtlNode(sourceTemplate, 350, 50);
+  source.alias = sourceMeta.alias || sourceMeta.name;
+  const jdbc = source.configs?.find((config) => config.name === 'jdbc');
+  if (!jdbc) throw new Error('JDBC source template has no jdbc config');
+  jdbc.value = JSON.stringify({
+    datasourceId: sourceRef.dataSourceId,
+    schemaId: sourceRef.schemaId,
+    tableData: {
+      id: sourceTableId,
+      schema: sourceMeta.schema ?? null,
+      name: sourceMeta.name || sourceRef.tableName,
+      alias: sourceMeta.alias || sourceMeta.name || sourceRef.tableName,
+      desc: sourceMeta.desc || sourceMeta.alias || sourceMeta.name || sourceRef.tableName,
+      type: sourceMeta.type ?? null,
+      extended: sourceMeta.extended ?? null,
+    },
+    advancedSettings: '# 读取数据批次大小\n# QUERY_JDBC_FETCHSIZE=5000',
+    tableId: sourceTableId,
+  });
+
+  const tempDag = await smartbixApi('dataprocess/jdbcDataTargetDag', {
+    method: 'POST',
+    body: {
+      id: null,
+      name: null,
+      alias: '未命名',
+      cache: false,
+      smallBatch: false,
+      desc: null,
+      createdDate: null,
+      lastModifiedDate: null,
+      runningInfo: { dagState: null, costTime: null },
+      define: null,
+      targetTableId,
+    },
+  });
+  if (!tempDag?.id || !tempDag?.define) {
+    throw new Error(`target-node template creation failed: ${JSON.stringify(tempDag)}`);
+  }
+  const targetGraph = JSON.parse(tempDag.define);
+  const target = targetGraph.nodes?.find((node) => node.type === 'JDBC_DATATARGER_OVERWRITE');
+  if (!target) throw new Error('target-node template contains no overwrite node');
+  target.state = 'INITED';
+
+  const nodes = [source];
+  if (addRowNumber) {
+    const rowNode = instantiateEtlNode(rowNumberTemplate, 470, 50);
+    const nameConfig = rowNode.configs?.find((config) => config.name === 'name');
+    if (!nameConfig) throw new Error('row-number template has no name config');
+    nameConfig.value = rowNumber;
+    nodes.push(rowNode);
+  }
+  target.x = 350 + (nodes.length * 120);
+  target.y = 50;
+  nodes.push(target);
+  const links = [];
+  for (let index = 1; index < nodes.length; index += 1) {
+    links.push(connectEtlNodes(nodes[index - 1], nodes[index]));
+  }
+
+  const name = applyNamespace(requestedName);
+  const processDag = {
+    ...tempDag,
+    id: tempDag.id,
+    pid: parentId,
+    name,
+    alias: name,
+    desc: description,
+    cache: true,
+    smallBatch: false,
+    state: 'INITED',
+    currentInstanceId: null,
+    runningInfo: { dagState: 'INITED', costTime: 0 },
+    define: JSON.stringify({
+      version: { editor: 'HORIZONTAL' },
+      nodes,
+      links,
+      top: 10,
+      left: 37,
+    }),
+  };
+  const saved = await smartbixApi('dataprocess/processflowdefine/define', {
+    method: 'POST',
+    body: {
+      processDag,
+      dagRemark: null,
+      toSaveTempDag: true,
+      cover: false,
+    },
+  });
+  const flowId = saved.id || tempDag.id;
+  const verified = await loadEtlFlow(flowId, { requireOwned: true });
+  safeOutput({
+    ok: true,
+    id: flowId,
+    name: verified.processDag.name,
+    source: { id: sourceTableId, name: sourceMeta.alias || sourceMeta.name },
+    target: { id: targetTableId, name: targetMeta.alias || targetMeta.name },
+    rowNumber: addRowNumber ? rowNumber : null,
+    nodeCount: verified.graph.nodes?.length || 0,
+    linkCount: verified.graph.links?.length || 0,
+  });
 }
 
 async function loadEtlFlow(flowId, { requireOwned = false } = {}) {
@@ -329,6 +2094,165 @@ async function loadEtlFlow(flowId, { requireOwned = false } = {}) {
     throw new Error(`refusing to modify or run non-namespaced ETL flow: ${processDag.name}`);
   }
   return { wrapper, processDag, graph: JSON.parse(processDag.define) };
+}
+
+async function saveEtlGraph(processDag, graph) {
+  processDag.define = JSON.stringify(graph);
+  processDag.state = 'INITED';
+  return smartbixApi('dataprocess/processflowdefine/define', {
+    method: 'POST',
+    body: {
+      processDag: {
+        id: processDag.id,
+        name: processDag.name,
+        alias: processDag.alias,
+        cache: processDag.cache,
+        smallBatch: processDag.smallBatch,
+        desc: processDag.desc,
+        createdDate: processDag.createdDate,
+        lastModifiedDate: processDag.lastModifiedDate,
+        runningInfo: { dagState: 'INITED', costTime: 0 },
+        subDefine: processDag.subDefine,
+        define: processDag.define,
+        currentInstanceId: processDag.currentInstanceId,
+        param: processDag.param,
+        callerId: processDag.callerId,
+        state: processDag.state,
+      },
+      dagRemark: null,
+      toSaveTempDag: false,
+      cover: false,
+    },
+  });
+}
+
+async function cmdEtlNodeList(keyword = '') {
+  await ensureSession();
+  const catalog = await smartbixApi('datamining/nodes');
+  const normalized = String(keyword).toLocaleLowerCase();
+  const nodes = (catalog.defaultOptions || []).filter((node) => (
+    !normalized
+    || node.name?.toLocaleLowerCase().includes(normalized)
+    || node.alias?.toLocaleLowerCase().includes(normalized)
+  ));
+  safeOutput({
+    ok: true,
+    count: nodes.length,
+    nodes: nodes.map((node) => ({
+      name: node.name,
+      alias: node.alias,
+      inputCount: node.inputs?.length || 0,
+      outputCount: node.outputs?.length || 0,
+      configs: (node.configs || []).map((config) => ({
+        name: config.name,
+        label: config.label || config.lable || null,
+        type: config.type || null,
+        required: Boolean(config.required),
+        defaultValue: config.value ?? null,
+      })),
+    })),
+  });
+}
+
+function applyEtlNodeConfigs(node, values) {
+  if (!values || typeof values !== 'object' || Array.isArray(values)) {
+    throw new Error('ETL node config must be a JSON object');
+  }
+  const known = new Map((node.configs || []).map((config) => [config.name, config]));
+  for (const [name, value] of Object.entries(values)) {
+    const config = known.get(name);
+    if (!config) {
+      throw new Error(`ETL node ${node.name} has no config named ${name}`);
+    }
+    config.value = value !== null && typeof value === 'object' ? JSON.stringify(value) : value;
+  }
+}
+
+async function cmdEtlInsert(flowId, nodeName, configJson = '{}', instanceKey = nodeName) {
+  if (!flowId || !nodeName) {
+    throw new Error('etl-insert requires <flowId> <nodeName> [configJson] [instanceKey]');
+  }
+  const configValues = JSON.parse(configJson);
+  const { processDag, graph } = await loadEtlFlow(flowId, { requireOwned: true });
+  const catalog = await smartbixApi('datamining/nodes');
+  graph.nodes ||= [];
+  graph.links ||= [];
+  const template = (catalog.defaultOptions || []).find((node) => node.name === nodeName);
+  if (!template) throw new Error(`ETL node template not found: ${nodeName}`);
+  if (template.inputs?.length !== 1 || template.outputs?.length !== 1) {
+    throw new Error(
+      `etl-insert supports unary transforms only; ${nodeName} has `
+      + `${template.inputs?.length || 0} inputs and ${template.outputs?.length || 0} outputs`,
+    );
+  }
+
+  let node = graph.nodes.find((item) => item.smartbiCliKey === instanceKey);
+  let changed = false;
+  if (node) {
+    if (node.name !== nodeName) {
+      throw new Error(`ETL instance key ${instanceKey} already belongs to ${node.name}`);
+    }
+    const before = JSON.stringify(node.configs || []);
+    applyEtlNodeConfigs(node, configValues);
+    changed = before !== JSON.stringify(node.configs || []);
+    if (changed) node.state = 'INITED';
+  } else {
+    const targets = graph.nodes.filter((item) => (
+      (item.inputs?.length || 0) > 0 && (item.outputs?.length || 0) === 0
+    ));
+    const inbound = targets.length === 1
+      ? graph.links.filter((link) => link.to === targets[0].id)
+      : [];
+    if (targets.length !== 1 || inbound.length !== 1) {
+      throw new Error(
+        `ETL must have one terminal target with one inbound link; found `
+        + `${targets.length} targets and ${inbound.length} inbound links`,
+      );
+    }
+    const target = targets[0];
+    const previousLink = inbound[0];
+    node = instantiateEtlNode(
+      template,
+      Math.max(0, Number(target.x || 0) - 120),
+      Number(target.y || 0),
+    );
+    node.smartbiCliKey = instanceKey;
+    applyEtlNodeConfigs(node, configValues);
+    target.x = Number(target.x || 0) + 120;
+    target.state = 'INITED';
+    graph.nodes.push(node);
+    graph.links = graph.links.filter((link) => link !== previousLink);
+    graph.links.push(
+      {
+        from: previousLink.from,
+        to: node.id,
+        inputPortId: previousLink.inputPortId,
+        outputPortId: node.inputs[0].id,
+      },
+      {
+        from: node.id,
+        to: target.id,
+        inputPortId: node.outputs[0].id,
+        outputPortId: previousLink.outputPortId,
+      },
+    );
+    changed = true;
+  }
+
+  const saved = changed ? await saveEtlGraph(processDag, graph) : processDag;
+  safeOutput({
+    ok: true,
+    changed,
+    flowId: saved.id || processDag.id,
+    flowName: saved.name || processDag.name,
+    node: {
+      id: node.id,
+      name: node.name,
+      alias: node.alias,
+      instanceKey,
+      configs: Object.fromEntries((node.configs || []).map((config) => [config.name, config.value])),
+    },
+  });
 }
 
 async function cmdEtlGet(flowId) {
@@ -509,36 +2433,7 @@ async function cmdEtlRowNumber(flowId, columnName = 'row_number') {
     changed = true;
   }
 
-  processDag.define = JSON.stringify(graph);
-  if (changed) processDag.state = 'INITED';
-  const saved = await smartbixApi('dataprocess/processflowdefine/define', {
-    method: 'POST',
-    body: {
-      processDag: {
-        id: processDag.id,
-        name: processDag.name,
-        alias: processDag.alias,
-        cache: processDag.cache,
-        smallBatch: processDag.smallBatch,
-        desc: processDag.desc,
-        createdDate: processDag.createdDate,
-        lastModifiedDate: processDag.lastModifiedDate,
-        runningInfo: {
-          dagState: processDag.state || 'INITED',
-          costTime: 0,
-        },
-        subDefine: processDag.subDefine,
-        define: processDag.define,
-        currentInstanceId: processDag.currentInstanceId,
-        param: processDag.param,
-        callerId: processDag.callerId,
-        state: processDag.state,
-      },
-      dagRemark: null,
-      toSaveTempDag: false,
-      cover: false,
-    },
-  });
+  const saved = changed ? await saveEtlGraph(processDag, graph) : processDag;
   safeOutput({
     ok: true,
     changed,
@@ -550,7 +2445,7 @@ async function cmdEtlRowNumber(flowId, columnName = 'row_number') {
 }
 
 function safeOutput(value) {
-  process.stdout.write(`${JSON.stringify(value)}\n`);
+  writeFileSync(1, `${JSON.stringify(value)}\n`);
 }
 
 // ---- Playwright fallback (UI-only operations) ----
@@ -765,8 +2660,36 @@ try {
     case 'login': await cmdLogin(); break;
     case 'health': await cmdHealth(); break;
     case 'invoke': await cmdInvoke(args[0], args[1], args[2]); break;
+    case 'api-get': await cmdApiGet(args[0]); break;
+    case 'api-post': await cmdApiPost(args[0], args[1]); break;
+    case 'plain-get': await cmdPlainGet(args[0]); break;
+    case 'plain-post': await cmdPlainPost(args[0], args[1]); break;
+    case 'model-get': await cmdModelGet(args[0]); break;
+    case 'model-create': await cmdModelCreate(args[0], args[1], args[2], args[3], args[4], args[5]); break;
+    case 'model-clone': await cmdModelClone(args[0], args[1], args[2], args[3]); break;
+    case 'analysis-get': await cmdAnalysisGet(args[0]); break;
+    case 'analysis-create': await cmdAnalysisCreate(args[0], args[1], args[2], args[3], args[4], args[5]); break;
+    case 'analysis-run': await cmdAnalysisRun(args[0]); break;
+    case 'analysis-clone': await cmdAnalysisClone(args[0], args[1], args[2], args[3]); break;
+    case 'dashboard-get': await cmdDashboardGet(args[0]); break;
+    case 'dashboard-create': await cmdDashboardCreate(args[0], args[1], args[2], args[3], args[4], args[5]); break;
+    case 'dashboard-clone': await cmdDashboardClone(args[0], args[1], args[2], args[3]); break;
+    case 'aichat-query': await cmdAichat(args[0], args.slice(1).join(' ')); break;
+    case 'aichat-report': await cmdAichat(args[0], args.slice(1).join(' '), { report: true }); break;
+    case 'aichat-export': await cmdAichat(args[0], args.slice(2).join(' '), { report: true, outputPath: args[1] }); break;
+    case 'aichat-graph-list': await cmdAichatGraphList(args.join(' ')); break;
+    case 'aichat-graph-fields': await cmdAichatGraphFields(args[0]); break;
+    case 'aichat-graph-status': await cmdAichatGraphStatus(args[0]); break;
+    case 'aichat-graph-build': await cmdAichatGraphBuild(args[0], args[1]); break;
+    case 'agent-get': await cmdAgentGet(args[0]); break;
+    case 'agent-create': await cmdAgentCreate(args[0], args[1], args[2], args[3], args[4]); break;
+    case 'agent-run': await cmdAgentRun(args[0], args.slice(1).join(' ')); break;
+    case 'agent-deploy': await cmdAgentDeploy(args[0]); break;
     case 'tree': await cmdTree(args[0]); break;
     case 'upload': await cmdUpload(args[0], args[1]); break;
+    case 'etl-create': await cmdEtlCreate(args[0], args[1], args[2], args[3], args[4], args[5]); break;
+    case 'etl-node-list': await cmdEtlNodeList(args.join(' ')); break;
+    case 'etl-insert': await cmdEtlInsert(args[0], args[1], args[2], args[3]); break;
     case 'etl-get': await cmdEtlGet(args[0]); break;
     case 'etl-run': await cmdEtlRun(args[0]); break;
     case 'etl-row-number': await cmdEtlRowNumber(args[0], args[1]); break;
@@ -781,7 +2704,7 @@ try {
       orderRiskWarning: 'https://wiki.smartbi.com.cn/pages/viewpage.action?pageId=168629228',
     }); break;
     default:
-      throw new Error(`Unknown command: ${command}\nusage: smartbi.mjs <setup|login|health|config|invoke|tree|upload|etl-get|etl-run|etl-row-number|nav|manuals> ...`);
+      throw new Error(`Unknown command: ${command}\nusage: smartbi.mjs <setup|login|health|config|invoke|api-get|api-post|plain-get|plain-post|tree|upload|etl-node-list|etl-create|etl-insert|etl-get|etl-run|etl-row-number|model-get|model-create|model-clone|analysis-get|analysis-create|analysis-run|analysis-clone|dashboard-get|dashboard-create|dashboard-clone|aichat-graph-list|aichat-graph-fields|aichat-graph-status|aichat-graph-build|aichat-query|aichat-report|aichat-export|agent-get|agent-create|agent-run|agent-deploy|nav|manuals> ...`);
   }
   process.exit(0);
 } catch (error) {

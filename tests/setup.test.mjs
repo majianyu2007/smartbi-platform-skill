@@ -110,3 +110,37 @@ test('setup rejects unsupported naming modes', () => {
     workspace.cleanup();
   }
 });
+
+test('AIChat graph commands validate required arguments before authentication', () => {
+  const workspace = temporaryWorkspace();
+  try {
+    const fields = runCli(['aichat-graph-fields'], { SMARTBI_CONFIG_FILE: workspace.config });
+    assert.equal(fields.status, 1);
+    assert.match(fields.stderr, /aichat-graph-fields requires <modelId>/);
+
+    const build = runCli(['aichat-graph-build'], { SMARTBI_CONFIG_FILE: workspace.config });
+    assert.equal(build.status, 1);
+    assert.match(build.stderr, /aichat-graph-build requires <modelId> <fieldNameOrId,\.\.\.>/);
+    assert.doesNotMatch(`${fields.stderr}${build.stderr}`, /password|cookie/i);
+  } finally {
+    workspace.cleanup();
+  }
+});
+
+test('generic API and ETL commands reject unsafe or incomplete input before authentication', () => {
+  const workspace = temporaryWorkspace();
+  try {
+    const plain = runCli(['plain-post', 'https://example.com/api', '{}'], {
+      SMARTBI_CONFIG_FILE: workspace.config,
+    });
+    assert.equal(plain.status, 1);
+    assert.match(plain.stderr, /relative Smartbi root API path/);
+
+    const etl = runCli(['etl-insert'], { SMARTBI_CONFIG_FILE: workspace.config });
+    assert.equal(etl.status, 1);
+    assert.match(etl.stderr, /etl-insert requires <flowId> <nodeName>/);
+    assert.doesNotMatch(`${plain.stderr}${etl.stderr}`, /password|cookie/i);
+  } finally {
+    workspace.cleanup();
+  }
+});

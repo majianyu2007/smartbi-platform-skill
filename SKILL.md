@@ -128,6 +128,14 @@ TMPDIR=/tmp node scripts/smartbi.mjs upload <csv> <name>   # import as new table
 TMPDIR=/tmp node scripts/smartbi.mjs etl-get <flowId>       # inspect saved ETL DAG
 TMPDIR=/tmp node scripts/smartbi.mjs etl-row-number <flowId> row_number
 TMPDIR=/tmp node scripts/smartbi.mjs etl-run <flowId>       # run and verify terminal preview
+TMPDIR=/tmp node scripts/smartbi.mjs etl-node-list 派生列
+TMPDIR=/tmp node scripts/smartbi.mjs etl-insert <flowId> DATAPREPARE_SAMPLE '{"fraction":"0.8","seed":"10"}' sample_train
+TMPDIR=/tmp node scripts/smartbi.mjs aichat-graph-fields <modelId>
+TMPDIR=/tmp node scripts/smartbi.mjs aichat-graph-build <modelId> survey_city,age_code
+TMPDIR=/tmp node scripts/smartbi.mjs aichat-graph-status <modelId>
+TMPDIR=/tmp node scripts/smartbi.mjs agent-get <agentId>
+TMPDIR=/tmp node scripts/smartbi.mjs agent-run <agentId> "请分析指定问题"
+TMPDIR=/tmp node scripts/smartbi.mjs agent-deploy <agentId>
 TMPDIR=/tmp node scripts/smartbi.mjs nav 数据准备     # browser fallback
 TMPDIR=/tmp node scripts/smartbi.mjs manuals        # official manual links
 ```
@@ -138,21 +146,37 @@ TMPDIR=/tmp node scripts/smartbi.mjs manuals        # official manual links
 |---|---|---|
 | `setup [flags]` | First-run guided config (credentials + naming) | `{action:"setup_done", saved}` |
 | `config` | Show effective config + naming example | `{credFile, naming, example}` |
-| `login` | Authenticate from credentials file | `{state:"authenticated", retCode, result, user}` |
-| `health` | Session + state check (auto re-login) | `{state:"workspace"\|"auth_required", user}` |
+| `login` / `health` | Authenticate and verify the workspace session | session state |
 | `invoke <class> <method> [json]` | Raw RMI call | decoded `{retCode, result, ...}` |
-| `tree [id]` | List catalog children of node | `{parent, nodes:[{id,name,alias,type,hasChild}]}` |
-| `upload <file> [tableName]` | Upload+import CSV/TXT/XLSX as `TEAM_<name>` table | `{ok, table, rows, clientId}` |
-| `etl-get <flowId>` | Inspect a saved ETL DAG without changing it | flow state, nodes, links |
-| `etl-row-number <flowId> [column]` | Idempotently append/update `增加序列号` on one owned flow | `{changed,nodeId,column}` |
-| `etl-run <flowId>` | Run one owned saved flow and poll to terminal state | node states + terminal preview shape |
-| `nav <module>` | Browser module navigation (CDP) | `{state:"module", module, url}` |
+| `api-get <path>` / `api-post <path> [json]` | Guarded Smartbix API discovery/replay | decoded response |
+| `plain-get <path>` / `plain-post <path> [json]` | Guarded `/smartbi/` plain-JSON API replay | JSON/text response |
+| `tree [id]` | List catalog children of node | `{parent, nodes:[...]}` |
+| `upload <file> [tableName]` | Import CSV/TXT/XLSX as a namespaced table | `{ok, table, rows, clientId}` |
+| `etl-create <parentId> <sourceTableId> <targetTableId> <name> [rowNumber|-] [description]` | Build an owned source→optional row-number→materialized-output ETL | saved DAG |
+| `etl-get <flowId>` / `etl-run <flowId>` | Inspect or execute one owned saved ETL | DAG / terminal node states |
+| `etl-node-list [keyword]` | List live ETL node templates, ports, and config contracts | node summaries |
+| `etl-insert <flowId> <nodeName> [configJson] [instanceKey]` | Idempotently insert/update one unary transform before the target | saved node/config summary |
+| `etl-row-number <flowId> [column]` | Idempotently add/update `增加序列号` | `{changed,nodeId,column}` |
+| `model-get <id>` / `model-create ...` / `model-clone ...` | Inspect, build, or clone a data model | model metadata |
+| `analysis-get <id>` / `analysis-create ...` / `analysis-run <id>` / `analysis-clone ...` | Operate pivot analyses | definition / reconciled result |
+| `dashboard-get <id>` / `dashboard-create ...` / `dashboard-clone ...` | Operate API-generated dashboards | definition / saved dashboard |
+| `aichat-graph-list [keyword]` / `aichat-graph-status <modelId>` | List or inspect model-graph build state | graph status and selected fields |
+| `aichat-graph-fields <modelId>` | Resolve selectable field names to fully qualified IDs | model field list |
+| `aichat-graph-build <modelId> <field,...>` | Validate and idempotently build one owned model graph | terminal build result |
+| `aichat-query <modelId> <prompt>` | Query an exact model and parse streamed artifacts | answer, tables, files |
+| `aichat-report <modelId> <prompt>` | Generate and parse an AIChat report | answer, tables, files |
+| `aichat-export <modelId> <path> <prompt>` | Persist the complete parsed AIChat result | output file summary |
+| `agent-get <agentId>` | Inspect graph, parameters, and deployment state | parsed Agent resource |
+| `agent-create <parentId> <name> [desc] [systemPrompt] [userPrompt]` | Build a Start→LLM→Finish Agent from live node templates | saved Agent summary |
+| `agent-run <agentId> <question>` | Run one owned Agent and poll/read LLM output | answer, tokens, node states |
+| `agent-deploy <agentId>` | Idempotently publish one owned Agent | deployment relation |
+| `nav <module>` | Browser module navigation (CDP fallback) | `{state:"module", module, url}` |
 | `manuals` | Official wiki links | map |
 
-`upload` auto-prefixes with the namespace prefix (`SMARTBI_PREFIX`, default
-`TEAM_`), truncates >30 chars, resolves the personal acquisition folder, and
-polls until import completes. **Do not** pass an existing table name unless you
-intend a REPLACE import (needs user confirmation).
+Artifact-creation commands apply `SMARTBI_NAMESPACE` (default `TEAM_`).
+`upload` also truncates table names at the platform limit, resolves the
+personal acquisition folder, and polls until import completes. Do not pass an
+existing table name unless you intend a REPLACE import (needs confirmation).
 
 ## Core Workflow
 
@@ -228,18 +252,42 @@ Rules:
 
 ### 5. AIChat
 
-1. 运维设置 → AIChat系统选项 → 新建 → 全部资源 → 数据集 → team folder →
-   target model → `构建模型图谱`.
-2. Select meaningful low-cardinality dimensions only (for example, city);
-   never vectorize record IDs. Click `校验`, require `校验通过`, then confirm.
-3. Close the resource picker, refresh the graph list, and require the exact
-   `TEAM_` model row to show `成功` plus a build time/duration.
-4. Open AIChat. If the newly built model is absent from the picker, refresh the
-   picker and reload the AIChat page; then verify the exact selected model text.
-5. Ask narrow questions naming the measure, aggregation, grouping, filters, and
-   output precision. Wait until the stop button disappears, then reconcile the
-   returned table against the pivot/independent calculation.
-6. For reports: 技能 → 分析报告; verify every claim against data.
+API path (preferred):
+
+1. `aichat-graph-fields <modelId>` and select meaningful low-cardinality
+   dimensions only (for example, city); never vectorize record IDs.
+2. `aichat-graph-build <modelId> survey_city,age_code`. The command resolves
+   fully qualified field IDs, validates data counts, refuses non-namespaced
+   models, polls the build to terminal `SUCCESS`, and skips an identical
+   successful rebuild.
+3. Confirm with `aichat-graph-status <modelId>`, then use `aichat-query`,
+   `aichat-report`, or `aichat-export` against that exact model.
+4. Ask narrow questions naming the measure, aggregation, grouping, filters, and
+   output precision. Reconcile every returned table/claim against the
+   pivot or an independent calculation.
+
+UI fallback: 运维设置 → AIChat系统选项 → 新建 → 全部资源 → 数据集 →
+team folder → target model → `构建模型图谱`. Select the same field set, click
+`校验`, require `校验通过`, confirm, refresh the graph list, and require the
+exact `TEAM_` model row to show `成功` plus build time/duration. In AIChat,
+refresh the model picker after a new build and verify the exact selected model
+text before sending. For reports choose 技能 → 分析报告.
+
+### 6. Agent
+
+1. Create under the owned `SELF_AGENT_GRAPHS_*` folder with `agent-create`, or
+   build in the UI as `开始 → 大模型 → 结束`.
+2. Bind the LLM input variable to `会话变量 / 问句`. A Start-node custom field is
+   metadata only; binding the LLM to that Start output does not receive the test
+   dialog's question.
+3. Set system/user prompts and map `大模型 / 返回内容` to the Finish node's
+   Markdown output.
+4. Save, then run `agent-run <agentId> <question>`. Accept only terminal
+   `FINISH` plus a non-empty LLM `result_content`.
+5. Publish with `agent-deploy`; verify `dataagent/deploy/agent/{id}` returns a
+   persisted relation. Deployment is idempotent.
+6. Only run or deploy namespaced Agents; do not modify shared or built-in ones.
+
 
 ## AI Decision Rules
 
@@ -258,6 +306,8 @@ Rules:
 - model → grain and total reconciliation, plus join checks when joins exist;
 - pivot/dashboard → saved preview with reconciled values; filters/linkage exercised when present;
 - AIChat → graph status success, exact model selected, and one reproducible query reconciled.
+- Agent → saved Start→LLM→Finish graph, terminal `FINISH`, non-empty response,
+  and persisted deployment relation when publication was requested.
 
 Report exact artifacts created (all `TEAM_`-prefixed), validation performed, and
 unresolved blockers. Never report credentials, account identifiers, raw

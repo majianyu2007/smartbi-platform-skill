@@ -189,6 +189,7 @@ panel. Generated IDs and resource node IDs are session/resource-specific.
 | Dashboard | URL contains `#/dashboard/`; bar chart card `[qtp="ECHARTS_BAR"]`; properties `[qtp="COMPONENT_SETTING"]`; save dialog under `.SaveDialogContent` |
 | Graph manager | create `[bofid="btnNewResource"]`; build action `[key="KNOWLEDGE_GRAPH_BUILD"]`; validate `[bofid="btnValidate"]`; refresh `[bofid="btnRefresh"]` |
 | AIChat | model selector `[qtp="ask-model-select-button"]`; editor `[qtp="chat-input-tiptap"] [contenteditable="true"]`; send `[qtp="chat-send-button"]`; running marker `[qtp="chat-stop-send-button"]` |
+| Agent editor | add `[qtp="toolbar-btn-ADDNODE"]`; save `[qtp="toolbar-btn-SAVE"]`; run `[qtp="toolbar-btn-TEST"]`; publish `[qtp="toolbar-btn-DEPLOY"]`; published state exposes `[qtp="toolbar-btn-OFFLINE"]` |
 
 Live behavior:
 
@@ -206,6 +207,15 @@ Live behavior:
   page after a graph build; verify the exact model text before typing.
 - AIChat completion is the disappearance of `chat-stop-send-button`, not a
   fixed sleep. Capture the answer table and reconcile its values independently.
+- Agent nodes are `.agent_node`. The node palette may remain mounted at width
+  zero; open/close it through the toolbar and never assume absence from the DOM
+  means absence from the canvas.
+- Agent prompt fields open a Mavon editor dialog. Edit the visible textarea,
+  confirm, then save the graph. For the basic graph, bind the LLM variable to
+  `会话变量 / 问句`; binding to Start output leaves the question empty.
+- Agent execution success requires graph state `FINISH` and non-empty
+  `dataagent/output/{llmNodeId-instanceId}`. A transient UI error dialog can
+  race a completed backend run; treat the backend state/output as authoritative.
 
 ## Error Recovery
 
@@ -222,6 +232,8 @@ Live behavior:
 | Model totals inflate | Recheck grain, join fields, cardinality, and many-to-many paths |
 | AIChat has no model | Verify model graph completed and correct resources were selected |
 | AI answer differs from pivot | Recheck selected model, metric aggregation, filters, and graph field semantics |
+| Agent gets an empty question | Rebind the LLM input variable to `会话变量 / 问句`, save, and rerun |
+| Agent publish button disappears | Check for `状态：已发布`, `toolbar-btn-OFFLINE`, and the deployment relation |
 
 ## Sensitive Output Controls
 

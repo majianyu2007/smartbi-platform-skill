@@ -231,6 +231,35 @@ Verified graph/query acceptance:
 5. Verify numbers, chart references, terms, causal language, and recommendations.
 6. Remove unsupported claims and add limitations.
 
+## Stage 6: Agent
+
+### Minimal verified graph
+
+1. Open `新建智能体`; add exactly `开始`, `大模型`, and `结束`.
+2. Connect Start→LLM→Finish.
+3. In Start, define the optional String field `question` for graph metadata.
+4. In LLM, bind input variable `question` to `会话变量 / 问句`, select the
+   default LLM, set system and user prompts, and choose Markdown output.
+5. In Finish, select `大模型 / 返回内容` and the Markdown channel.
+6. Save with an owned namespaced name.
+7. Run a real question. Require every node to reach `FINISH` and read the
+   LLM output at `dataagent/output/{llmNodeId-instanceId}`.
+8. Publish and verify a deployment relation exists.
+
+CLI:
+
+```bash
+node scripts/smartbi.mjs agent-create <parentId> <name> "<desc>" "<systemPrompt>" "<userPrompt>"
+node scripts/smartbi.mjs agent-run <agentId> "question"
+node scripts/smartbi.mjs agent-deploy <agentId>
+node scripts/smartbi.mjs agent-get <agentId>
+```
+
+Critical binding rule: selecting `开始-输出1 / question` for the LLM leaves
+the test question empty. The test runner supplies the question as
+`会话变量 / 问句`; bind that exact source.
+
+
 ## Save And Recovery Discipline
 
 - Save only after a coherent successful step.
