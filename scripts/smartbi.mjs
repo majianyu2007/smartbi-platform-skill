@@ -17,6 +17,7 @@
 // Resource naming: our projects MUST be prefixed TEAM_ (shared tenant; never touch others').
 
 import { homedir } from 'node:os';
+import { randomBytes } from 'node:crypto';
 import { join, dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { readFileSync, existsSync } from 'node:fs';
@@ -69,6 +70,12 @@ function applyNamespace(base) {
   return name;
 }
 
+function hasNamespace(name) {
+  const source = String(name || '');
+  const value = String(NAMESPACE || '');
+  return NAMING_MODE === 'suffix' ? source.endsWith(value) : source.startsWith(value);
+}
+
 // ---- ReplaceCoder table (verbatim from vision/js/freequery/common/codeutil/ReplaceCoder.js) ----
 const CODE_ARRAY = [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,80,0,0,0,47,0,110,65,69,115,43,0,102,113,37,55,49,117,78,75,74,77,57,39,109,123,0,0,0,0,0,0,79,86,116,84,97,120,72,114,99,118,108,56,70,51,111,76,89,106,87,42,122,90,33,66,41,85,93,0,91,0,121,0,40,126,105,104,112,95,45,73,82,46,71,83,100,54,119,53,48,52,68,107,81,103,98,67,50,88,58,0,0,101,0];
 const ENCODE_MAP = {};
@@ -119,6 +126,45 @@ async function rmi(className, methodName, params = [], timeoutMs = 60000) {
   let json;
   try { json = JSON.parse(decoded); } catch { json = { retCode: 'PARSE_ERROR', result: decoded.slice(0, 400) }; }
   return { status: res.status, ...json };
+}
+
+const SMARTBIX_API = `${BASE_URL.replace(/\/vision\/?$/, '')}/smartbix/api`;
+
+async function smartbixApi(path, { method = 'GET', body, timeoutMs = 60000 } = {}) {
+  const headers = {
+    'Accept': 'application/json, text/plain, */*; charset=utf-8',
+    'Cache-Control': 'no-cache',
+    'Pragma': 'no-cache',
+    'If-Modified-Since': '0',
+    'SMX-Encode': 'encode',
+    'Cookie': cookieHeader(),
+  };
+  let payload;
+  if (body !== undefined) {
+    headers['Content-Type'] = 'application/json;charset=UTF-8';
+    const raw = typeof body === 'string' ? body : JSON.stringify(body);
+    payload = replaceEncode(raw);
+  }
+  const res = await fetch(`${SMARTBIX_API}/${String(path).replace(/^\/+/, '')}`, {
+    method,
+    headers,
+    body: payload,
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  grabCookies(res);
+  const text = await res.text();
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    try {
+      parsed = JSON.parse(replaceDecode(text));
+    } catch {
+      throw new Error(`Smartbix API returned non-JSON (${res.status} ${path}): ${text.slice(0, 240)}`);
+    }
+  }
+  if (!res.ok) throw new Error(`Smartbix API failed (${res.status} ${path}): ${JSON.stringify(parsed)}`);
+  return parsed;
 }
 
 // ---- commands ----
@@ -273,6 +319,236 @@ async function cmdUpload(filePath, tableName, { previewRows = 30, sheetIndex = 0
   safeOutput({ ok: true, table, clientId, note: 'import submitted, status not confirmed within 5min' });
 }
 
+async function loadEtlFlow(flowId, { requireOwned = false } = {}) {
+  if (!flowId) throw new Error('flow id is required');
+  await ensureSession();
+  const wrapper = await smartbixApi(`datamining/flow/${encodeURIComponent(flowId)}/no`);
+  const processDag = wrapper.processDag;
+  if (!processDag?.define) throw new Error(`ETL flow not found or incomplete: ${flowId}`);
+  if (requireOwned && !hasNamespace(processDag.name)) {
+    throw new Error(`refusing to modify or run non-namespaced ETL flow: ${processDag.name}`);
+  }
+  return { wrapper, processDag, graph: JSON.parse(processDag.define) };
+}
+
+async function cmdEtlGet(flowId) {
+  const { processDag, graph } = await loadEtlFlow(flowId);
+  safeOutput({
+    ok: true,
+    id: processDag.id,
+    name: processDag.name,
+    state: processDag.state,
+    currentInstanceId: processDag.currentInstanceId,
+    nodes: (graph.nodes || []).map((node) => ({
+      id: node.id,
+      name: node.name,
+      alias: node.alias,
+      state: node.state,
+      inputs: (node.inputs || []).map((port) => port.id),
+      outputs: (node.outputs || []).map((port) => port.id),
+    })),
+    links: graph.links || [],
+  });
+}
+
+function summarizePortResult(result) {
+  const features = Array.isArray(result?.features) ? result.features : [];
+  const csv = result?.csv;
+  return {
+    featureCount: features.length,
+    fields: features.map((feature) => feature.alias || feature.name).filter(Boolean),
+    rowCount: Array.isArray(csv) ? csv.length : null,
+    available: Boolean(features.length || csv),
+  };
+}
+
+async function cmdEtlRun(flowId) {
+  const { processDag, graph } = await loadEtlFlow(flowId, { requireOwned: true });
+  const runDag = {
+    id: processDag.id,
+    name: processDag.name,
+    alias: processDag.alias,
+    cache: String(processDag.cache) === 'true',
+    desc: processDag.desc,
+    state: null,
+    createdDate: processDag.createdDate,
+    lastModifiedDate: processDag.lastModifiedDate,
+    nodeStates: null,
+    flowRunInfo: null,
+    path: processDag.path,
+    dagRemark: null,
+    dagParam: null,
+    smallBatch: String(processDag.smallBatch) === 'true',
+    priority: null,
+    dagId: null,
+    define: processDag.define,
+    endTime: null,
+    startTime: null,
+    runningInfo: { dagState: processDag.state || 'INITED', costTime: 0 },
+    currentInstanceId: processDag.currentInstanceId,
+    param: processDag.param,
+    callerId: processDag.callerId,
+  };
+  const started = await smartbixApi('datamining/processflowdefine', {
+    method: 'POST',
+    body: { processDag: runDag, dagRemark: null, useCache: false },
+    timeoutMs: 120000,
+  });
+  const instanceId = started.id;
+  if (!instanceId) throw new Error(`ETL run did not return an instance id: ${JSON.stringify(started)}`);
+
+  let state;
+  for (let attempt = 0; attempt < 120; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    state = await smartbixApi(`datamining/flowstate/${encodeURIComponent(instanceId)}`);
+    if (['FINISH', 'ERROR', 'FAILED', 'KILLED'].includes(state.state)) break;
+  }
+  if (!state || !['FINISH', 'ERROR', 'FAILED', 'KILLED'].includes(state.state)) {
+    throw new Error(`ETL run timed out: ${instanceId}`);
+  }
+
+  const fromIds = new Set((graph.links || []).map((link) => link.from));
+  const terminalNodes = (graph.nodes || []).filter((node) => !fromIds.has(node.id));
+  let preview = null;
+  if (state.state === 'FINISH' && terminalNodes.length === 1 && terminalNodes[0].outputs?.[0]?.id) {
+    const node = terminalNodes[0];
+    try {
+      const result = await smartbixApi(
+        `miningnode/portresult/${encodeURIComponent(`${node.id}-${instanceId}`)}/${encodeURIComponent(node.outputs[0].id)}/csv`,
+      );
+      preview = summarizePortResult(result);
+    } catch {
+      preview = { available: false };
+    }
+  }
+
+  safeOutput({
+    ok: state.state === 'FINISH',
+    flowId: processDag.id,
+    flowName: processDag.name,
+    instanceId,
+    state: state.state,
+    nodes: (state.nodeStates || []).map((node) => ({
+      id: node.id,
+      name: node.name,
+      alias: node.alias,
+      state: node.state,
+      tip: node.tip,
+    })),
+    preview,
+  });
+}
+
+async function cmdEtlRowNumber(flowId, columnName = 'row_number') {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(columnName)) {
+    throw new Error(`invalid row-number column name: ${columnName}`);
+  }
+  const { processDag, graph } = await loadEtlFlow(flowId, { requireOwned: true });
+  graph.nodes ||= [];
+  graph.links ||= [];
+  let node = graph.nodes.find((item) => item.name === 'DATAPREPARE_ROW_NUMBER');
+  let changed = false;
+
+  if (node) {
+    const config = node.configs?.find((item) => item.name === 'name');
+    if (!config) throw new Error('existing row-number node has no name config');
+    changed = config.value !== columnName;
+    config.value = columnName;
+    if (changed) node.state = 'INITED';
+  } else {
+    const fromIds = new Set(graph.links.map((link) => link.from));
+    const sinks = graph.nodes.filter((item) => !fromIds.has(item.id));
+    if (sinks.length !== 1 || !sinks[0].outputs?.[0]?.id) {
+      throw new Error(`ETL must have exactly one connectable sink; found ${sinks.length}`);
+    }
+    const sink = sinks[0];
+    node = {
+      id: randomBytes(16).toString('hex'),
+      name: 'DATAPREPARE_ROW_NUMBER',
+      type: 'DATAPREPARE_ROW_NUMBER',
+      alias: '增加序列号',
+      configs: [{
+        name: 'name',
+        lable: '序列列名称',
+        type: 'string',
+        desc: '请输入新增序列号的名称，不能含有：空格,;{}()\\n\\t=等字符。',
+        required: true,
+        typeOptions: null,
+        options: null,
+        value: columnName,
+        isHidden: null,
+        disable: null,
+        control: { controlType: 'SxMiningInput', controlProps: { type: 'text', rows: 1 } },
+        extra: null,
+        iframeUrl: null,
+      }],
+      combineConfigs: [],
+      path: null,
+      inputs: [{ id: randomBytes(16).toString('hex'), order: 0, types: ['DATASET'] }],
+      outputs: [{ id: randomBytes(16).toString('hex'), order: 0, types: ['DATASET'] }],
+      isCompatible: null,
+      noOutputData: null,
+      isSource: null,
+      desc: null,
+      needCache: false,
+      state: 'INITED',
+      nodeIcon: 'sx-tree-node__mining-icon icon-16 sx-icon-Append-ID-columns',
+      expand: null,
+      extended: null,
+      nodeDefine: null,
+      x: Number(sink.x || 0) + 120,
+      y: Number(sink.y || 0),
+    };
+    graph.nodes.push(node);
+    graph.links.push({
+      from: sink.id,
+      to: node.id,
+      inputPortId: sink.outputs[0].id,
+      outputPortId: node.inputs[0].id,
+    });
+    changed = true;
+  }
+
+  processDag.define = JSON.stringify(graph);
+  if (changed) processDag.state = 'INITED';
+  const saved = await smartbixApi('dataprocess/processflowdefine/define', {
+    method: 'POST',
+    body: {
+      processDag: {
+        id: processDag.id,
+        name: processDag.name,
+        alias: processDag.alias,
+        cache: processDag.cache,
+        smallBatch: processDag.smallBatch,
+        desc: processDag.desc,
+        createdDate: processDag.createdDate,
+        lastModifiedDate: processDag.lastModifiedDate,
+        runningInfo: {
+          dagState: processDag.state || 'INITED',
+          costTime: 0,
+        },
+        subDefine: processDag.subDefine,
+        define: processDag.define,
+        currentInstanceId: processDag.currentInstanceId,
+        param: processDag.param,
+        callerId: processDag.callerId,
+        state: processDag.state,
+      },
+      dagRemark: null,
+      toSaveTempDag: false,
+      cover: false,
+    },
+  });
+  safeOutput({
+    ok: true,
+    changed,
+    flowId: saved.id || processDag.id,
+    flowName: saved.name || processDag.name,
+    nodeId: node.id,
+    column: columnName,
+  });
+}
+
 function safeOutput(value) {
   process.stdout.write(`${JSON.stringify(value)}\n`);
 }
@@ -388,6 +664,9 @@ try {
     case 'invoke': await cmdInvoke(args[0], args[1], args[2]); break;
     case 'tree': await cmdTree(args[0]); break;
     case 'upload': await cmdUpload(args[0], args[1]); break;
+    case 'etl-get': await cmdEtlGet(args[0]); break;
+    case 'etl-run': await cmdEtlRun(args[0]); break;
+    case 'etl-row-number': await cmdEtlRowNumber(args[0], args[1]); break;
     case 'nav': await cmdNav(args[0]); break;
     case 'setup': await cmdSetup(args); break;
     case 'config': await cmdConfig(); break;
@@ -399,7 +678,7 @@ try {
       orderRiskWarning: 'https://wiki.smartbi.com.cn/pages/viewpage.action?pageId=168629228',
     }); break;
     default:
-      throw new Error(`Unknown command: ${command}\nusage: smartbi.mjs <setup|login|health|config|invoke|tree|upload|nav|manuals> ...`);
+      throw new Error(`Unknown command: ${command}\nusage: smartbi.mjs <setup|login|health|config|invoke|tree|upload|etl-get|etl-run|etl-row-number|nav|manuals> ...`);
   }
   process.exit(0);
 } catch (error) {

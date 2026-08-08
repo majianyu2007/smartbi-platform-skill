@@ -164,7 +164,30 @@ action=DELETE_FILE&clientId=<id>
 | `DataPackageModule` | `getChildElementsWithoutUnionDBChilds` |
 | `SessionLogService` | `flushUserLogs`, `addClientLog` |
 
-## 6. UI-only fallback (Playwright CDP)
+## 6. Smartbix data-mining API (saved ETL flows)
+
+Base path: `/smartbi/smartbix/api/`. Use the same authenticated cookie jar.
+Requests send `SMX-Encode: encode`; JSON POST bodies are ReplaceCoder-encoded.
+Responses may be plain JSON or ReplaceCoder-encoded JSON, so decode both forms.
+
+| Method and path | Purpose | Verified result |
+|---|---|---|
+| `GET datamining/flow/{flowId}/no` | Load a saved flow | wrapper with `processDag.define` JSON DAG |
+| `POST dataprocess/processflowdefine/define` | Save a changed DAG | saved flow metadata |
+| `POST datamining/processflowdefine` | Start a run | execution `instanceId` |
+| `GET datamining/flowstate/{instanceId}` | Poll execution | terminal `FINISH`/`ERROR`/`FAILED`/`KILLED` plus node states |
+| `GET miningnode/portresult/{nodeId}-{instanceId}/{outputPortId}/csv` | Read terminal preview | fields/features and preview CSV |
+
+The save/run body contains `processDag` plus `dagRemark`, `useCache` or
+`toSaveTempDag`, and save flags. Preserve the server-returned `processDag`
+metadata; only replace its serialized `define` when changing the graph.
+
+Safety invariant implemented by `scripts/smartbi.mjs`: mutation and execution
+refuse any flow whose saved name does not match the configured namespace.
+`etl-row-number` appends an `增加序列号` node only when the graph has exactly one
+connectable sink, then saves through the endpoint above.
+
+## 7. UI-only fallback (Playwright CDP)
 
 Operations not yet exposed via API (dashboard canvas editing, ETL node drag-drop,
 AIChat graph construction) require the browser:
@@ -173,7 +196,7 @@ AIChat graph construction) require the browser:
 - Login is done by the API tool first; the browser session then shares the same cookies.
 - See `references/playwright-patterns.md` for selectors and state machine.
 
-## 7. Discovery method (how these were found)
+## 8. Discovery method (how these were found)
 
 1. Hook `XMLHttpRequest` in the console to capture `RMIServlet` call stacks →
    `freequery.common.util.remoteInvoke(className, methodName, params, cb)`.
