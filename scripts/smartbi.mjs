@@ -17,18 +17,51 @@
 // Resource naming: our projects MUST be prefixed TEAM_ (shared tenant; never touch others').
 
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const SKILL_DIR = join(__dirname, '..');
+const CONFIG_FILE = join(SKILL_DIR, 'config.json');
+
+// ---- config: credentials + naming preference ----
+// Config file (config.json in skill dir, gitignored) is written by `setup`.
+// Environment variables always take precedence over the config file.
+function loadConfig() {
+  try {
+    if (!existsSync(CONFIG_FILE)) return {};
+    return JSON.parse(readFileSync(CONFIG_FILE, 'utf8'));
+  } catch (e) {
+    return { __error: String(e.message || e) };
+  }
+}
+const CONFIG = loadConfig();
 
 const CDP_URL = process.env.SMARTBI_CDP_URL || 'http://127.0.0.1:9222';
 const BASE_URL = process.env.SMARTBI_BASE_URL || 'https://smartbi.example.com/smartbi/vision';
 const LOGIN_URL = `${BASE_URL}/index.jsp`;
-const CRED_FILE = process.env.SMARTBI_CRED_FILE || '/Users/user/Desktop/Smartbi/smartbi-example-credentials.txt';
-// Team namespace prefix, configurable per machine/user.
-// This machine defaults to TEAM_ to distinguish from other shared-tenant users.
-const NAMESPACE_PREFIX = process.env.SMARTBI_PREFIX || 'TEAM_';
+const CRED_FILE = process.env.SMARTBI_CRED_FILE
+  || CONFIG.credFile
+  || '/Users/user/Desktop/Smartbi/smartbi-example-credentials.txt';
+
+// Naming preference: prefix (default) or suffix, value configurable.
+// e.g. prefix "TEAM_" -> TEAM_survey_demo ; suffix "_TEAM" -> survey_demo_TEAM
+const NAMING_MODE = process.env.SMARTBI_NAMING || CONFIG.naming?.mode || 'prefix';
+const NAMESPACE = process.env.SMARTBI_NAMESPACE || CONFIG.naming?.value || 'TEAM_';
 const MAX_TABLE_NAME = 30; // server truncates longer names
+
+function applyNamespace(base) {
+  const value = String(NAMESPACE || '');
+  const name = NAMING_MODE === 'suffix' ? `${base}${value}` : `${value}${base}`;
+  if (name.length > MAX_TABLE_NAME) {
+    // prefer keeping the namespace marker; trim the base part
+    if (NAMING_MODE === 'suffix') return `${base.slice(0, MAX_TABLE_NAME - value.length)}${value}`;
+    return `${value}${base.slice(0, MAX_TABLE_NAME - value.length)}`;
+  }
+  return name;
+}
 
 // ---- ReplaceCoder table (verbatim from vision/js/freequery/common/codeutil/ReplaceCoder.js) ----
 const CODE_ARRAY = [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,80,0,0,0,47,0,110,65,69,115,43,0,102,113,37,55,49,117,78,75,74,77,57,39,109,123,0,0,0,0,0,0,79,86,116,84,97,120,72,114,99,118,108,56,70,51,111,76,89,106,87,42,122,90,33,66,41,85,93,0,91,0,121,0,40,126,105,104,112,95,45,73,82,46,71,83,100,54,119,53,48,52,68,107,81,103,98,67,50,88,58,0,0,101,0];
@@ -149,15 +182,14 @@ async function locatePersonalFolder() {
   return { dsId: 'DS.input', schemaId: schema.name, catalog: schema.name, folderId: me.id, folderAlias: me.alias };
 }
 
-// Upload a local CSV/TXT/XLSX and import as a new table named TEAM_<name>.
-// Returns the table info after import completes.
+// Upload a local CSV/TXT/XLSX and import as a new table named <namespace><name>
+// (namespace configurable: prefix or suffix). Returns table info after import.
 async function cmdUpload(filePath, tableName, { previewRows = 30, sheetIndex = 0 } = {}) {
   const stats = (await import('node:fs')).statSync(filePath);
   if (!stats.isFile()) throw new Error(`not a file: ${filePath}`);
   const base = tableName || filePath.split('/').pop().replace(/\.[^.]+$/, '');
-  let table = base.startsWith(NAMESPACE_PREFIX) ? base : `${NAMESPACE_PREFIX}${base}`;
+  const table = applyNamespace(base);
   if (table.length > MAX_TABLE_NAME) {
-    table = table.slice(0, MAX_TABLE_NAME);
     console.warn(`table name truncated to ${table.length} chars: ${table}`);
   }
 
@@ -276,6 +308,70 @@ async function cmdNav(moduleName) {
   safeOutput({ state: 'module', module: moduleName, url: workspace.url() });
 }
 
+// ---- setup / config ----
+// First-run guided configuration: credentials file + naming preference.
+// Usage: smartbi.mjs setup [--cred-file <path>] [--namespace <value>] [--naming prefix|suffix]
+async function cmdSetup(argsList) {
+  const opts = {};
+  for (let i = 0; i < argsList.length; i += 2) {
+    if (argsList[i].startsWith('--')) opts[argsList[i].slice(2)] = argsList[i + 1];
+  }
+  const current = { credFile: CRED_FILE, naming: { mode: NAMING_MODE, value: NAMESPACE } };
+
+  if (!opts['cred-file'] && !opts['namespace'] && !opts['naming']) {
+    // Interactive guidance: print current state + instructions (safe output).
+    safeOutput({
+      action: 'setup_needed',
+      message: 'First-run setup: configure credentials and naming preference.',
+      current,
+      configFile: CONFIG_FILE,
+      commands: [
+        'node scripts/smartbi.mjs setup --cred-file /path/to/credentials.txt',
+        'node scripts/smartbi.mjs setup --namespace TEAM_ --naming prefix',
+        'node scripts/smartbi.mjs setup --namespace _MYTEAM --naming suffix',
+      ],
+    });
+    return;
+  }
+
+  const saved = {
+    credFile: opts['cred-file'] || CONFIG.credFile || current.credFile,
+    naming: {
+      mode: opts['naming'] || CONFIG.naming?.mode || current.naming.mode,
+      value: opts['namespace'] || CONFIG.naming?.value || current.naming.value,
+    },
+  };
+  if (saved.naming.mode !== 'prefix' && saved.naming.mode !== 'suffix') {
+    throw new Error(`invalid naming mode: ${saved.naming.mode} (use prefix or suffix)`);
+  }
+  // sanitize namespace: keep only safe chars
+  saved.naming.value = saved.naming.value.replace(/[^\w.-]/g, '');
+  if (!saved.naming.value) throw new Error('namespace value must not be empty');
+
+  const { writeFileSync, mkdirSync } = await import('node:fs');
+  mkdirSync(dirname(CONFIG_FILE), { recursive: true });
+  writeFileSync(CONFIG_FILE, JSON.stringify(saved, null, 2) + '\n');
+  safeOutput({
+    action: 'setup_done',
+    message: 'Configuration saved. Environment variables (SMARTBI_CRED_FILE, SMARTBI_NAMESPACE, SMARTBI_NAMING) override this file.',
+    configFile: CONFIG_FILE,
+    saved,
+    next: 'node scripts/smartbi.mjs health',
+  });
+}
+
+async function cmdConfig() {
+  safeOutput({
+    configFile: CONFIG_FILE,
+    credFile: CRED_FILE,
+    naming: { mode: NAMING_MODE, value: NAMESPACE },
+    example: NAMING_MODE === 'suffix'
+      ? `survey_demo${NAMESPACE}`   // suffix example
+      : `${NAMESPACE}survey_demo`,  // prefix example
+    envOverrides: ['SMARTBI_CRED_FILE', 'SMARTBI_NAMESPACE', 'SMARTBI_NAMING'],
+  });
+}
+
 // ---- main ----
 const [,, command, ...args] = process.argv;
 try {
@@ -286,6 +382,8 @@ try {
     case 'tree': await cmdTree(args[0]); break;
     case 'upload': await cmdUpload(args[0], args[1]); break;
     case 'nav': await cmdNav(args[0]); break;
+    case 'setup': await cmdSetup(args); break;
+    case 'config': await cmdConfig(); break;
     case 'manuals': safeOutput({
       quickStart: 'https://wiki.smartbi.com.cn/pages/viewpage.action?pageId=111897106',
       competition: 'https://wiki.smartbi.com.cn/pages/viewpage.action?pageId=168628225',
@@ -294,7 +392,7 @@ try {
       orderRiskWarning: 'https://wiki.smartbi.com.cn/pages/viewpage.action?pageId=168629228',
     }); break;
     default:
-      throw new Error(`Unknown command: ${command}\nusage: smartbi.mjs <login|health|invoke|tree|upload|nav|manuals> ...`);
+      throw new Error(`Unknown command: ${command}\nusage: smartbi.mjs <setup|login|health|config|invoke|tree|upload|nav|manuals> ...`);
   }
   process.exit(0);
 } catch (error) {

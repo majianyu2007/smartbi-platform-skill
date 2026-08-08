@@ -67,25 +67,64 @@ The platform account is **shared by multiple team members**. You MUST:
 
 Never assume state from a previous call: `health` first.
 
+## First-Run Setup (guided)
+
+On first load, the AI SHOULD configure the tool before any platform operation.
+Run `setup` with no arguments to see current state and guidance:
+
+```bash
+cd ~/.codex/skills/smartbi-platform
+TMPDIR=/tmp node scripts/smartbi.mjs setup
+```
+
+Then persist the two required preferences:
+
+```bash
+# 1. Credentials: two-line file (line 1 account, line 2 password)
+TMPDIR=/tmp node scripts/smartbi.mjs setup --cred-file /path/to/credentials.txt
+
+# 2. Naming preference: prefix (default) or suffix, value is the team marker
+TMPDIR=/tmp node scripts/smartbi.mjs setup --namespace TEAM_ --naming prefix
+TMPDIR=/tmp node scripts/smartbi.mjs setup --namespace _MYTEAM --naming suffix
+```
+
+Configuration is saved to `config.json` (gitignored, machine-local).
+Environment variables override it per-invocation:
+
+| Variable | Meaning | Example |
+|---|---|---|
+| `SMARTBI_CRED_FILE` | credentials file path | `~/.../smartbi-example-credentials.txt` |
+| `SMARTBI_NAMESPACE` | namespace marker | `TEAM_` or `_MYTEAM` |
+| `SMARTBI_NAMING` | `prefix` or `suffix` | `prefix` |
+
+`config` shows the effective configuration and a concrete name example.
+
+> Shared-tenant rule: the namespace marker distinguishes YOUR resources from
+> other members'. Verify `config` output before creating anything.
+
 ## Fast Start
 
 ```bash
 cd ~/.codex/skills/smartbi-platform
 
-TMPDIR=/tmp node scripts/smartbi.mjs health          # auth_required first time
-TMPDIR=/tmp node scripts/smartbi.mjs login           # reads credentials file
-TMPDIR=/tmp node scripts/smartbi.mjs health          # workspace
-TMPDIR=/tmp node scripts/smartbi.mjs tree            # catalog root
-TMPDIR=/tmp node scripts/smartbi.mjs tree DS.input   # 可导入数据库
-TMPDIR=/tmp node scripts/smartbi.mjs upload <csv> TEAM_<name>   # import as new table
-TMPDIR=/tmp node scripts/smartbi.mjs nav 数据准备      # browser fallback
-TMPDIR=/tmp node scripts/smartbi.mjs manuals         # official manual links
+TMPDIR=/tmp node scripts/smartbi.mjs setup          # first-run guidance
+TMPDIR=/tmp node scripts/smartbi.mjs config         # effective config
+TMPDIR=/tmp node scripts/smartbi.mjs health         # auth_required first time
+TMPDIR=/tmp node scripts/smartbi.mjs login          # reads credentials file
+TMPDIR=/tmp node scripts/smartbi.mjs health         # workspace
+TMPDIR=/tmp node scripts/smartbi.mjs tree           # catalog root
+TMPDIR=/tmp node scripts/smartbi.mjs tree DS.input  # 可导入数据库
+TMPDIR=/tmp node scripts/smartbi.mjs upload <csv> <name>   # import as new table (auto-namespaced)
+TMPDIR=/tmp node scripts/smartbi.mjs nav 数据准备     # browser fallback
+TMPDIR=/tmp node scripts/smartbi.mjs manuals        # official manual links
 ```
 
 ## Tool Reference (`scripts/smartbi.mjs`)
 
 | Command | Purpose | Output |
 |---|---|---|
+| `setup [flags]` | First-run guided config (credentials + naming) | `{action:"setup_done", saved}` |
+| `config` | Show effective config + naming example | `{credFile, naming, example}` |
 | `login` | Authenticate from credentials file | `{state:"authenticated", retCode, result, user}` |
 | `health` | Session + state check (auto re-login) | `{state:"workspace"\|"auth_required", user}` |
 | `invoke <class> <method> [json]` | Raw RMI call | decoded `{retCode, result, ...}` |
