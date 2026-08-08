@@ -9,22 +9,22 @@ below has a full API implementation in `scripts/smartbi.mjs upload`.
 
 ## Sources
 
-Competition entry and submission:
+Tenant and delivery inputs:
 
-- Platform guide PDF summarized in `<private-project-notes>/04-报名平台与作品提交指南.md`
-- Login: `https://smartbi.example.com/smartbi/vision/index.jsp`
-- Challenge page: `https://smartbi.example.com/challenge`
+- Login URL: `<configured Smartbi Vision base URL>/index.jsp`.
+- Keep organizer-specific registration pages, submission addresses, internal
+  notes, and deadlines outside the public Skill repository.
 
 Official Smartbi V11 help pages:
 
 - Quick start: `https://wiki.smartbi.com.cn/pages/viewpage.action?pageId=111897106`
 - Quick data preparation and dashboard: `https://wiki.smartbi.com.cn/pages/viewpage.action?pageId=113544835`
-- 2026 competition manuals: `https://wiki.smartbi.com.cn/pages/viewpage.action?pageId=168628225`
+- Reusable scenario manuals: `https://wiki.smartbi.com.cn/pages/viewpage.action?pageId=168628225`
 - Higher-education support scenario: `https://wiki.smartbi.com.cn/pages/viewpage.action?pageId=168628227`
 - Financial collection scenario: `https://wiki.smartbi.com.cn/pages/viewpage.action?pageId=168629240`
 - Order risk-warning scenario: `https://wiki.smartbi.com.cn/pages/viewpage.action?pageId=168629228`
 
-The three competition scenarios use the same five-stage platform chain. Differences are useful examples, not mandatory project schemas.
+The documented scenarios use the same five-stage platform chain. Their schemas are examples, not mandatory project designs.
 
 ## Stage 1: Import files
 
@@ -57,7 +57,7 @@ Official common sequence:
 7. Add output node.
 8. Save the flow.
 
-Common nodes shown in the competition manuals:
+Common nodes shown in the scenario manuals:
 
 | Node | Purpose | Required AI check |
 |---|---|---|
@@ -133,7 +133,7 @@ AI model checklist:
 For one-row-per-respondent survey data, a single-table model is valid. Add the
 owned table once, do not invent joins, preserve respondent grain, and reconcile
 an unweighted count plus the sum of the survey weight before saving.
-Competition examples:
+Documented examples:
 
 - Higher-education scenario: four activity/fact tables connect to student base information by student ID; most are many-to-one, tuition record is one-to-one.
 - Order warning scenario: product, customer, and equipment dimensions connect to the order result fact through their IDs.

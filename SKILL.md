@@ -1,13 +1,13 @@
 ---
 name: smartbi-platform
-description: Operate the Smartbi Insight V11 competition platform through a reverse-engineered HTTP API (RMIServlet + DataPackageServlet), with Playwright/CDP fallback for UI-only operations. Login with file credentials, list catalog trees, upload and import datasets, then build ETL/data models/dashboards/AIChat for the Smartbi Insight V11 platform. Use when the user mentions Smartbi, SmartBI, the Smartbi Insight V11 platform, platform automation, ETL, data models, dashboards, AIChat, or Smartbi troubleshooting.
+description: Operate Smartbi Insight V11 through a reverse-engineered HTTP API (RMIServlet + DataPackageServlet), with Playwright/CDP fallback for UI-only operations. Login with file credentials, list catalog trees, upload and import datasets, then build ETL/data models/dashboards/AIChat. Use when the user mentions Smartbi, SmartBI, platform automation, ETL, data models, dashboards, AIChat, or Smartbi troubleshooting.
 ---
 
 # Smartbi Platform (API-driven)
 
 ## Purpose
 
-Operate the Smartbi Insight V11 competition tenant as a stateful, evidence-first
+Operate a configured Smartbi Insight V11 tenant as a stateful, evidence-first
 workflow with two execution engines:
 
 1. **Direct HTTP API** (preferred): reverse-engineered RMI protocol. Login,
@@ -24,9 +24,9 @@ Core chain: `login → 数据连接(import) → 自助ETL → 数据模型 → �
 Read what the task needs:
 
 - `references/api.md` — reverse-engineered HTTP API: RMI encoding, session, catalog, import chain.
-- `references/workflows.md` — end-to-end procedures from official competition manuals.
+- `references/workflows.md` — reusable end-to-end procedures derived from official manuals.
 - `references/playwright-patterns.md` — browser lifecycle, selectors, state detection, new-tab handling.
-- `references/competition-guardrails.md` — competition-specific privacy, evidence, naming, delivery boundaries.
+- `references/shared-tenant-guardrails.md` — shared-tenant privacy, evidence, naming, and delivery boundaries.
 
 ## Operating Contract
 
@@ -35,11 +35,11 @@ Read what the task needs:
 The platform account is **shared by multiple team members**. You MUST:
 
 - **Never modify, delete, rename, or overwrite any resource not created by this namespace.**
-  Foreign resources = anything whose name/alias does not start with the team prefix.
-- **Prefix every artifact you create** (tables, ETL flows, models, analyses,
-  dashboards, folders). The prefix is configurable via `SMARTBI_PREFIX`
-  (default `TEAM_` on this machine to distinguish this user in the shared
-  tenant). Format: `<prefix><数据集名称>`.
+  Foreign resources = anything whose name/alias does not carry the configured namespace in the selected prefix/suffix mode.
+- **Namespace every artifact you create** (tables, ETL flows, models, analyses,
+  dashboards, folders). Configure a neutral team prefix or suffix through
+  `SMARTBI_NAMESPACE` (default example: `TEAM_`). Format:
+  `<namespace><dataset-name>` or `<dataset-name><namespace>`.
 - Never create inside another member's folder. Import target is the personal
   acquisition space (`可导入数据库 > input > 数据采集空间 > <账号>`), which the
   API tool resolves automatically (`folderId=PERSONAL_NODE`).
@@ -107,7 +107,7 @@ The wizard asks for:
 2. Smartbi login account;
 3. Smartbi login password;
 4. artifact naming mode (`prefix` or `suffix`);
-5. namespace marker (for example `TEAM_` or `_MYTEAM`).
+5. namespace marker (for example `TEAM_` or `_TEAM`).
 
 For non-interactive provisioning, first create an external two-line credentials
 file with mode `0600`, then configure both credentials and naming:
@@ -132,7 +132,7 @@ default). Environment variables override it per invocation:
 | `SMARTBI_CODEC_CACHE_FILE` | versioned frontend-coder cache | `~/.cache/smartbi-platform/transport-codec.json` |
 | `SMARTBI_PLAYWRIGHT_PATH` | explicit Playwright package/entry | `/path/to/playwright` |
 | `SMARTBI_BROWSER_PATH` | explicit Chrome/Chromium executable | `/path/to/chrome` |
-| `SMARTBI_NAMESPACE` | namespace marker | `TEAM_` or `_MYTEAM` |
+| `SMARTBI_NAMESPACE` | namespace marker | `TEAM_` or `_TEAM` |
 | `SMARTBI_NAMING` | `prefix` or `suffix` | `prefix` |
 
 `setup` without a TTY prints safe guidance. `config` shows the effective
@@ -250,7 +250,7 @@ API path (preferred):
 2. `upload <file> TEAM_<name>`.
 3. Verify with `tree` on the personal acquisition folder (walk
    `DS.input → SCHEMA → 数据采集空间 → <账号>`).
-4. Record row count, column types, and the `TEAM_` table name.
+4. Record row count, column types, and the namespaced table name.
 
 Acceptance: table appears under the personal acquisition space with expected
 name, row count, and field types; no foreign resource touched.
@@ -292,14 +292,14 @@ Rules:
 
 ### 3. Data model (数据准备)
 
-1. 数据模型 → `数据源` → `数据表` → select the owned `TEAM_` table.
+1. 数据模型 → `数据源` → `数据表` → select the owned, namespaced table.
 2. Flat survey files may use a one-table model; do not invent joins. For
    multi-table models, treat detected joins as proposals and verify keys,
    cardinality, and grain.
 3. Confirm the model field count and reconcile a base total before saving.
 4. Time hierarchies only on validated date fields; identifiers as unique-count
    measures; weights as summed measures when estimating weighted populations.
-5. Save under the team folder with an `TEAM_` name.
+5. Save under the team folder with a namespaced name.
 
 ### 4. Analysis and dashboard (分析展现)
 
@@ -332,7 +332,7 @@ API path (preferred):
 UI fallback: 运维设置 → AIChat系统选项 → 新建 → 全部资源 → 数据集 →
 team folder → target model → `构建模型图谱`. Select the same field set, click
 `校验`, require `校验通过`, confirm, refresh the graph list, and require the
-exact `TEAM_` model row to show `成功` plus build time/duration. In AIChat,
+exact namespaced model row to show `成功` plus build time/duration. In AIChat,
 refresh the model picker after a new build and verify the exact selected model
 text before sending. For reports choose 技能 → 分析报告.
 
@@ -354,7 +354,7 @@ text before sending. For reports choose 技能 → 分析报告.
 
 ## AI Decision Rules
 
-- If a resource lacks the `TEAM_` prefix, treat it as someone else's — read-only.
+- If a resource lacks the configured namespace, treat it as someone else's — read-only.
 - If data is not authorized/de-identified, stop before upload.
 - If a primary key is unclear, stop before creating an output table.
 - If join cardinality is unclear, stop before saving a model.
@@ -372,6 +372,6 @@ text before sending. For reports choose 技能 → 分析报告.
 - Agent → saved Start→LLM→Finish graph, terminal `FINISH`, non-empty response,
   and persisted deployment relation when publication was requested.
 
-Report exact artifacts created (all `TEAM_`-prefixed), validation performed, and
+Report exact artifacts created (all carrying the configured namespace), validation performed, and
 unresolved blockers. Never report credentials, account identifiers, raw
 sensitive values, or unredacted screenshots.

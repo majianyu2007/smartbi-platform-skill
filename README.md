@@ -1,19 +1,21 @@
 # Smartbi Platform Skill
 
-面向 Smartbi Insight V11 的 API-first 自动化 Skill。支持登录、目录、数据导入、自助 ETL、数据模型、透视分析、仪表盘、AIChat 和 Agent；只有无法安全推断的可视化操作才使用 Playwright/CDP。
+**English** | [简体中文](README.zh-CN.md)
 
-## 环境要求
+An API-first automation Skill for Smartbi Insight V11. It covers authentication, catalog operations, file import, self-service ETL, data models, pivot analyses, dashboards, AIChat, and Agents. Playwright/CDP is reserved for visual operations that cannot be inferred safely through the HTTP interfaces.
 
-| 环境 | 是否必需 | 最低要求 | 自动探测 |
+## Requirements
+
+| Runtime | Required | Minimum | Auto-detected |
 |---|---:|---|---:|
-| Node.js | 是 | 20 或更高版本 | 是 |
-| npm | 安装 Playwright 时需要 | 随 Node.js 提供 | 是 |
-| Playwright | API-only 模式不需要；浏览器备用模式需要 | 推荐 `1.62.1` | 是 |
-| Chrome/Chromium | 仅浏览器备用模式需要 | 支持 CDP | 是 |
+| Node.js | Yes | 20 or newer | Yes |
+| npm | Only when installing Playwright | Bundled with Node.js | Yes |
+| Playwright | No for API-only use; yes for browser fallback | Recommended `1.62.1` | Yes |
+| Chrome/Chromium | Only for browser fallback | CDP-capable build | Yes |
 
-API 核心路径没有第三方 npm 依赖，因此不需要先运行 `npm install`。
+The API core has no third-party npm dependency, so `npm install` is not required before first use.
 
-## 1. 安装 Skill
+## 1. Install the Skill
 
 ### Codex / Oh My Pi
 
@@ -24,7 +26,7 @@ cd ~/.codex/skills/smartbi-platform
 ./scripts/install.sh --check
 ```
 
-若目录已经存在：
+For an existing checkout:
 
 ```bash
 cd ~/.codex/skills/smartbi-platform
@@ -32,177 +34,180 @@ git pull --ff-only
 ./scripts/install.sh --check
 ```
 
-其他支持 Skill 目录的客户端，只需把仓库复制或克隆到客户端的 Skill 根目录，并保持目录名为 `smartbi-platform`。
+For another client that supports Skill directories, clone or copy the repository into that client's Skill root and keep the directory name `smartbi-platform`.
 
 ### Windows
 
-`install.sh` 适用于 macOS/Linux。Windows 直接运行相同的 Node 检查器：
+`install.sh` is intended for macOS and Linux. On Windows, run the same Node-based inspector directly:
 
 ```powershell
 node scripts/install.mjs --check
 ```
 
-## 2. 自动环境探测
+## 2. Automatic Environment Detection
 
-安装检查器会自动判断：
+The installer checks:
 
-1. Node.js 是否存在、是否达到 20+；
-2. npm 是否存在；
-3. Playwright 能否通过项目依赖、专用安装、OMP 内置运行时或显式路径复用；
-4. 本机是否有 Chrome、Edge、Chromium 或 Playwright Chromium；
-5. `SMARTBI_CDP_URL` 指向的有头浏览器是否正在运行；
-6. API 核心与浏览器备用模式分别是否就绪。
+1. whether Node.js exists and satisfies the 20+ requirement;
+2. whether npm exists;
+3. whether Playwright can be reused from the Skill, a managed installation, the OMP runtime, or an explicit path;
+4. whether Chrome, Edge, Chromium, or Playwright Chromium is available;
+5. whether a headed browser is reachable at `SMARTBI_CDP_URL`;
+6. whether the API core and browser fallback are independently ready.
 
-普通文本输出：
+Human-readable report:
 
 ```bash
 ./scripts/install.sh --check
 ```
 
-机器可读 JSON：
+Machine-readable JSON:
 
 ```bash
 ./scripts/install.sh --check --json
 ```
 
-也可以通过 Skill CLI 检查：
+The same check is available through the Skill CLI:
 
 ```bash
 node scripts/smartbi.mjs doctor
 node scripts/smartbi.mjs doctor --require-browser
 ```
 
-`doctor` 不读取或输出密码。
+`doctor` never reads or emits a password.
 
-### 返回码
+### Exit Codes
 
-| 返回码 | 含义 |
+| Code | Meaning |
 |---:|---|
-| `0` | Node.js 满足要求；API 核心可用 |
-| `1` | 环境检查失败，或 `--require-browser` 要求的浏览器备用模式未就绪 |
-| `2` | `install.sh` 找不到 Node.js，或 Node.js 版本低于 20 |
+| `0` | Node.js satisfies the requirement and the API core is ready |
+| `1` | Inspection failed, or `--require-browser` requested an unavailable browser fallback |
+| `2` | `install.sh` could not find Node.js, or found a version older than 20 |
 
-## 3. Node.js 缺失时
+## 3. If Node.js Is Missing
 
-安装器本身先由 POSIX shell 检查 Node.js，因此 Node 缺失时仍能给出明确结果。
+The POSIX bootstrap checks Node.js before it invokes any MJS file, so it can still provide a useful diagnosis when Node is absent.
 
-推荐安装当前 Node.js LTS：<https://nodejs.org/>
+Install a current Node.js LTS release from <https://nodejs.org/>.
 
 ```bash
-# macOS（Homebrew）
+# macOS with Homebrew
 brew install node@22
 
 # Windows
 winget install OpenJS.NodeJS.LTS
 ```
 
-Linux 请使用发行版包管理器或 Node.js 官方安装包。安装后重新运行：
+On Linux, use the distribution package manager or an official Node.js package. Then rerun:
 
 ```bash
 ./scripts/install.sh --check
 ```
 
-## 4. Playwright 是否需要安装
+The installer reports the requirement; it does not modify the operating system or install Node.js automatically.
 
-Playwright **不是 API 核心流程的必需依赖**。以下操作不需要打开浏览器：
+## 4. Decide Whether Playwright Is Needed
 
-- 登录与目录查询；
-- 数据导入；
-- 自助 ETL；
-- 数据模型；
-- 透视分析与 API 生成仪表盘；
-- AIChat 图谱、问答、报告和导出；
-- Agent 创建、运行和部署。
+Playwright is **not required for the API core**. These operations work without opening a browser:
 
-只有复杂画布编辑、无法安全推断端口的 ETL 节点等备用操作需要 Playwright。
+- authentication and catalog queries;
+- file import;
+- self-service ETL;
+- data models;
+- pivot analyses and API-generated dashboards;
+- AIChat graph build, query, report, and export;
+- Agent creation, execution, and deployment.
 
-检查器按以下顺序自动复用 Playwright：
+Only visual canvas editing and ETL nodes whose port semantics cannot be inferred safely require the Playwright fallback.
 
-1. `SMARTBI_PLAYWRIGHT_PATH`；
-2. Skill 本地 `node_modules/playwright`；
-3. `~/.local/share/smartbi-platform/playwright` 专用安装；
-4. `~/.local/share/omp-playwright` 的 OMP 内置运行时。
+The inspector reuses Playwright in this order:
 
-如果任一路径可用，就不会重复安装。
+1. `SMARTBI_PLAYWRIGHT_PATH`;
+2. Skill-local `node_modules/playwright`;
+3. the managed installation under `~/.local/share/smartbi-platform/playwright`;
+4. the OMP runtime under `~/.local/share/omp-playwright`;
+5. normal Node module resolution.
 
-### 安装 Playwright 模块
+If any reusable installation is found, Playwright is not installed again.
+
+### Install Only the Playwright Module
 
 ```bash
 ./scripts/install.sh --install-playwright
 ```
 
-专用安装位置：
+The managed location is:
 
 ```text
 ~/.local/share/smartbi-platform/playwright
 ```
 
-该命令默认只安装 Playwright 模块，不额外下载 Chromium；如果本机已有 Chrome，这足以连接 CDP。
+This installs the module without downloading an extra browser. It is sufficient when the host already has Chrome or Chromium for CDP.
 
-### 同时安装 Playwright Chromium
+### Install Playwright Chromium Too
 
 ```bash
 ./scripts/install.sh --install-playwright --with-browser
 ```
 
-安装动作必须显式请求。普通 `--check` 和 `doctor` 永远不会修改系统。
+Installation must be requested explicitly. `--check` and `doctor` are always read-only.
 
-## 5. 启动有头浏览器备用模式
+## 5. Start a Headed Browser Fallback
 
-macOS 示例：
+macOS example:
 
 ```bash
 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
   --remote-debugging-port=9222 \
   --remote-debugging-address=127.0.0.1 \
   --user-data-dir=/tmp/smartbi-playwright-profile-cdp \
-  https://your-host.example/smartbi/vision/index.jsp
+  https://smartbi.example.com/smartbi/vision/index.jsp
 ```
 
-浏览器必须保持运行。然后检查：
+Replace the example URL with the configured tenant and keep the browser running. Verify it with:
 
 ```bash
 node scripts/smartbi.mjs doctor --require-browser
 ```
 
-默认 CDP 地址为 `http://127.0.0.1:9222`，可用 `SMARTBI_CDP_URL` 覆盖。
+The default CDP endpoint is `http://127.0.0.1:9222`. Override it with `SMARTBI_CDP_URL`.
 
-## 6. 首次配置
+## 6. First-Run Configuration
 
-交互式配置：
+Interactive setup:
 
 ```bash
 node scripts/smartbi.mjs setup --interactive
 ```
 
-向导会询问：
+The wizard requests:
 
-1. Smartbi Vision Base URL，必须以 `/vision` 结尾；
-2. 登录账号；
-3. 登录密码，终端不回显；
-4. 命名模式：`prefix` 或 `suffix`；
-5. 命名空间标记，例如 `TEAM_` 或 `_TEAM`。
+1. the Smartbi Vision base URL, ending in `/vision`;
+2. the login account;
+3. the login password, with terminal echo disabled;
+4. the naming mode: `prefix` or `suffix`;
+5. a neutral namespace marker, such as `TEAM_` or `_TEAM`.
 
-非交互式配置：
+Non-interactive setup:
 
 ```bash
 node scripts/smartbi.mjs setup \
-  --base-url https://your-host.example/smartbi/vision \
+  --base-url https://smartbi.example.com/smartbi/vision \
   --cred-file /path/to/credentials.txt \
   --namespace TEAM_ \
   --naming prefix
 ```
 
-凭据文件格式：
+Credential file format:
 
 ```text
-第一行：账号
-第二行：密码
+line 1: account
+line 2: password
 ```
 
-凭据文件和生成的配置文件应保持 `0600` 权限。凭据文件不会提交到仓库。
+Keep the credential and generated configuration files at mode `0600`. Neither file belongs in version control.
 
-## 7. 安装后验收
+## 7. Verify the Installation
 
 ```bash
 node scripts/smartbi.mjs doctor
@@ -212,54 +217,54 @@ node scripts/smartbi.mjs login
 node scripts/smartbi.mjs health
 ```
 
-预期结果：
+Expected results:
 
-- `doctor.readiness.apiCore` 为 `true`；
-- `codec-status` 返回已发现的 `SF1`、`SF2` 或 `SF3`；
-- `login.retCode` 为 `0`；
-- `health.state` 为 `workspace`。
+- `doctor.readiness.apiCore` is `true`;
+- `codec-status` reports a discovered `SF1`, `SF2`, or `SF3` transport;
+- `login.retCode` is `0`;
+- `health.state` is `workspace`.
 
-需要验证浏览器备用模式时：
+To require the browser fallback as part of acceptance:
 
 ```bash
 node scripts/smartbi.mjs doctor --require-browser
 ```
 
-## 8. 迁移到另一台主机或另一套 Smartbi
+## 8. Migrate to Another Host or Tenant
 
-迁移时不要复制会话 Cookie。执行：
+Do not copy session cookies. On the new host:
 
-1. 克隆 Skill 仓库；
-2. 运行 `./scripts/install.sh --check`；
-3. 根据检查结果决定是否安装 Node.js 或 Playwright；
-4. 运行 `setup --interactive` 配置新租户、凭据和命名空间；
-5. 运行 `codec-status --refresh`。
+1. clone the Skill;
+2. run `./scripts/install.sh --check`;
+3. install Node.js or Playwright only when the report says it is needed;
+4. run `setup --interactive` for the new tenant, credential file, and namespace;
+5. run `codec-status --refresh`.
 
-传输编码器会从新租户的前端资源自动发现，并按 Base URL 与 SHA-256 指纹独立缓存。旧租户的 Code 映射不会用于新租户。
+The transport coder is rediscovered from the new tenant's frontend resources and cached independently by base URL and SHA-256 fingerprint. A mapping from one tenant is never reused for another tenant.
 
-## 9. 环境变量
+## 9. Environment Variables
 
-| 变量 | 用途 |
+| Variable | Purpose |
 |---|---|
-| `SMARTBI_CONFIG_FILE` | 指定配置文件 |
-| `SMARTBI_BASE_URL` | 指定 Smartbi Vision 根地址 |
-| `SMARTBI_CDP_URL` | 指定浏览器 CDP 地址 |
-| `SMARTBI_CRED_FILE` | 指定两行凭据文件 |
-| `SMARTBI_CODEC_CACHE_FILE` | 指定传输编码器缓存 |
-| `SMARTBI_PLAYWRIGHT_PATH` | 指定 Playwright 包目录或入口文件 |
-| `SMARTBI_BROWSER_PATH` | 指定 Chrome/Chromium 可执行文件 |
-| `SMARTBI_NAMESPACE` | 覆盖资源命名空间 |
-| `SMARTBI_NAMING` | `prefix` 或 `suffix` |
+| `SMARTBI_CONFIG_FILE` | Configuration file path |
+| `SMARTBI_BASE_URL` | Smartbi Vision base URL |
+| `SMARTBI_CDP_URL` | Browser CDP endpoint |
+| `SMARTBI_CRED_FILE` | Two-line credential file |
+| `SMARTBI_CODEC_CACHE_FILE` | Transport-coder cache file |
+| `SMARTBI_PLAYWRIGHT_PATH` | Playwright package directory or entry file |
+| `SMARTBI_BROWSER_PATH` | Chrome/Chromium executable |
+| `SMARTBI_NAMESPACE` | Resource namespace override |
+| `SMARTBI_NAMING` | `prefix` or `suffix` |
 
-## 10. 开发验证
+## 10. Development Checks
 
 ```bash
 npm test
-# 等价于：
+# Equivalent:
 node --test tests/*.test.mjs
 ```
 
-语法检查：
+Syntax checks:
 
 ```bash
 node --check scripts/install.mjs
@@ -268,9 +273,11 @@ node --check scripts/smartbi.mjs
 sh -n scripts/install.sh
 ```
 
-## 安全边界
+## Privacy and Safety
 
-- 检查器只读取版本、文件是否存在和 CDP 状态；默认不安装任何软件。
-- 安装 Playwright 必须显式传入 `--install-playwright`。
-- 密码只从私有凭据文件读取，不进入环境报告、日志、缓存或 Git。
-- 所有平台写操作仍受命名空间与个人工作区所有权检查保护。
+- Public documentation uses neutral tenant, account, dataset, namespace, and resource placeholders.
+- The environment inspector reads only runtime versions, file presence, and CDP status; it installs nothing by default.
+- Installing Playwright requires the explicit `--install-playwright` flag.
+- Passwords are read only from the private credential file and never enter environment reports, logs, transport caches, or Git.
+- Platform mutations remain protected by namespace and personal-workspace ownership checks.
+- Keep private project titles, registration codes, delivery addresses, deadlines, and evidence outside this repository.

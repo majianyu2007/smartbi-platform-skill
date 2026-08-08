@@ -1,6 +1,6 @@
 # Smartbi Insight V11 Reverse-Engineered API Reference
 
-> Status: verified live against `smartbi.example.com` (2026-08-09).
+> Status: verified against a Smartbi Insight V11 tenant; host and account details are intentionally omitted.
 > Endpoints span `/smartbi/vision/`, `/smartbi/smartbix/api/`, and `/smartbi/`.
 
 ## 1. Transport: RMIServlet (all business calls)
