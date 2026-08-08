@@ -54,11 +54,17 @@ const MAX_TABLE_NAME = 30; // server truncates longer names
 
 function applyNamespace(base) {
   const value = String(NAMESPACE || '');
-  const name = NAMING_MODE === 'suffix' ? `${base}${value}` : `${value}${base}`;
+  const source = String(base || '');
+  const alreadyNamespaced = NAMING_MODE === 'suffix'
+    ? source.endsWith(value)
+    : source.startsWith(value);
+  if (alreadyNamespaced) return source.slice(0, MAX_TABLE_NAME);
+
+  const name = NAMING_MODE === 'suffix' ? `${source}${value}` : `${value}${source}`;
   if (name.length > MAX_TABLE_NAME) {
-    // prefer keeping the namespace marker; trim the base part
-    if (NAMING_MODE === 'suffix') return `${base.slice(0, MAX_TABLE_NAME - value.length)}${value}`;
-    return `${value}${base.slice(0, MAX_TABLE_NAME - value.length)}`;
+    // Prefer keeping the namespace marker; trim only the resource name.
+    if (NAMING_MODE === 'suffix') return `${source.slice(0, MAX_TABLE_NAME - value.length)}${value}`;
+    return `${value}${source.slice(0, MAX_TABLE_NAME - value.length)}`;
   }
   return name;
 }
@@ -365,9 +371,10 @@ async function cmdConfig() {
     configFile: CONFIG_FILE,
     credFile: CRED_FILE,
     naming: { mode: NAMING_MODE, value: NAMESPACE },
-    example: NAMING_MODE === 'suffix'
-      ? `survey_demo${NAMESPACE}`   // suffix example
-      : `${NAMESPACE}survey_demo`,  // prefix example
+    example: applyNamespace('survey_demo'),
+    alreadyNamespacedExample: applyNamespace(
+      NAMING_MODE === 'suffix' ? `survey_demo${NAMESPACE}` : `${NAMESPACE}survey_demo`,
+    ),
     envOverrides: ['SMARTBI_CRED_FILE', 'SMARTBI_NAMESPACE', 'SMARTBI_NAMING'],
   });
 }
