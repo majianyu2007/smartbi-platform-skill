@@ -19,9 +19,9 @@
 import { homedir } from 'node:os';
 import { randomBytes } from 'node:crypto';
 import { join, dirname } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { inspectEnvironment, loadPlaywright } from './install.mjs';
 import { createTransportCodec } from './transport-codec.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -2820,15 +2820,6 @@ function safeOutput(value) {
 }
 
 // ---- Playwright fallback (UI-only operations) ----
-async function loadPlaywright() {
-  try { return await import('playwright'); } catch (bareImportError) {
-    const fallback = join(homedir(), '.local/share/omp-playwright/node_modules/playwright/index.mjs');
-    try { return await import(pathToFileURL(fallback).href); }
-    catch (fallbackError) {
-      throw new Error(`Playwright unavailable: ${bareImportError.message}; ${fallbackError.message}`);
-    }
-  }
-}
 
 async function connect() {
   const { chromium } = await loadPlaywright();
@@ -3122,6 +3113,8 @@ async function cmdConfig() {
       'SMARTBI_BASE_URL',
       'SMARTBI_CDP_URL',
       'SMARTBI_CRED_FILE',
+      'SMARTBI_PLAYWRIGHT_PATH',
+      'SMARTBI_BROWSER_PATH',
       'SMARTBI_CODEC_CACHE_FILE',
       'SMARTBI_NAMESPACE',
       'SMARTBI_NAMING',
@@ -3135,6 +3128,20 @@ async function cmdCodecStatus(argsList) {
   }
   await ensureTransportCodec({ refresh: argsList.includes('--refresh') });
   safeOutput({ baseUrl: BASE_URL, ...transportCodec.status() });
+}
+
+async function cmdDoctor(argsList) {
+  if (argsList.some((argument) => argument !== '--require-browser')) {
+    throw new Error('doctor accepts only [--require-browser]');
+  }
+  const report = await inspectEnvironment({ cdpUrl: CDP_URL });
+  if (!report.readiness.apiCore) {
+    throw new Error(`Node.js ${report.node.minimumMajor}+ is required`);
+  }
+  if (argsList.includes('--require-browser') && !report.readiness.browserFallback) {
+    throw new Error('browser fallback is not ready; run scripts/install.sh --install-playwright');
+  }
+  safeOutput(report);
 }
 
 // ---- main ----
@@ -3185,6 +3192,7 @@ try {
     case 'setup': await cmdSetup(args); break;
     case 'config': await cmdConfig(); break;
     case 'codec-status': await cmdCodecStatus(args); break;
+    case 'doctor': await cmdDoctor(args); break;
     case 'manuals': safeOutput({
       quickStart: 'https://wiki.smartbi.com.cn/pages/viewpage.action?pageId=111897106',
       competition: 'https://wiki.smartbi.com.cn/pages/viewpage.action?pageId=168628225',
@@ -3193,7 +3201,7 @@ try {
       orderRiskWarning: 'https://wiki.smartbi.com.cn/pages/viewpage.action?pageId=168629228',
     }); break;
     default:
-      throw new Error(`Unknown command: ${command}\nusage: smartbi.mjs <setup|login|health|config|codec-status|invoke|api-get|api-post|plain-get|plain-post|tree|folder-create|resource-delete|upload|etl-node-list|etl-create|etl-insert|etl-get|etl-run|etl-row-number|model-get|model-create|model-clone|analysis-get|analysis-create|analysis-run|analysis-clone|dashboard-get|dashboard-create|dashboard-clone|aichat-graph-list|aichat-graph-status|aichat-graph-fields|aichat-graph-build|aichat-query|aichat-report|aichat-export|agent-get|agent-create|agent-run|agent-deploy|nav|ui-open|ui-dashboard-check|manuals> ...`);
+      throw new Error(`Unknown command: ${command}\nusage: smartbi.mjs <setup|doctor|login|health|config|codec-status|invoke|api-get|api-post|plain-get|plain-post|tree|folder-create|resource-delete|upload|etl-node-list|etl-create|etl-insert|etl-get|etl-run|etl-row-number|model-get|model-create|model-clone|analysis-get|analysis-create|analysis-run|analysis-clone|dashboard-get|dashboard-create|dashboard-clone|aichat-graph-list|aichat-graph-status|aichat-graph-fields|aichat-graph-build|aichat-query|aichat-report|aichat-export|agent-get|agent-create|agent-run|agent-deploy|nav|ui-open|ui-dashboard-check|manuals> ...`);
   }
   process.exit(0);
 } catch (error) {

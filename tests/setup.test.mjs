@@ -162,8 +162,11 @@ test('generic API and ETL commands reject unsafe or incomplete input before auth
     const plain = runCli(['plain-post', 'https://example.com/api', '{}'], {
       SMARTBI_CONFIG_FILE: workspace.config,
     });
-    assert.equal(plain.status, 1);
 
+    const doctor = runCli(['doctor', '--install'], { SMARTBI_CONFIG_FILE: workspace.config });
+    assert.equal(doctor.status, 1);
+    assert.match(doctor.stderr, /doctor accepts only/);
+    assert.equal(plain.status, 1);
     const rawMutation = runCli([
       'invoke', 'CatalogService', 'deleteCatalogElement', '["foreign-id"]',
     ], { SMARTBI_CONFIG_FILE: workspace.config });
@@ -192,7 +195,7 @@ test('generic API and ETL commands reject unsafe or incomplete input before auth
     const dashboard = runCli(['ui-dashboard-check'], { SMARTBI_CONFIG_FILE: workspace.config });
     assert.equal(dashboard.status, 1);
     assert.match(dashboard.stderr, /ui-dashboard-check requires <resourceId>/);
-    assert.doesNotMatch(`${plain.stderr}${rawMutation.stderr}${apiMutation.stderr}${etl.stderr}${folder.stderr}${deletion.stderr}${dashboard.stderr}`, /password|cookie/i);
+    assert.doesNotMatch(`${plain.stderr}${rawMutation.stderr}${apiMutation.stderr}${etl.stderr}${folder.stderr}${deletion.stderr}${dashboard.stderr}${doctor.stderr}`, /password|cookie/i);
   } finally {
     workspace.cleanup();
   }

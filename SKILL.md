@@ -68,6 +68,28 @@ The platform account is **shared by multiple team members**. You MUST:
 
 Never assume state from a previous call: `health` first.
 
+## Installation and Environment Doctor
+
+Read `README.md` for the complete installation and migration procedure. Before
+first use, run:
+
+```bash
+./scripts/install.sh --check
+```
+
+The shell bootstrap can report a missing/unsupported Node.js before any MJS
+code runs. The Node doctor then detects npm, reusable Playwright installations,
+system or Playwright browsers, and CDP readiness. Node.js 20+ is required.
+Playwright is optional for the API core and required only for the browser
+fallback. Install it only when the report says it is missing:
+
+```bash
+./scripts/install.sh --install-playwright
+# Add --with-browser only when no Chrome/Chromium is already available.
+```
+
+`doctor` is read-only. `--check` never installs software.
+
 ## First-Run Setup (guided)
 
 On first load, configure the target tenant, credentials, and naming before any
@@ -108,6 +130,8 @@ default). Environment variables override it per invocation:
 | `SMARTBI_CDP_URL` | headed-browser fallback CDP endpoint | `http://127.0.0.1:9222` |
 | `SMARTBI_CRED_FILE` | credentials file path | `~/.config/smartbi-platform/credentials.txt` |
 | `SMARTBI_CODEC_CACHE_FILE` | versioned frontend-coder cache | `~/.cache/smartbi-platform/transport-codec.json` |
+| `SMARTBI_PLAYWRIGHT_PATH` | explicit Playwright package/entry | `/path/to/playwright` |
+| `SMARTBI_BROWSER_PATH` | explicit Chrome/Chromium executable | `/path/to/chrome` |
 | `SMARTBI_NAMESPACE` | namespace marker | `TEAM_` or `_MYTEAM` |
 | `SMARTBI_NAMING` | `prefix` or `suffix` | `prefix` |
 
@@ -144,6 +168,7 @@ protocol deliberately fails closed and requires a new adapter.
 
 ```bash
 cd ~/.codex/skills/smartbi-platform
+TMPDIR=/tmp node scripts/smartbi.mjs doctor         # Node/Playwright/browser
 
 TMPDIR=/tmp node scripts/smartbi.mjs setup          # first-run guidance
 TMPDIR=/tmp node scripts/smartbi.mjs config         # effective config
@@ -173,6 +198,7 @@ TMPDIR=/tmp node scripts/smartbi.mjs manuals        # official manual links
 
 | Command | Purpose | Output |
 |---|---|---|
+| `doctor [--require-browser]` | Detect Node.js, npm, Playwright, browser, and CDP readiness | safe environment report |
 | `setup [flags]` | First-run guided config (tenant + credentials + naming) | `{action:"setup_done", saved}` |
 | `config` | Show effective tenant/config + naming example | safe configuration |
 | `codec-status [--refresh]` | Discover, hash, cache, and negotiate the frontend transport coder | source/fingerprint/algorithm |
