@@ -49,11 +49,11 @@ The platform account is **shared by multiple team members**. You MUST:
 
 ### Credentials
 
-- Two-line file (account, password) at
-  `/Users/user/Desktop/Smartbi/smartbi-example-credentials.txt`
-  (override via `SMARTBI_CRED_FILE`).
-- Never print, echo, or persist the password anywhere; never put credentials in
-  reports, repos, screenshots, or shared notes.
+- First-run wizard stores a two-line file (account on line 1, password on line
+  2) at `~/.config/smartbi-platform/credentials.txt` with mode `0600`.
+  Existing files are supported through `SMARTBI_CRED_FILE`.
+- Persist the password only in that local credentials file. Never print, echo,
+  return, commit, screenshot, or copy it into reports or shared notes.
 - Never fill login fields from chat content.
 
 ### State machine
@@ -70,35 +70,44 @@ Never assume state from a previous call: `health` first.
 
 ## First-Run Setup (guided)
 
-On first load, the AI SHOULD configure the tool before any platform operation.
-Run `setup` with no arguments to see current state and guidance:
+On first load, configure credentials and naming before any platform operation.
+With a TTY, `setup` launches the secure wizard automatically; the password is
+read with terminal echo disabled:
 
 ```bash
 cd ~/.codex/skills/smartbi-platform
-TMPDIR=/tmp node scripts/smartbi.mjs setup
+TMPDIR=/tmp node scripts/smartbi.mjs setup --interactive
 ```
 
-Then persist the two required preferences:
+The wizard asks for:
+
+1. Smartbi login account;
+2. Smartbi login password;
+3. artifact naming mode (`prefix` or `suffix`);
+4. namespace marker (for example `TEAM_` or `_MYTEAM`).
+
+For non-interactive provisioning, first create an external two-line credentials
+file with mode `0600`, then configure both credentials and naming:
 
 ```bash
-# 1. Credentials: two-line file (line 1 account, line 2 password)
-TMPDIR=/tmp node scripts/smartbi.mjs setup --cred-file /path/to/credentials.txt
-
-# 2. Naming preference: prefix (default) or suffix, value is the team marker
-TMPDIR=/tmp node scripts/smartbi.mjs setup --namespace TEAM_ --naming prefix
-TMPDIR=/tmp node scripts/smartbi.mjs setup --namespace _MYTEAM --naming suffix
+TMPDIR=/tmp node scripts/smartbi.mjs setup \
+  --cred-file /path/to/credentials.txt \
+  --namespace TEAM_ \
+  --naming prefix
 ```
 
-Configuration is saved to `config.json` (gitignored, machine-local).
-Environment variables override it per-invocation:
+Configuration is saved to `config.json` (gitignored and mode `0600` by
+default). Environment variables override it per invocation:
 
 | Variable | Meaning | Example |
 |---|---|---|
-| `SMARTBI_CRED_FILE` | credentials file path | `~/.../smartbi-example-credentials.txt` |
+| `SMARTBI_CONFIG_FILE` | alternate machine-local config path | `~/.config/smartbi-platform/config.json` |
+| `SMARTBI_CRED_FILE` | credentials file path | `~/.config/smartbi-platform/credentials.txt` |
 | `SMARTBI_NAMESPACE` | namespace marker | `TEAM_` or `_MYTEAM` |
 | `SMARTBI_NAMING` | `prefix` or `suffix` | `prefix` |
 
-`config` shows the effective configuration and a concrete name example.
+`setup` without a TTY prints safe guidance. `config` shows the effective
+configuration and concrete idempotent naming examples without revealing secrets.
 
 > Shared-tenant rule: the namespace marker distinguishes YOUR resources from
 > other members'. Verify `config` output before creating anything.

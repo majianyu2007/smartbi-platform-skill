@@ -25,7 +25,7 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SKILL_DIR = join(__dirname, '..');
-const CONFIG_FILE = join(SKILL_DIR, 'config.json');
+const CONFIG_FILE = process.env.SMARTBI_CONFIG_FILE || join(SKILL_DIR, 'config.json');
 
 // ---- config: credentials + naming preference ----
 // Config file (config.json in skill dir, gitignored) is written by `setup`.
@@ -45,7 +45,7 @@ const BASE_URL = process.env.SMARTBI_BASE_URL || 'https://smartbi.example.com/sm
 const LOGIN_URL = `${BASE_URL}/index.jsp`;
 const CRED_FILE = process.env.SMARTBI_CRED_FILE
   || CONFIG.credFile
-  || '/Users/user/Desktop/Smartbi/smartbi-example-credentials.txt';
+  || join(homedir(), '.config', 'smartbi-platform', 'credentials.txt');
 
 // Naming preference: prefix (default) or suffix, value configurable.
 // e.g. prefix "TEAM_" -> TEAM_survey_demo ; suffix "_TEAM" -> survey_demo_TEAM
@@ -591,55 +591,158 @@ async function cmdNav(moduleName) {
 }
 
 // ---- setup / config ----
-// First-run guided configuration: credentials file + naming preference.
-// Usage: smartbi.mjs setup [--cred-file <path>] [--namespace <value>] [--naming prefix|suffix]
-async function cmdSetup(argsList) {
-  const opts = {};
-  for (let i = 0; i < argsList.length; i += 2) {
-    if (argsList[i].startsWith('--')) opts[argsList[i].slice(2)] = argsList[i + 1];
+// First-run guided configuration: account/password file + naming preference.
+// Usage:
+//   smartbi.mjs setup --interactive
+//   smartbi.mjs setup --cred-file <path> --namespace <value> --naming prefix|suffix
+function parseSetupArgs(argsList) {
+  const options = {};
+  for (let index = 0; index < argsList.length; index += 1) {
+    const argument = argsList[index];
+    if (argument === '--interactive') {
+      options.interactive = true;
+      continue;
+    }
+    if (!argument.startsWith('--')) throw new Error(`unexpected setup argument: ${argument}`);
+    const value = argsList[index + 1];
+    if (!value || value.startsWith('--')) throw new Error(`missing value for ${argument}`);
+    options[argument.slice(2)] = value;
+    index += 1;
   }
-  const current = { credFile: CRED_FILE, naming: { mode: NAMING_MODE, value: NAMESPACE } };
+  return options;
+}
 
-  if (!opts['cred-file'] && !opts['namespace'] && !opts['naming']) {
-    // Interactive guidance: print current state + instructions (safe output).
+function normalizeNaming(mode, value) {
+  if (mode !== 'prefix' && mode !== 'suffix') {
+    throw new Error(`invalid naming mode: ${mode} (use prefix or suffix)`);
+  }
+  const normalized = String(value || '').replace(/[^\w.-]/g, '');
+  if (!normalized) throw new Error('namespace value must not be empty');
+  return { mode, value: normalized };
+}
+
+function validateCredentialsFile(path) {
+  if (!existsSync(path)) throw new Error(`credentials file not found: ${path}`);
+  const [account, password] = readFileSync(path, 'utf8').split(/\r?\n/);
+  if (!account || !password) {
+    throw new Error(`credentials file must contain account on line 1 and password on line 2: ${path}`);
+  }
+}
+
+async function persistSetup(saved) {
+  validateCredentialsFile(saved.credFile);
+  const { writeFileSync, mkdirSync } = await import('node:fs');
+  mkdirSync(dirname(CONFIG_FILE), { recursive: true });
+  writeFileSync(CONFIG_FILE, `${JSON.stringify(saved, null, 2)}\n`, { mode: 0o600 });
+  safeOutput({
+    action: 'setup_done',
+    message: 'Credentials and naming preference configured. Secrets were not emitted.',
+    configFile: CONFIG_FILE,
+    saved,
+    next: 'node scripts/smartbi.mjs health',
+  });
+}
+
+async function promptLine(label, defaultValue = '') {
+  const { createInterface } = await import('node:readline/promises');
+  const reader = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const suffix = defaultValue ? ` [${defaultValue}]` : '';
+    const answer = (await reader.question(`${label}${suffix}: `)).trim();
+    return answer || defaultValue;
+  } finally {
+    reader.close();
+  }
+}
+
+async function promptSecret(label) {
+  if (!process.stdin.isTTY || !process.stdout.isTTY || typeof process.stdin.setRawMode !== 'function') {
+    throw new Error('interactive password entry requires a TTY');
+  }
+  process.stdout.write(`${label}: `);
+  return new Promise((resolve, reject) => {
+    const input = process.stdin;
+    const wasRaw = Boolean(input.isRaw);
+    let secret = '';
+    const cleanup = () => {
+      input.off('data', onData);
+      input.setRawMode(wasRaw);
+      input.pause();
+      process.stdout.write('\n');
+    };
+    const onData = (chunk) => {
+      for (const character of String(chunk)) {
+        if (character === '\u0003') {
+          cleanup();
+          reject(new Error('setup cancelled'));
+          return;
+        }
+        if (character === '\r' || character === '\n') {
+          cleanup();
+          resolve(secret);
+          return;
+        }
+        if (character === '\u007f' || character === '\b') {
+          secret = secret.slice(0, -1);
+          continue;
+        }
+        if (character >= ' ') secret += character;
+      }
+    };
+    input.setEncoding('utf8');
+    input.setRawMode(true);
+    input.resume();
+    input.on('data', onData);
+  });
+}
+
+async function runInteractiveSetup() {
+  const account = await promptLine('Smartbi login account');
+  const password = await promptSecret('Smartbi login password (hidden)');
+  if (!account || !password) throw new Error('account and password are required');
+
+  const mode = await promptLine('Artifact naming mode (prefix or suffix)', NAMING_MODE);
+  const suggested = mode === 'suffix' ? '_TEAM' : 'TEAM_';
+  const naming = normalizeNaming(mode, await promptLine('Namespace marker', suggested));
+  const credentialsPath = join(homedir(), '.config', 'smartbi-platform', 'credentials.txt');
+  const { writeFileSync, mkdirSync, chmodSync } = await import('node:fs');
+  mkdirSync(dirname(credentialsPath), { recursive: true });
+  writeFileSync(credentialsPath, `${account}\n${password}\n`, { mode: 0o600 });
+  chmodSync(credentialsPath, 0o600);
+  await persistSetup({ credFile: credentialsPath, naming });
+}
+
+async function cmdSetup(argsList) {
+  const options = parseSetupArgs(argsList);
+  if (options.interactive || (argsList.length === 0 && process.stdin.isTTY && process.stdout.isTTY)) {
+    await runInteractiveSetup();
+    return;
+  }
+
+  const current = { credFile: CRED_FILE, naming: { mode: NAMING_MODE, value: NAMESPACE } };
+  if (!options['cred-file'] && !options.namespace && !options.naming) {
     safeOutput({
       action: 'setup_needed',
-      message: 'First-run setup: configure credentials and naming preference.',
+      message: 'First-run setup: configure login account/password and prefix or suffix naming.',
       current,
       configFile: CONFIG_FILE,
       commands: [
-        'node scripts/smartbi.mjs setup --cred-file /path/to/credentials.txt',
-        'node scripts/smartbi.mjs setup --namespace TEAM_ --naming prefix',
-        'node scripts/smartbi.mjs setup --namespace _MYTEAM --naming suffix',
+        'node scripts/smartbi.mjs setup --interactive',
+        'node scripts/smartbi.mjs setup --cred-file /path/to/credentials.txt --namespace TEAM_ --naming prefix',
+        'node scripts/smartbi.mjs setup --cred-file /path/to/credentials.txt --namespace _TEAM --naming suffix',
       ],
     });
     return;
   }
 
   const saved = {
-    credFile: opts['cred-file'] || CONFIG.credFile || current.credFile,
-    naming: {
-      mode: opts['naming'] || CONFIG.naming?.mode || current.naming.mode,
-      value: opts['namespace'] || CONFIG.naming?.value || current.naming.value,
-    },
+    credFile: options['cred-file'] || CONFIG.credFile || current.credFile,
+    naming: normalizeNaming(
+      options.naming || CONFIG.naming?.mode || current.naming.mode,
+      options.namespace || CONFIG.naming?.value || current.naming.value,
+    ),
   };
-  if (saved.naming.mode !== 'prefix' && saved.naming.mode !== 'suffix') {
-    throw new Error(`invalid naming mode: ${saved.naming.mode} (use prefix or suffix)`);
-  }
-  // sanitize namespace: keep only safe chars
-  saved.naming.value = saved.naming.value.replace(/[^\w.-]/g, '');
-  if (!saved.naming.value) throw new Error('namespace value must not be empty');
-
-  const { writeFileSync, mkdirSync } = await import('node:fs');
-  mkdirSync(dirname(CONFIG_FILE), { recursive: true });
-  writeFileSync(CONFIG_FILE, JSON.stringify(saved, null, 2) + '\n');
-  safeOutput({
-    action: 'setup_done',
-    message: 'Configuration saved. Environment variables (SMARTBI_CRED_FILE, SMARTBI_NAMESPACE, SMARTBI_NAMING) override this file.',
-    configFile: CONFIG_FILE,
-    saved,
-    next: 'node scripts/smartbi.mjs health',
-  });
+  await persistSetup(saved);
 }
 
 async function cmdConfig() {
@@ -651,7 +754,7 @@ async function cmdConfig() {
     alreadyNamespacedExample: applyNamespace(
       NAMING_MODE === 'suffix' ? `survey_demo${NAMESPACE}` : `${NAMESPACE}survey_demo`,
     ),
-    envOverrides: ['SMARTBI_CRED_FILE', 'SMARTBI_NAMESPACE', 'SMARTBI_NAMING'],
+    envOverrides: ['SMARTBI_CONFIG_FILE', 'SMARTBI_CRED_FILE', 'SMARTBI_NAMESPACE', 'SMARTBI_NAMING'],
   });
 }
 
