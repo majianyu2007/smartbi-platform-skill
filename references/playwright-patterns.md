@@ -216,6 +216,10 @@ Live behavior:
 - Agent execution success requires graph state `FINISH` and non-empty
   `dataagent/output/{llmNodeId-instanceId}`. A transient UI error dialog can
   race a completed backend run; treat the backend state/output as authoritative.
+- CLI adapters `ui-open` and `ui-dashboard-check` first resolve the catalog
+  resource through the authenticated API and refuse non-namespaced resources.
+  The dashboard check requires a `SMARTBIX_PAGE`, a redirected Smartbix URL,
+  visible chart output, and non-empty page text.
 
 ## Error Recovery
 

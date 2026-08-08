@@ -143,7 +143,15 @@ test('generic API and ETL commands reject unsafe or incomplete input before auth
     const folder = runCli(['folder-create'], { SMARTBI_CONFIG_FILE: workspace.config });
     assert.equal(folder.status, 1);
     assert.match(folder.stderr, /folder-create requires <parentId> <name>/);
-    assert.doesNotMatch(`${plain.stderr}${etl.stderr}${folder.stderr}`, /password|cookie/i);
+
+    const deletion = runCli(['resource-delete'], { SMARTBI_CONFIG_FILE: workspace.config });
+    assert.equal(deletion.status, 1);
+    assert.match(deletion.stderr, /resource-delete requires <parentId> <resourceId>/);
+
+    const dashboard = runCli(['ui-dashboard-check'], { SMARTBI_CONFIG_FILE: workspace.config });
+    assert.equal(dashboard.status, 1);
+    assert.match(dashboard.stderr, /ui-dashboard-check requires <resourceId>/);
+    assert.doesNotMatch(`${plain.stderr}${etl.stderr}${folder.stderr}${deletion.stderr}${dashboard.stderr}`, /password|cookie/i);
   } finally {
     workspace.cleanup();
   }

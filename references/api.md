@@ -75,6 +75,9 @@ Personal acquisition folder under `可导入数据库 > input > 数据采集空�
 Folder creation uses `CatalogService.createFolderElement` with
 `[parentId, name, alias, description, null, false, "DEFAULT_TREENODE.png"]`.
 The CLI namespaces the name and verifies the saved child before returning.
+Deletion uses `CatalogService.isCatalogElementAccessible(id, "DELETE")` then
+`deleteCatalogElement(id)`. The CLI also requires an exact parent-child match,
+a configured namespace, and post-delete absence.
 
 ## 4. File import chain (DataPackageServlet)
 
@@ -99,6 +102,8 @@ action=GET_PREVIEW_DATA&clientId=<id>&previewRows=30&sheetIndex=0
 
 Response `result`: `{rowCount, datas[][], fieldTypeList[], fieldNameList[], fieldAliasList[]}`.
 `fieldTypeList` values seen: `STRING`, `INTEGER`, `DOUBLE`, `DATETIME`/`DATE`.
+`rowCount` includes the configured header row; CLI output subtracts that row
+and reports imported data records.
 
 ### 4.3 GET_TARGET_DATASOURCES — list importable data sources
 

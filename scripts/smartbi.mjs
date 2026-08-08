@@ -304,7 +304,9 @@ async function cmdHealth() {
 }
 
 async function cmdInvoke(className, methodName, paramsJson) {
+  if (!className || !methodName) throw new Error('invoke requires <class> <method> [json]');
   const params = paramsJson ? JSON.parse(paramsJson) : [];
+  await ensureSession();
   const ret = await rmi(className, methodName, params);
   safeOutput(ret);
 }
@@ -1869,6 +1871,32 @@ async function cmdFolderCreate(parentId, requestedName, description = '') {
   safeOutput({ ok: true, created: true, id: saved.id, name: saved.name, alias: saved.alias });
 }
 
+async function cmdResourceDelete(parentId, resourceId) {
+  if (!parentId || !resourceId) {
+    throw new Error('resource-delete requires <parentId> <resourceId>');
+  }
+  await ensureSession();
+  const before = await rmi('CatalogService', 'getChildElements', [parentId]);
+  if (before.retCode !== 0) throw new Error(`cannot list resource parent: ${JSON.stringify(before)}`);
+  const resource = (before.result || []).find((node) => node.id === resourceId);
+  if (!resource) throw new Error(`resource is not a direct child of the supplied parent: ${resourceId}`);
+  if (!hasNamespace(resource.name || resource.alias)) {
+    throw new Error(`refusing to delete non-namespaced resource: ${resource.alias || resource.name}`);
+  }
+  const purview = await rmi('CatalogService', 'isCatalogElementAccessible', [resourceId, 'DELETE']);
+  if (purview.retCode !== 0 || purview.result !== true) {
+    throw new Error(`delete permission denied: ${resourceId}`);
+  }
+  const deleted = await rmi('CatalogService', 'deleteCatalogElement', [resourceId]);
+  if (deleted.retCode !== 0) throw new Error(`resource deletion failed: ${JSON.stringify(deleted)}`);
+  const after = await rmi('CatalogService', 'getChildElements', [parentId]);
+  if ((after.result || []).some((node) => node.id === resourceId)) {
+    throw new Error(`deleted resource is still visible: ${resourceId}`);
+  }
+  safeOutput({ ok: true, deleted: true, id: resourceId, name: resource.name, alias: resource.alias });
+}
+
+
 
 // Walk the import tree to locate the personal acquisition space under 可导入数据库.
 async function locatePersonalFolder() {
@@ -2028,7 +2056,7 @@ async function cmdUpload(
           ok: true,
           table,
           tableRef,
-          rows: status.result.rowCount ?? rowCount,
+          rows: Math.max(0, Number(status.result.rowCount ?? rowCount ?? 1) - 1),
           fields: resolvedFieldNames,
           replaced: Boolean(existing),
         });
@@ -2632,6 +2660,73 @@ function workspacePage(context) {
   return context.pages().find((page) => page.url().includes('/smartbi/vision/index.jsp'));
 }
 
+async function loadOwnedCatalogResource(resourceId, expectedTypes = []) {
+  if (!resourceId) throw new Error('resource id is required');
+  await ensureSession();
+  const response = await rmi('CatalogService', 'getCatalogElementById', [resourceId]);
+  const resource = response.result;
+  if (response.retCode !== 0 || !resource?.id) {
+    throw new Error(`catalog resource not found: ${resourceId}`);
+  }
+  if (!hasNamespace(resource.name || resource.alias)) {
+    throw new Error(`refusing to open non-namespaced resource: ${resource.alias || resource.name}`);
+  }
+  if (expectedTypes.length > 0 && !expectedTypes.includes(resource.type)) {
+    throw new Error(`unexpected resource type ${resource.type}; expected ${expectedTypes.join(', ')}`);
+  }
+  return resource;
+}
+
+async function openOwnedResourcePage(resourceId, expectedTypes = []) {
+  const resource = await loadOwnedCatalogResource(resourceId, expectedTypes);
+  const { context } = await connect();
+  const page = await context.newPage();
+  await page.goto(
+    `${BASE_URL}/openresource.jsp?resid=${encodeURIComponent(resourceId)}`,
+    { waitUntil: 'domcontentloaded', timeout: 60000 },
+  );
+  if ((await page.locator('body').innerText()).includes('欢迎登录')) {
+    await page.close();
+    throw new Error('headed browser login required');
+  }
+  return { page, resource };
+}
+
+async function cmdUiOpen(resourceId) {
+  if (!resourceId) throw new Error('ui-open requires <resourceId>');
+  const { page, resource } = await openOwnedResourcePage(resourceId);
+  await page.waitForFunction(() => !location.href.includes('/openresource.jsp'), null, { timeout: 60000 });
+  safeOutput({
+    ok: true,
+    id: resource.id,
+    name: resource.name,
+    type: resource.type,
+    title: await page.title(),
+    url: page.url(),
+  });
+}
+
+async function cmdUiDashboardCheck(resourceId) {
+  if (!resourceId) throw new Error('ui-dashboard-check requires <resourceId>');
+  const { page, resource } = await openOwnedResourcePage(resourceId, ['SMARTBIX_PAGE']);
+  await page.waitForFunction(() => location.href.includes('/smartbix/'), null, { timeout: 60000 });
+  await page.locator('canvas, svg').first().waitFor({ state: 'visible', timeout: 60000 });
+  const title = await page.title();
+  const text = (await page.locator('body').innerText()).trim();
+  const chartCount = await page.locator('canvas, svg').count();
+  if (chartCount === 0 || !text) throw new Error(`dashboard did not render: ${resourceId}`);
+  safeOutput({
+    ok: true,
+    id: resource.id,
+    name: resource.name,
+    title,
+    chartCount,
+    text: text.slice(0, 500),
+    url: page.url(),
+  });
+}
+
+
 async function cmdNav(moduleName) {
   const MODULES = new Set(['数据门户', '数据连接', '数据准备', '分析展现', 'AIChat', 'Agent', '数据挖掘', '运维设置']);
   if (!MODULES.has(moduleName)) throw new Error(`Unsupported module: ${moduleName}`);
@@ -2848,6 +2943,7 @@ try {
     case 'agent-deploy': await cmdAgentDeploy(args[0]); break;
     case 'tree': await cmdTree(args[0]); break;
     case 'folder-create': await cmdFolderCreate(args[0], args[1], args.slice(2).join(' ')); break;
+    case 'resource-delete': await cmdResourceDelete(args[0], args[1]); break;
     case 'upload': await cmdUploadArgs(args); break;
     case 'etl-create': await cmdEtlCreate(args[0], args[1], args[2], args[3], args[4], args[5]); break;
     case 'etl-node-list': await cmdEtlNodeList(args.join(' ')); break;
@@ -2856,6 +2952,8 @@ try {
     case 'etl-run': await cmdEtlRun(args[0]); break;
     case 'etl-row-number': await cmdEtlRowNumber(args[0], args[1]); break;
     case 'nav': await cmdNav(args[0]); break;
+    case 'ui-open': await cmdUiOpen(args[0]); break;
+    case 'ui-dashboard-check': await cmdUiDashboardCheck(args[0]); break;
     case 'setup': await cmdSetup(args); break;
     case 'config': await cmdConfig(); break;
     case 'manuals': safeOutput({
@@ -2866,7 +2964,7 @@ try {
       orderRiskWarning: 'https://wiki.smartbi.com.cn/pages/viewpage.action?pageId=168629228',
     }); break;
     default:
-      throw new Error(`Unknown command: ${command}\nusage: smartbi.mjs <setup|login|health|config|invoke|api-get|api-post|plain-get|plain-post|tree|folder-create|upload|etl-node-list|etl-create|etl-insert|etl-get|etl-run|etl-row-number|model-get|model-create|model-clone|analysis-get|analysis-create|analysis-run|analysis-clone|dashboard-get|dashboard-create|dashboard-clone|aichat-graph-list|aichat-graph-fields|aichat-graph-status|aichat-graph-build|aichat-query|aichat-report|aichat-export|agent-get|agent-create|agent-run|agent-deploy|nav|manuals> ...`);
+      throw new Error(`Unknown command: ${command}\nusage: smartbi.mjs <setup|login|health|config|invoke|api-get|api-post|plain-get|plain-post|tree|folder-create|resource-delete|upload|etl-node-list|etl-create|etl-insert|etl-get|etl-run|etl-row-number|model-get|model-create|model-clone|analysis-get|analysis-create|analysis-run|analysis-clone|dashboard-get|dashboard-create|dashboard-clone|aichat-graph-list|aichat-graph-fields|aichat-graph-status|aichat-graph-build|aichat-query|aichat-report|aichat-export|agent-get|agent-create|agent-run|agent-deploy|nav|ui-open|ui-dashboard-check|manuals> ...`);
   }
   process.exit(0);
 } catch (error) {

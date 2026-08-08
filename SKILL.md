@@ -152,6 +152,7 @@ TMPDIR=/tmp node scripts/smartbi.mjs manuals        # official manual links
 | `plain-get <path>` / `plain-post <path> [json]` | Guarded `/smartbi/` plain-JSON API replay | JSON/text response |
 | `tree [id]` | List catalog children of node | `{parent, nodes:[...]}` |
 | `folder-create <parentId> <name> [description]` | Idempotently create one namespaced catalog folder | `{created,id,name,alias}` |
+| `resource-delete <parentId> <resourceId>` | Delete one direct, namespaced catalog child after a permission check | deletion receipt |
 | `upload <file> [tableName]` | Import CSV/TXT/XLSX as a namespaced table | `{ok, table, rows, clientId}` |
 | `etl-create <parentId> <sourceTableId> <targetTableId> <name> [rowNumber|-] [description]` | Build an owned source→optional row-number→materialized-output ETL | saved DAG |
 | `etl-get <flowId>` / `etl-run <flowId>` | Inspect or execute one owned saved ETL | DAG / terminal node states |
@@ -171,6 +172,8 @@ TMPDIR=/tmp node scripts/smartbi.mjs manuals        # official manual links
 | `agent-create <parentId> <name> [desc] [systemPrompt] [userPrompt]` | Build a Start→LLM→Finish Agent from live node templates | saved Agent summary |
 | `agent-run <agentId> <question>` | Run one owned Agent and poll/read LLM output | answer, tokens, node states |
 | `agent-deploy <agentId>` | Idempotently publish one owned Agent | deployment relation |
+| `ui-open <resourceId>` | Open one owned catalog resource in the headed CDP browser | page title and URL |
+| `ui-dashboard-check <resourceId>` | Open and assert one owned dashboard renders | title, chart count, visible text |
 | `nav <module>` | Browser module navigation (CDP fallback) | `{state:"module", module, url}` |
 | `manuals` | Official wiki links | map |
 
