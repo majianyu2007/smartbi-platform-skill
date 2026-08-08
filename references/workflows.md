@@ -89,18 +89,21 @@ Minimum reconciliation after ETL:
 - primary-key uniqueness;
 - a small safe sample checked against rules.
 
-Verified hybrid pattern for a flat survey table:
+Verified API-first pattern for a flat survey table:
 
-1. Build and save the source node in the UI.
-2. Read the saved DAG with `smartbi.mjs etl-get <flowId>`.
-3. If the source has no stable identifier, add a deterministic row key with
-   `smartbi.mjs etl-row-number <flowId> row_number`; choose a name that does
-   not collide with an existing field.
-4. Run with `smartbi.mjs etl-run <flowId>`.
-5. Require flow state `FINISH`, every node `FINISH`, and a terminal preview
-   containing the new key plus all expected source fields.
-6. Keep this as a non-materialized preparation flow unless a downstream
-   requirement specifically needs a new physical table.
+1. Import namespaced source and target tables; the target defines the intended
+   materialized schema.
+2. Create the DAG with
+   `smartbi.mjs etl-create <parentId> <sourceTableId> <targetTableId> <name> [rowNumber|-]`.
+3. Inspect the saved DAG with `etl-get` and the live node catalog with
+   `etl-node-list`.
+4. Add supported unary transforms with `etl-insert`; use `etl-row-number` when
+   a deterministic row key is required and will be represented downstream.
+5. Run with `etl-run`; require the flow and every node to reach `FINISH`.
+6. Validate the terminal preview when the platform exposes one. For a
+   materialized target, reopen the table and reconcile schema and row counts.
+7. Fall back to the headed UI only for multi-port wiring or transformations
+   whose live port contracts cannot be inferred safely.
 
 ## Stage 3: Data model
 

@@ -213,19 +213,20 @@ Dataset readiness notes (verified):
 
 ### 2. Self-service ETL (数据准备)
 
-Hybrid path, verified live:
+API-first path, verified live:
 
-1. In the UI: 数据准备 → 自助ETL → team folder → 新建 → 自助ETL.
-2. Add `关系数据源`, choose the owned `TEAM_` table, and save the flow with an
-   `TEAM_` name. A one-source saved flow is a valid starting point.
-3. Prefer the CLI for deterministic inspection and execution:
-   `etl-get <flowId>` → `etl-row-number <flowId> row_number` → `etl-run <flowId>`.
-4. Use the UI for transformations not yet exposed by the CLI
-   (`去除重复值`/`数据清洗`/`行过滤`/`派生列`/`列选择`/`元数据编辑`).
-5. Run and verify after every coherent DAG change. `FINISH` and a terminal
-   preview with expected fields/rows are the acceptance signal.
-6. Add an output node only when a materialized cleaned table is required.
-   Creating a new relational output can require a primary key.
+1. Import an owned source table and, for materialized output, an owned target
+   table with the intended schema.
+2. Create the saved DAG directly:
+   `etl-create <parentId> <sourceTableId> <targetTableId> <name> [rowNumber|-]`.
+3. Inspect with `etl-get`; discover live node contracts with `etl-node-list`.
+4. Add or update supported unary transforms with `etl-insert`, or use the
+   idempotent `etl-row-number` helper.
+5. Run with `etl-run`. Require the flow and every node to reach `FINISH`.
+   Validate a terminal preview when available; for materialized output, reopen
+   the target table and reconcile its fields and rows.
+6. Use Playwright only for multi-input/output wiring or uncommon transforms
+   whose port semantics are not safely inferable from the live node template.
 
 Rules:
 - API mutation/run is refused unless the flow name has the configured namespace.

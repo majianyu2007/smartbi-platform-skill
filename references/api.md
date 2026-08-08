@@ -282,7 +282,9 @@ Operations not yet exposed by a stable command (arbitrary visual canvas
 editing and uncommon ETL transformations) require the browser:
 
 - CDP endpoint `http://127.0.0.1:9222`, dedicated profile `/tmp/smartbi-playwright-profile-cdp`.
-- Login is done by the API tool first; the browser session then shares the same cookies.
+- API and browser maintain separate session cookies. Authenticate the headed
+  profile from the configured credentials file only when its login page is
+  visible; the dedicated profile then persists that browser session.
 - See `references/playwright-patterns.md` for selectors and state machine.
 
 ## 8. Discovery method (how these were found)

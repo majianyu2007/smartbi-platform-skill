@@ -2924,17 +2924,30 @@ async function promptSecret(label) {
     const input = process.stdin;
     const wasRaw = Boolean(input.isRaw);
     let secret = '';
+    let finished = false;
     const cleanup = () => {
+      if (finished) return;
+      finished = true;
       input.off('data', onData);
-      input.setRawMode(wasRaw);
-      input.pause();
-      process.stdout.write('\n');
+      input.off('error', onError);
+      input.off('end', onEnd);
+      try {
+        input.setRawMode(wasRaw);
+      } finally {
+        input.pause();
+        process.stdout.write('\n');
+      }
     };
+    const fail = (error) => {
+      cleanup();
+      reject(error);
+    };
+    const onError = (error) => fail(error);
+    const onEnd = () => fail(new Error('password input ended before submission'));
     const onData = (chunk) => {
       for (const character of String(chunk)) {
         if (character === '\u0003') {
-          cleanup();
-          reject(new Error('setup cancelled'));
+          fail(new Error('setup cancelled'));
           return;
         }
         if (character === '\r' || character === '\n') {
@@ -2949,10 +2962,16 @@ async function promptSecret(label) {
         if (character >= ' ') secret += character;
       }
     };
-    input.setEncoding('utf8');
-    input.setRawMode(true);
-    input.resume();
-    input.on('data', onData);
+    try {
+      input.setEncoding('utf8');
+      input.setRawMode(true);
+      input.resume();
+      input.on('data', onData);
+      input.once('error', onError);
+      input.once('end', onEnd);
+    } catch (error) {
+      fail(error);
+    }
   });
 }
 

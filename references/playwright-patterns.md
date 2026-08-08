@@ -22,10 +22,11 @@ Keep it running for the whole workflow. Do not launch a second Chrome against
 the same profile. Do not switch to headless unless the user asks; both modes
 provide CDP control, but the headed process is the observable work surface.
 
-For this authorized demo tenant, authentication may read the configured
-two-line credentials file. Prefer `node scripts/smartbi.mjs login`; if UI login
-is required, fill from the file without printing, returning, or inspecting the
-password. Never take a screenshot while credential fields contain values.
+The direct API client and Chrome do not share a cookie jar. For this authorized
+demo tenant, authenticate the headed profile from the configured two-line
+credentials file if its login page is visible. Fill fields without printing,
+returning, or inspecting the password. Never take a screenshot while credential
+fields contain values.
 
 Headless is an optional unattended mode using the same arguments plus
 `--headless=new`, but only after the headed profile owner is stopped.
@@ -186,7 +187,7 @@ panel. Generated IDs and resource node IDs are session/resource-specific.
 | ETL canvas | `.dataprepare_graph-alias`; save `[qtp="toolbar-btn-SAVED"]`; run control text `运行` |
 | Data model | source card `[qtp="SlideTaskPanel-AUGMENTED_DATASET"]`; basic table menu `[qtp="pop-menu_BASIC_TABLE"]`; save `[qtp="AugmentedToolbar-save"]` |
 | Pivot | URL contains `#/adhocanalysis/create`; field nodes expose QTPs ending in the exact field name; run then save |
-| Dashboard | URL contains `#/dashboard/`; bar chart card `[qtp="ECHARTS_BAR"]`; properties `[qtp="COMPONENT_SETTING"]`; save dialog under `.SaveDialogContent` |
+| Dashboard | editor URL contains `#/dashboard/`; rendered API-created pages use `#/page/`; bar chart card `[qtp="ECHARTS_BAR"]`; properties `[qtp="COMPONENT_SETTING"]`; save dialog under `.SaveDialogContent` |
 | Graph manager | create `[bofid="btnNewResource"]`; build action `[key="KNOWLEDGE_GRAPH_BUILD"]`; validate `[bofid="btnValidate"]`; refresh `[bofid="btnRefresh"]` |
 | AIChat | model selector `[qtp="ask-model-select-button"]`; editor `[qtp="chat-input-tiptap"] [contenteditable="true"]`; send `[qtp="chat-send-button"]`; running marker `[qtp="chat-stop-send-button"]` |
 | Agent editor | add `[qtp="toolbar-btn-ADDNODE"]`; save `[qtp="toolbar-btn-SAVE"]`; run `[qtp="toolbar-btn-TEST"]`; publish `[qtp="toolbar-btn-DEPLOY"]`; published state exposes `[qtp="toolbar-btn-OFFLINE"]` |
