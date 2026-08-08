@@ -70,9 +70,9 @@ Never assume state from a previous call: `health` first.
 
 ## First-Run Setup (guided)
 
-On first load, configure credentials and naming before any platform operation.
-With a TTY, `setup` launches the secure wizard automatically; the password is
-read with terminal echo disabled:
+On first load, configure the target tenant, credentials, and naming before any
+platform operation. With a TTY, `setup` launches the secure wizard
+automatically; the password is read with terminal echo disabled:
 
 ```bash
 cd ~/.codex/skills/smartbi-platform
@@ -81,16 +81,18 @@ TMPDIR=/tmp node scripts/smartbi.mjs setup --interactive
 
 The wizard asks for:
 
-1. Smartbi login account;
-2. Smartbi login password;
-3. artifact naming mode (`prefix` or `suffix`);
-4. namespace marker (for example `TEAM_` or `_MYTEAM`).
+1. Smartbi Vision base URL (must end with `/vision`);
+2. Smartbi login account;
+3. Smartbi login password;
+4. artifact naming mode (`prefix` or `suffix`);
+5. namespace marker (for example `TEAM_` or `_MYTEAM`).
 
 For non-interactive provisioning, first create an external two-line credentials
 file with mode `0600`, then configure both credentials and naming:
 
 ```bash
 TMPDIR=/tmp node scripts/smartbi.mjs setup \
+  --base-url https://host.example/smartbi/vision \
   --cred-file /path/to/credentials.txt \
   --namespace TEAM_ \
   --naming prefix
@@ -102,7 +104,10 @@ default). Environment variables override it per invocation:
 | Variable | Meaning | Example |
 |---|---|---|
 | `SMARTBI_CONFIG_FILE` | alternate machine-local config path | `~/.config/smartbi-platform/config.json` |
+| `SMARTBI_BASE_URL` | target Smartbi Vision root | `https://host.example/smartbi/vision` |
+| `SMARTBI_CDP_URL` | headed-browser fallback CDP endpoint | `http://127.0.0.1:9222` |
 | `SMARTBI_CRED_FILE` | credentials file path | `~/.config/smartbi-platform/credentials.txt` |
+| `SMARTBI_CODEC_CACHE_FILE` | versioned frontend-coder cache | `~/.cache/smartbi-platform/transport-codec.json` |
 | `SMARTBI_NAMESPACE` | namespace marker | `TEAM_` or `_MYTEAM` |
 | `SMARTBI_NAMING` | `prefix` or `suffix` | `prefix` |
 
@@ -112,6 +117,29 @@ configuration and concrete idempotent naming examples without revealing secrets.
 > Shared-tenant rule: the namespace marker distinguishes YOUR resources from
 > other members'. Verify `config` output before creating anything.
 
+### Tenant migration and transport compatibility
+
+The transport coder is discovered rather than assumed:
+
+1. On the first transport call, fetch the tenant's `CodeHandler`,
+   `ReplaceCoder`, `HexadecimalCoder`, and `ReserveCoder` frontend bundles.
+2. Parse and structurally validate the live arrays/delimiters, then fingerprint
+   all four resources with SHA-256.
+3. Negotiate `SF1`, `SF2`, or `SF3` using only the read-only
+   `AIextRemoteService.getCurrentUserName` probe.
+4. Store the verified definition and selected algorithm in the private cache.
+   Later processes re-fetch the bundles; an identical hash uses the cached
+   definition, while a changed hash rebuilds it.
+5. If bundle discovery is temporarily unavailable, use the last cache for the
+   same base URL; only when no cache exists use the fixed known-good fallback.
+6. On an encoded-response parse failure, refresh discovery and negotiate once.
+   A second failure stops with an error instead of sending repeated requests.
+
+Inspect or force this process with `codec-status [--refresh]`. Migration to
+another V11 tenant therefore requires only `setup --base-url ...`, credentials,
+and a namespace. A future server-side dynamic key, WASM coder, or incompatible
+protocol deliberately fails closed and requires a new adapter.
+
 ## Fast Start
 
 ```bash
@@ -119,6 +147,7 @@ cd ~/.codex/skills/smartbi-platform
 
 TMPDIR=/tmp node scripts/smartbi.mjs setup          # first-run guidance
 TMPDIR=/tmp node scripts/smartbi.mjs config         # effective config
+TMPDIR=/tmp node scripts/smartbi.mjs codec-status   # live hash/cache/algorithm
 TMPDIR=/tmp node scripts/smartbi.mjs health         # auth_required first time
 TMPDIR=/tmp node scripts/smartbi.mjs login          # reads credentials file
 TMPDIR=/tmp node scripts/smartbi.mjs health         # workspace
@@ -144,8 +173,9 @@ TMPDIR=/tmp node scripts/smartbi.mjs manuals        # official manual links
 
 | Command | Purpose | Output |
 |---|---|---|
-| `setup [flags]` | First-run guided config (credentials + naming) | `{action:"setup_done", saved}` |
-| `config` | Show effective config + naming example | `{credFile, naming, example}` |
+| `setup [flags]` | First-run guided config (tenant + credentials + naming) | `{action:"setup_done", saved}` |
+| `config` | Show effective tenant/config + naming example | safe configuration |
+| `codec-status [--refresh]` | Discover, hash, cache, and negotiate the frontend transport coder | source/fingerprint/algorithm |
 | `login` / `health` | Authenticate and verify the workspace session | session state |
 | `invoke <class> <method> [json]` | Read-only RMI discovery call; mutating and session-sensitive methods are refused | decoded `{retCode, result, ...}` |
 | `api-get <path>` / `api-post <path> [json]` | Guarded Smartbix discovery/query replay; mutating paths are refused | decoded response |

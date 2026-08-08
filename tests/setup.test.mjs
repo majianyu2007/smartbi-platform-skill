@@ -48,9 +48,11 @@ test('config applies prefix and suffix naming idempotently', () => {
       SMARTBI_CONFIG_FILE: workspace.config,
       SMARTBI_NAMESPACE: 'TEAM_',
       SMARTBI_NAMING: 'prefix',
+      SMARTBI_BASE_URL: 'https://portable.example.test/smartbi/vision/',
     });
     assert.equal(prefix.status, 0, prefix.stderr);
     assert.deepEqual(JSON.parse(prefix.stdout).naming, { mode: 'prefix', value: 'TEAM_' });
+    assert.equal(JSON.parse(prefix.stdout).baseUrl, 'https://portable.example.test/smartbi/vision');
     assert.equal(JSON.parse(prefix.stdout).example, 'TEAM_survey_demo');
     assert.equal(JSON.parse(prefix.stdout).alreadyNamespacedExample, 'TEAM_survey_demo');
 
@@ -75,6 +77,7 @@ test('non-interactive setup validates credentials and writes private config', ()
     writeFileSync(workspace.credentials, `test-account\n${password}\n`, { mode: 0o600 });
     const result = runCli([
       'setup',
+      '--base-url', 'https://portable.example.test/smartbi/vision/',
       '--cred-file', workspace.credentials,
       '--namespace', '_TEAM',
       '--naming', 'suffix',
@@ -84,9 +87,11 @@ test('non-interactive setup validates credentials and writes private config', ()
     assert.doesNotMatch(result.stdout, new RegExp(password));
     const output = JSON.parse(result.stdout);
     assert.equal(output.action, 'setup_done');
+    assert.equal(output.saved.baseUrl, 'https://portable.example.test/smartbi/vision');
     assert.deepEqual(output.saved.naming, { mode: 'suffix', value: '_TEAM' });
     assert.equal(output.saved.credFile, workspace.credentials);
     assert.deepEqual(JSON.parse(readFileSync(workspace.config, 'utf8')), output.saved);
+    assert.equal(JSON.parse(readFileSync(workspace.config, 'utf8')).baseUrl, output.saved.baseUrl);
     assert.equal(statSync(workspace.config).mode & 0o777, 0o600);
   } finally {
     workspace.cleanup();
@@ -106,6 +111,30 @@ test('setup rejects unsupported naming modes', () => {
 
     assert.equal(result.status, 1);
     assert.match(result.stderr, /invalid naming mode/);
+  } finally {
+    workspace.cleanup();
+  }
+});
+
+test('setup rejects unsafe or malformed tenant URLs', () => {
+  const workspace = temporaryWorkspace();
+  try {
+    writeFileSync(workspace.credentials, 'test-account\ntest-password\n', { mode: 0o600 });
+    for (const baseUrl of [
+      'ftp://example.test/smartbi/vision',
+      'https://user:secret@example.test/smartbi/vision',
+      'https://example.test/smartbi',
+    ]) {
+      const result = runCli([
+        'setup',
+        '--base-url', baseUrl,
+        '--cred-file', workspace.credentials,
+        '--namespace', 'TEAM_',
+        '--naming', 'prefix',
+      ], { SMARTBI_CONFIG_FILE: workspace.config });
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /base URL/);
+    }
   } finally {
     workspace.cleanup();
   }

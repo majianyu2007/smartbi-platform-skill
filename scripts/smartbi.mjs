@@ -4,17 +4,17 @@
 // Fallback mode: Playwright over CDP for UI-only operations (dashboard editing etc).
 //
 // Protocol notes (reverse-engineered from frontend bundles, verified live):
-//   * All business calls: POST /smartbi/vision/RMIServlet
-//     body: encode=<ReplaceCoder.encode(encodeURIComponent(className)+"+"+encodeURIComponent(methodName)+"+"+encodeURIComponent(JSON.stringify(params)))>
+//   * Business calls: POST <configured Vision root>/RMIServlet
+//     body: encode=<negotiated frontend coder over class + method + JSON params>.
 //     response: encoded JSON {retCode, result, detail, succeeded}; retCode===0 means success.
-//   * ReplaceCoder: per-character substitution table (involutive), see CODE_ARRAY below.
+//   * Transport coder: live bundle discovery + SHA-256 cache + SF1/SF2/SF3 negotiation.
 //   * File import chain (DataPackageServlet, form-encoded except upload):
 //       UPLOAD_FILE (multipart: action + file) -> {clientId, sheetNames}
 //       GET_PREVIEW_DATA&clientId&previewRows&sheetIndex -> {rowCount, datas, fieldTypeList, fieldNameList, fieldAliasList}
 //       INSERT_DATA&clientId&settings=<JSON> -> import
 //       poll: RMI DataPackageModule.getImportStatus(clientId)
 //
-// Resource naming: our projects MUST be prefixed TEAM_ (shared tenant; never touch others').
+// Resource naming: all mutations require the configured prefix/suffix namespace.
 
 import { homedir } from 'node:os';
 import { randomBytes } from 'node:crypto';
@@ -22,6 +22,7 @@ import { join, dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { createTransportCodec } from './transport-codec.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SKILL_DIR = join(__dirname, '..');
@@ -40,12 +41,36 @@ function loadConfig() {
 }
 const CONFIG = loadConfig();
 
-const CDP_URL = process.env.SMARTBI_CDP_URL || 'http://127.0.0.1:9222';
-const BASE_URL = process.env.SMARTBI_BASE_URL || 'https://smartbi.example.com/smartbi/vision';
+const CDP_URL = process.env.SMARTBI_CDP_URL || CONFIG.cdpUrl || 'http://127.0.0.1:9222';
+const DEFAULT_BASE_URL = 'https://smartbi.example.com/smartbi/vision';
+
+function normalizeBaseUrl(value) {
+  let parsed;
+  try {
+    parsed = new URL(String(value || ''));
+  } catch {
+    throw new Error(`invalid Smartbi Vision base URL: ${value || '(empty)'}`);
+  }
+  if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) {
+    throw new Error('Smartbi Vision base URL must use HTTP(S) without embedded credentials');
+  }
+  parsed.hash = '';
+  parsed.search = '';
+  parsed.pathname = parsed.pathname.replace(/\/+$/, '');
+  if (!parsed.pathname.endsWith('/vision')) {
+    throw new Error('Smartbi Vision base URL must end with /vision');
+  }
+  return parsed.toString().replace(/\/$/, '');
+}
+
+const BASE_URL = normalizeBaseUrl(process.env.SMARTBI_BASE_URL || CONFIG.baseUrl || DEFAULT_BASE_URL);
 const LOGIN_URL = `${BASE_URL}/index.jsp`;
 const CRED_FILE = process.env.SMARTBI_CRED_FILE
   || CONFIG.credFile
   || join(homedir(), '.config', 'smartbi-platform', 'credentials.txt');
+const CODEC_CACHE_FILE = process.env.SMARTBI_CODEC_CACHE_FILE
+  || CONFIG.codecCacheFile
+  || join(homedir(), '.cache', 'smartbi-platform', 'transport-codec.json');
 
 // Naming preference: prefix (default) or suffix, value configurable.
 // e.g. prefix "TEAM_" -> TEAM_survey_demo ; suffix "_TEAM" -> survey_demo_TEAM
@@ -76,33 +101,26 @@ function hasNamespace(name) {
   return NAMING_MODE === 'suffix' ? source.endsWith(value) : source.startsWith(value);
 }
 
-// ---- ReplaceCoder table (verbatim from vision/js/freequery/common/codeutil/ReplaceCoder.js) ----
-const CODE_ARRAY = [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,80,0,0,0,47,0,110,65,69,115,43,0,102,113,37,55,49,117,78,75,74,77,57,39,109,123,0,0,0,0,0,0,79,86,116,84,97,120,72,114,99,118,108,56,70,51,111,76,89,106,87,42,122,90,33,66,41,85,93,0,91,0,121,0,40,126,105,104,112,95,45,73,82,46,71,83,100,54,119,53,48,52,68,107,81,103,98,67,50,88,58,0,0,101,0];
-const ENCODE_MAP = {};
-const DECODE_MAP = {};
-for (let i = 0; i < CODE_ARRAY.length; i += 1) {
-  const codePoint = CODE_ARRAY[i];
-  if (codePoint) {
-    const source = String.fromCharCode(i);
-    const encoded = String.fromCharCode(codePoint);
-    ENCODE_MAP[source] = encoded;
-    DECODE_MAP[source] = encoded;
-  }
-}
-DECODE_MAP['/'] = '/';
-DECODE_MAP['%'] = '%';
+// ---- adaptive frontend transport coder ----
+// The frontend selects SF1 (ReplaceCoder), SF2 (ReplaceCoder + hex escaping),
+// or SF3 (identity). Discover live coder bundles, cache by content hash, and
+// retain the last verified mapping plus a fixed fallback for offline startup.
+const transportCodec = createTransportCodec({
+  baseUrl: BASE_URL,
+  cacheFile: CODEC_CACHE_FILE,
+});
 
-const replaceEncode = (data) => String(data).split('').map((character) => ENCODE_MAP[character] || character).join('');
-const replaceDecode = (data) => String(data).split('').map((character) => DECODE_MAP[character] || character).join('');
+const replaceEncode = (data) => transportCodec.encode(data);
+const replaceDecode = (data) => transportCodec.decode(data);
 
-function parseTransportJson(text) {
+function parseTransportJson(text, decoder = transportCodec) {
   const knownKeys = new Set([
     'id', 'originId', 'name', 'alias', 'fields', 'views', 'nodes', 'dataSource',
     'retCode', 'result', 'detail', 'succeeded', 'success', 'report', 'macros',
     'processDag', 'define', 'columns', 'rowMap', 'hierarchyFieldMap', 'total',
   ]);
   const parsed = [];
-  const candidates = [...new Set([String(text), replaceDecode(text), replaceEncode(text)])];
+  const candidates = [...new Set([String(text), decoder.decode(text)])];
   for (const candidate of candidates) {
     try {
       const value = JSON.parse(candidate);
@@ -130,30 +148,85 @@ const grabCookies = (res) => {
 };
 const cookieHeader = () => [...jar.values()].join('; ');
 
-const encodeRmi = (className, methodName, paramsArray) => {
+const rawRmiPayload = (className, methodName, paramsArray) => {
   const paramsStr = JSON.stringify(paramsArray);
-  const raw = encodeURIComponent(className) + '+' + encodeURIComponent(methodName) + '+' + encodeURIComponent(paramsStr);
-  return 'encode=' + replaceEncode(raw);
+  return encodeURIComponent(className)
+    + '+'
+    + encodeURIComponent(methodName)
+    + '+'
+    + encodeURIComponent(paramsStr);
 };
 
-async function rmi(className, methodName, params = [], timeoutMs = 60000) {
-  const res = await fetch(`${BASE_URL}/RMIServlet`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
-      'If-Modified-Since': '0',
-      'Cookie': cookieHeader(),
-    },
-    body: encodeRmi(className, methodName, params),
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-  grabCookies(res);
-  const text = await res.text();
-  try {
-    return { status: res.status, ...parseTransportJson(text) };
-  } catch {
-    return { status: res.status, retCode: 'PARSE_ERROR', result: text.slice(0, 400) };
+const encodeRmi = (className, methodName, paramsArray) => (
+  `encode=${replaceEncode(rawRmiPayload(className, methodName, paramsArray))}`
+);
+
+let codecNegotiationPromise = null;
+
+async function ensureTransportCodec({ refresh = false } = {}) {
+  if (refresh) {
+    await transportCodec.refresh();
+    codecNegotiationPromise = null;
   }
+  if (!codecNegotiationPromise) {
+    codecNegotiationPromise = transportCodec.negotiate(async (adapter) => {
+      const response = await fetch(`${BASE_URL}/RMIServlet`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+          'If-Modified-Since': '0',
+          Cookie: cookieHeader(),
+        },
+        body: `encode=${adapter.encode(rawRmiPayload(
+          'AIextRemoteService',
+          'getCurrentUserName',
+          [],
+        ))}`,
+        signal: AbortSignal.timeout(15000),
+      });
+      grabCookies(response);
+      const text = await response.text();
+      let parsed;
+      try {
+        parsed = parseTransportJson(text, adapter);
+      } catch {
+        return false;
+      }
+      return parsed?.retCode === 0 || parsed?.retCode === 'CLIENT_USER_NOT_LOGIN';
+    }).catch((error) => {
+      codecNegotiationPromise = null;
+      throw error;
+    });
+  }
+  return codecNegotiationPromise;
+}
+
+async function rmi(className, methodName, params = [], timeoutMs = 60000) {
+  await ensureTransportCodec();
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const res = await fetch(`${BASE_URL}/RMIServlet`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+        'If-Modified-Since': '0',
+        Cookie: cookieHeader(),
+      },
+      body: encodeRmi(className, methodName, params),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    grabCookies(res);
+    const text = await res.text();
+    try {
+      return { status: res.status, ...parseTransportJson(text) };
+    } catch {
+      if (attempt === 0) {
+        await ensureTransportCodec({ refresh: true });
+        continue;
+      }
+      return { status: res.status, retCode: 'PARSE_ERROR', result: text.slice(0, 400) };
+    }
+  }
+  throw new Error('unreachable RMI transport state');
 }
 
 const SMARTBIX_API = `${BASE_URL.replace(/\/vision\/?$/, '')}/smartbix/api`;
@@ -2976,6 +3049,9 @@ async function promptSecret(label) {
 }
 
 async function runInteractiveSetup() {
+  const baseUrl = normalizeBaseUrl(
+    await promptLine('Smartbi Vision base URL', BASE_URL),
+  );
   const account = await promptLine('Smartbi login account');
   const password = await promptSecret('Smartbi login password (hidden)');
   if (!account || !password) throw new Error('account and password are required');
@@ -2988,7 +3064,7 @@ async function runInteractiveSetup() {
   mkdirSync(dirname(credentialsPath), { recursive: true });
   writeFileSync(credentialsPath, `${account}\n${password}\n`, { mode: 0o600 });
   chmodSync(credentialsPath, 0o600);
-  await persistSetup({ credFile: credentialsPath, naming });
+  await persistSetup({ baseUrl, credFile: credentialsPath, naming });
 }
 
 async function cmdSetup(argsList) {
@@ -2998,23 +3074,28 @@ async function cmdSetup(argsList) {
     return;
   }
 
-  const current = { credFile: CRED_FILE, naming: { mode: NAMING_MODE, value: NAMESPACE } };
-  if (!options['cred-file'] && !options.namespace && !options.naming) {
+  const current = {
+    baseUrl: BASE_URL,
+    credFile: CRED_FILE,
+    naming: { mode: NAMING_MODE, value: NAMESPACE },
+  };
+  if (!options['base-url'] && !options['cred-file'] && !options.namespace && !options.naming) {
     safeOutput({
       action: 'setup_needed',
-      message: 'First-run setup: configure login account/password and prefix or suffix naming.',
+      message: 'First-run setup: configure the Smartbi tenant, login account/password, and prefix or suffix naming.',
       current,
       configFile: CONFIG_FILE,
       commands: [
         'node scripts/smartbi.mjs setup --interactive',
-        'node scripts/smartbi.mjs setup --cred-file /path/to/credentials.txt --namespace TEAM_ --naming prefix',
-        'node scripts/smartbi.mjs setup --cred-file /path/to/credentials.txt --namespace _TEAM --naming suffix',
+        'node scripts/smartbi.mjs setup --base-url https://host/smartbi/vision --cred-file /path/to/credentials.txt --namespace TEAM_ --naming prefix',
+        'node scripts/smartbi.mjs setup --base-url https://host/smartbi/vision --cred-file /path/to/credentials.txt --namespace _TEAM --naming suffix',
       ],
     });
     return;
   }
 
   const saved = {
+    baseUrl: normalizeBaseUrl(options['base-url'] || CONFIG.baseUrl || current.baseUrl),
     credFile: options['cred-file'] || CONFIG.credFile || current.credFile,
     naming: normalizeNaming(
       options.naming || CONFIG.naming?.mode || current.naming.mode,
@@ -3027,14 +3108,33 @@ async function cmdSetup(argsList) {
 async function cmdConfig() {
   safeOutput({
     configFile: CONFIG_FILE,
+    baseUrl: BASE_URL,
+    cdpUrl: CDP_URL,
     credFile: CRED_FILE,
+    codecCacheFile: CODEC_CACHE_FILE,
     naming: { mode: NAMING_MODE, value: NAMESPACE },
     example: applyNamespace('survey_demo'),
     alreadyNamespacedExample: applyNamespace(
       NAMING_MODE === 'suffix' ? `survey_demo${NAMESPACE}` : `${NAMESPACE}survey_demo`,
     ),
-    envOverrides: ['SMARTBI_CONFIG_FILE', 'SMARTBI_CRED_FILE', 'SMARTBI_NAMESPACE', 'SMARTBI_NAMING'],
+    envOverrides: [
+      'SMARTBI_CONFIG_FILE',
+      'SMARTBI_BASE_URL',
+      'SMARTBI_CDP_URL',
+      'SMARTBI_CRED_FILE',
+      'SMARTBI_CODEC_CACHE_FILE',
+      'SMARTBI_NAMESPACE',
+      'SMARTBI_NAMING',
+    ],
   });
+}
+
+async function cmdCodecStatus(argsList) {
+  if (argsList.some((argument) => argument !== '--refresh')) {
+    throw new Error('codec-status accepts only [--refresh]');
+  }
+  await ensureTransportCodec({ refresh: argsList.includes('--refresh') });
+  safeOutput({ baseUrl: BASE_URL, ...transportCodec.status() });
 }
 
 // ---- main ----
@@ -3084,6 +3184,7 @@ try {
     case 'ui-dashboard-check': await cmdUiDashboardCheck(args[0]); break;
     case 'setup': await cmdSetup(args); break;
     case 'config': await cmdConfig(); break;
+    case 'codec-status': await cmdCodecStatus(args); break;
     case 'manuals': safeOutput({
       quickStart: 'https://wiki.smartbi.com.cn/pages/viewpage.action?pageId=111897106',
       competition: 'https://wiki.smartbi.com.cn/pages/viewpage.action?pageId=168628225',
@@ -3092,7 +3193,7 @@ try {
       orderRiskWarning: 'https://wiki.smartbi.com.cn/pages/viewpage.action?pageId=168629228',
     }); break;
     default:
-      throw new Error(`Unknown command: ${command}\nusage: smartbi.mjs <setup|login|health|config|invoke|api-get|api-post|plain-get|plain-post|tree|folder-create|resource-delete|upload|etl-node-list|etl-create|etl-insert|etl-get|etl-run|etl-row-number|model-get|model-create|model-clone|analysis-get|analysis-create|analysis-run|analysis-clone|dashboard-get|dashboard-create|dashboard-clone|aichat-graph-list|aichat-graph-fields|aichat-graph-status|aichat-graph-build|aichat-query|aichat-report|aichat-export|agent-get|agent-create|agent-run|agent-deploy|nav|ui-open|ui-dashboard-check|manuals> ...`);
+      throw new Error(`Unknown command: ${command}\nusage: smartbi.mjs <setup|login|health|config|codec-status|invoke|api-get|api-post|plain-get|plain-post|tree|folder-create|resource-delete|upload|etl-node-list|etl-create|etl-insert|etl-get|etl-run|etl-row-number|model-get|model-create|model-clone|analysis-get|analysis-create|analysis-run|analysis-clone|dashboard-get|dashboard-create|dashboard-clone|aichat-graph-list|aichat-graph-status|aichat-graph-fields|aichat-graph-build|aichat-query|aichat-report|aichat-export|agent-get|agent-create|agent-run|agent-deploy|nav|ui-open|ui-dashboard-check|manuals> ...`);
   }
   process.exit(0);
 } catch (error) {

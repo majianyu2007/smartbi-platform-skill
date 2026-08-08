@@ -14,10 +14,10 @@ Cookie: smartbi_smartbi_sessionid=...; JSESSIONID=...; ...
 Request body is a single `encode` parameter:
 
 ```
-encode=<ReplaceCoder(encodeURIComponent(className) + "+" + encodeURIComponent(methodName) + "+" + encodeURIComponent(JSON.stringify(paramsArray)))>
+encode=<SelectedCoder(encodeURIComponent(className) + "+" + encodeURIComponent(methodName) + "+" + encodeURIComponent(JSON.stringify(paramsArray)))>
 ```
 
-Response is the same ReplaceCoder-encoded JSON:
+Response is decoded with the same selected frontend coder contract:
 
 ```json
 {"retCode": 0, "result": ..., "detail": ..., "duration": 55}
@@ -27,15 +27,31 @@ Response is the same ReplaceCoder-encoded JSON:
 - `retCode === "CLIENT_USER_NOT_LOGIN"` → session expired; re-login.
 - `retCode === "METHOD_NAME_ERROR"` → wrong service/method name.
 
-### ReplaceCoder (SF1, default algorithm)
+### Adaptive transport coder
 
-Character-by-character substitution via a fixed 128-entry table; the mapping is
-involutive, so encode and decode use the same table. `/` and `%` pass through
-unchanged. Full table + canonical implementation lives in
-`scripts/smartbi.mjs` (verified round-trip against live server).
+`CodeHandler.js` selects one of three frontend coders through
+`NETWORK_TRANSNISSION_ALGORITHM`:
 
-Other algorithms exist but are not active: SF2 HexadecimalCoder, SF3 ReserveCoder.
-Selection is server-side via `NETWORK_TRANSNISSION_ALGORITHM` config (SF1 default).
+- `SF1`: `ReplaceCoder`, a character substitution table;
+- `SF2`: `ReplaceCoder` followed by hexadecimal escaping;
+- `SF3`: `ReserveCoder`, an identity transform.
+
+The CLI does not assume SF1. At process startup it fetches `CodeHandler.js` and
+all three coder bundles from the configured tenant, parses their current
+arrays/delimiters, validates structure, and hashes their complete contents.
+It then negotiates the active algorithm with the read-only current-user probe.
+
+The result is cached by base URL and SHA-256 fingerprint at
+`~/.cache/smartbi-platform/transport-codec.json` (override with
+`SMARTBI_CODEC_CACHE_FILE`). An unchanged live hash reuses the cache; a changed
+hash replaces it. If discovery is offline, the last same-tenant cache is used,
+then a fixed known-good fallback only when no cache exists. One transport parse
+failure forces rediscovery and renegotiation; a second failure stops.
+
+Important: the observed SF1 lookup is **not involutive**. The frontend's
+`encode` and `decode` functions apply the same lookup, but
+`decode(encode(sample))` is not a valid self-test. Validation therefore uses
+structural permutation checks plus an actual low-risk server probe.
 
 ## 2. Session
 
