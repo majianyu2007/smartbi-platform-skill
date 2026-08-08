@@ -292,19 +292,60 @@ async function ensureSession() {
 }
 
 async function cmdLogin() {
-  const { user } = loadCredentials();
-  const login = await rmi('UserService', 'login', [user, loadCredentials().pass]);
-  safeOutput({ state: login.retCode === 0 ? 'authenticated' : 'failed', retCode: login.retCode, result: login.result, user });
+  const { user, pass } = loadCredentials();
+  const login = await rmi('UserService', 'login', [user, pass]);
+  safeOutput({ state: login.retCode === 0 ? 'authenticated' : 'failed', retCode: login.retCode });
 }
 
 async function cmdHealth() {
   const login = await ensureSession();
   const probe = await rmi('AIextRemoteService', 'getCurrentUserName', [], 15000);
-  safeOutput({ state: probe.retCode === 0 ? 'workspace' : 'auth_required', retCode: probe.retCode, login: login.retCode, user: probe.result || null });
+  safeOutput({
+    state: probe.retCode === 0 ? 'workspace' : 'auth_required',
+    retCode: probe.retCode,
+    login: login.retCode,
+  });
+}
+
+function assertReadOnlyRmi(className, methodName) {
+  const key = `${className}.${methodName}`;
+  const denied = new Set([
+    'AIextRemoteService.getCookie',
+    'AIextRemoteService.getCurrentUserName',
+    'UserService.login',
+    'UserService.logout',
+  ]);
+  if (
+    denied.has(key)
+    || !/^(get|list|search|query|find|is|has|supports|check|validate|count|load|preview|lookup|resolve|detect|inspect|read)/i.test(methodName)
+  ) {
+    throw new Error(`invoke only permits read-only discovery methods: ${key}`);
+  }
+}
+
+function assertSafeGenericPath(path, { post = false } = {}) {
+  let normalized;
+  try {
+    normalized = decodeURIComponent(String(path)).toLowerCase();
+  } catch {
+    throw new Error('API path contains invalid percent encoding');
+  }
+  if (/(^|\/)(create|delete|remove|update|save|insert|deploy|publish|offline|train|build|run|stop|force|clear|copy|move|upload|import|login|logout)([/_.?=-]|$)/i.test(normalized)) {
+    throw new Error(`generic API replay refuses a mutating path: ${path}`);
+  }
+  if (
+    post
+    && normalized !== 'datasets/table'
+    && !normalized.startsWith('adhocanalysis/data/')
+    && !/(^|\/)(get|list|search|query|preview|status|check|validate|inspect|resolve|lookup|field)([/_.?=-]|$)/i.test(normalized)
+  ) {
+    throw new Error(`generic POST only permits read-only discovery/query paths: ${path}`);
+  }
 }
 
 async function cmdInvoke(className, methodName, paramsJson) {
   if (!className || !methodName) throw new Error('invoke requires <class> <method> [json]');
+  assertReadOnlyRmi(className, methodName);
   const params = paramsJson ? JSON.parse(paramsJson) : [];
   await ensureSession();
   const ret = await rmi(className, methodName, params);
@@ -315,6 +356,7 @@ async function cmdApiGet(path) {
   if (!path || /^https?:/i.test(path) || String(path).includes('..')) {
     throw new Error('api-get requires a relative Smartbix API path');
   }
+  assertSafeGenericPath(path);
   await ensureSession();
   safeOutput(await smartbixApi(path));
 }
@@ -323,6 +365,7 @@ async function cmdApiPost(path, bodyJson = '{}') {
   if (!path || /^https?:/i.test(path) || String(path).includes('..')) {
     throw new Error('api-post requires a relative Smartbix API path');
   }
+  assertSafeGenericPath(path, { post: true });
   await ensureSession();
   safeOutput(await smartbixApi(path, { method: 'POST', body: JSON.parse(bodyJson) }));
 }
@@ -331,6 +374,7 @@ async function cmdPlainGet(path) {
   if (!path || /^https?:/i.test(path) || String(path).includes('..')) {
     throw new Error('plain-get requires a relative Smartbi root API path');
   }
+  assertSafeGenericPath(path);
   await ensureSession();
   safeOutput(await plainJsonRequest(path, { method: 'GET' }));
 }
@@ -339,6 +383,7 @@ async function cmdPlainPost(path, bodyJson = '{}') {
   if (!path || /^https?:/i.test(path) || String(path).includes('..')) {
     throw new Error('plain-post requires a relative Smartbi root API path');
   }
+  assertSafeGenericPath(path, { post: true });
   await ensureSession();
   safeOutput(await plainJsonRequest(path, { body: JSON.parse(bodyJson) }));
 }
@@ -635,19 +680,29 @@ async function loadModel(modelId) {
   return model;
 }
 
+function requireNamespacedResource(resource, kind) {
+  const name = resource?.alias || resource?.name;
+  if (!resource || !hasNamespace(name)) {
+    throw new Error(`refusing to use non-namespaced ${kind}: ${name || 'unknown'}`);
+  }
+  return resource;
+}
+
 async function cmdModelGet(modelId) {
-  safeOutput(await loadModel(modelId));
+  safeOutput(requireNamespacedResource(await loadModel(modelId), 'model'));
 }
 
 async function cmdModelCreate(parentId, dataSourceId, tableId, tableName, requestedName, description = '') {
   if (![parentId, dataSourceId, tableId, tableName, requestedName].every(Boolean)) {
     throw new Error('model-create requires <parentId> <dataSourceId> <tableId> <tableName> <name> [description]');
   }
+  await assertOwnedCatalogParent(parentId);
   await ensureSession();
   const table = await smartbixApi('datasets/table', {
     method: 'POST',
     body: { dataSourceId, tableId, tableName },
   });
+  requireNamespacedResource(table, 'source table');
   if (!table.dataSource?.id) {
     table.dataSource = { id: dataSourceId, type: { name: table.dataType || null } };
   }
@@ -672,7 +727,9 @@ async function cmdModelClone(parentId, sourceModelId, requestedName, description
   if (![parentId, sourceModelId, requestedName].every(Boolean)) {
     throw new Error('model-clone requires <parentId> <sourceModelId> <name> [description]');
   }
+  await assertOwnedCatalogParent(parentId);
   const source = await loadModel(sourceModelId);
+  requireNamespacedResource(source, 'source model');
   const replacements = new Map([[source.id, resourceId()]]);
   for (const view of source.views || []) replacements.set(view.id, resourceId());
   const model = replaceExactStrings(source, replacements);
@@ -703,9 +760,10 @@ async function loadAnalysis(analysisId) {
   if (!wrapper?.report?.id) throw new Error(`analysis not found or incomplete: ${analysisId}`);
   return wrapper;
 }
-
 async function cmdAnalysisGet(analysisId) {
-  safeOutput(await loadAnalysis(analysisId));
+  const wrapper = await loadAnalysis(analysisId);
+  requireNamespacedResource(wrapper.report, 'analysis');
+  safeOutput(wrapper);
 }
 
 function buildAnalysisQuery(report) {
@@ -896,7 +954,9 @@ async function cmdAnalysisCreate(
   if (![parentId, modelId, rowFieldName, measureFieldName, requestedName].every(Boolean)) {
     throw new Error('analysis-create requires <parentId> <modelId> <rowField> <measure> <name> [description]');
   }
+  await assertOwnedCatalogParent(parentId);
   const model = await loadModel(modelId);
+  requireNamespacedResource(model, 'model');
   const report = buildAnalysisReport(
     model,
     rowFieldName,
@@ -932,6 +992,7 @@ async function cmdAnalysisCreate(
 
 async function cmdAnalysisRun(analysisId) {
   const { report } = await loadAnalysis(analysisId);
+  requireNamespacedResource(report, 'analysis');
   const result = await smartbixApi(`adhocanalysis/data/${encodeURIComponent(analysisId)}`, {
     method: 'POST',
     body: buildAnalysisQuery(report),
@@ -944,7 +1005,9 @@ async function cmdAnalysisClone(parentId, sourceAnalysisId, requestedName, descr
   if (![parentId, sourceAnalysisId, requestedName].every(Boolean)) {
     throw new Error('analysis-clone requires <parentId> <sourceAnalysisId> <name> [description]');
   }
+  await assertOwnedCatalogParent(parentId);
   const { report: source } = await loadAnalysis(sourceAnalysisId);
+  requireNamespacedResource(source, 'source analysis');
   const report = structuredClone(source);
   delete report.id;
   delete report.creatorId;
@@ -1162,7 +1225,9 @@ async function cmdDashboardCreate(
   if (![parentId, modelId, dimensionName, measureName, requestedName].every(Boolean)) {
     throw new Error('dashboard-create requires <parentId> <modelId> <dimension> <measure> <name> [chartTitle]');
   }
+  await assertOwnedCatalogParent(parentId);
   const model = await loadModel(modelId);
+  requireNamespacedResource(model, 'model');
   const dashboard = buildBarDashboard(
     model,
     dimensionName,
@@ -1195,14 +1260,16 @@ async function loadDashboard(dashboardId) {
 }
 
 async function cmdDashboardGet(dashboardId) {
-  safeOutput(await loadDashboard(dashboardId));
+  safeOutput(requireNamespacedResource(await loadDashboard(dashboardId), 'dashboard'));
 }
 
 async function cmdDashboardClone(parentId, sourceDashboardId, requestedName, description = '') {
   if (![parentId, sourceDashboardId, requestedName].every(Boolean)) {
     throw new Error('dashboard-clone requires <parentId> <sourceDashboardId> <name> [description]');
   }
+  await assertOwnedCatalogParent(parentId);
   const source = await loadDashboard(sourceDashboardId);
+  requireNamespacedResource(source, 'source dashboard');
   const replacements = new Map([[source.id, resourceId()]]);
   for (const portlet of source.define?.portlets || []) replacements.set(portlet.id, resourceId());
   const dashboard = replaceExactStrings(source, replacements);
@@ -1279,6 +1346,7 @@ async function cmdAichat(modelId, question, { report = false, outputPath = null 
     throw new Error(`${report ? 'aichat-report' : 'aichat-query'} requires <modelId> <prompt>`);
   }
   const model = await loadModel(modelId);
+  requireNamespacedResource(model, 'model');
   const llmConfig = await plainJsonRequest('cgi/aichat-llm-config/list-llm-config', {
     body: { filterOption: { keyword: '' } },
   });
@@ -1430,8 +1498,8 @@ async function loadOwnedGraphModel(modelId) {
   return model;
 }
 
-async function loadAichatGraphFields(modelId, { requireOwned = false } = {}) {
-  const model = requireOwned ? await loadOwnedGraphModel(modelId) : await loadModel(modelId);
+async function loadAichatGraphFields(modelId) {
+  const model = await loadOwnedGraphModel(modelId);
   const response = await plainJsonRequest(
     `cgi/aichat-train/get-resource-field-tree/${encodeURIComponent(model.id)}`,
     { body: { fieldTreeOption: { filterTypes: AICHAT_GRAPH_FILTER_TYPES } } },
@@ -1442,7 +1510,7 @@ async function loadAichatGraphFields(modelId, { requireOwned = false } = {}) {
 }
 
 async function cmdAichatGraphList(keyword = '') {
-  const nodes = await listAichatGraphNodes(keyword);
+  const nodes = (await listAichatGraphNodes(keyword)).filter((node) => hasNamespace(node.name));
   safeOutput({
     ok: true,
     count: nodes.length,
@@ -1475,7 +1543,7 @@ async function cmdAichatGraphFields(modelId) {
 
 async function cmdAichatGraphStatus(modelId) {
   if (!modelId) throw new Error('aichat-graph-status requires <modelId>');
-  const model = await loadModel(modelId);
+  const model = await loadOwnedGraphModel(modelId);
   const node = (await listAichatGraphNodes(model.name)).find((item) => item.id === model.id);
   if (!node) {
     safeOutput({ ok: true, id: model.id, name: model.name, status: 'NOTBUILD', fieldCount: 0 });
@@ -1517,7 +1585,7 @@ async function cmdAichatGraphBuild(modelId, fieldSelectorsCsv) {
     String(fieldSelectorsCsv).split(',').map((value) => value.trim()).filter(Boolean),
   )];
   if (selectors.length === 0) throw new Error('aichat-graph-build requires at least one field');
-  const { model, fields } = await loadAichatGraphFields(modelId, { requireOwned: true });
+  const { model, fields } = await loadAichatGraphFields(modelId);
   const selected = resolveGraphFields(fields, selectors);
   const fieldIds = selected.map((field) => field.id);
   const existing = (await listAichatGraphNodes(model.name)).find((item) => item.id === model.id);
@@ -1723,6 +1791,7 @@ async function cmdAgentCreate(
   if (!parentId || !requestedName) {
     throw new Error('agent-create requires <parentId> <name> [description] [systemPrompt] [userPrompt]');
   }
+  await assertOwnedCatalogParent(parentId, { allowAgentRoot: true });
   await ensureSession();
   const name = applyNamespace(requestedName);
   const define = await buildBasicAgent(systemPrompt, userPrompt);
@@ -1830,11 +1899,50 @@ async function cmdTree(rootId) {
   safeOutput({ parent: id, nodes });
 }
 
+async function assertOwnedCatalogParent(
+  parentId,
+  { allowSelfRoot = false, allowAgentRoot = false } = {},
+) {
+  await ensureSession();
+  const rootResponse = await rmi('CatalogService', 'getChildElements', ['']);
+  const selfRoot = (rootResponse.result || []).find((node) => node.type === 'SELF_TREENODE');
+  if (rootResponse.retCode !== 0 || !selfRoot?.id) {
+    throw new Error('cannot resolve the current personal workspace root');
+  }
+  const agentRootId = `SELF_AGENT_GRAPHS_${String(selfRoot.id).replace(/^SELF_/, '')}`;
+  if (allowSelfRoot && parentId === selfRoot.id) return selfRoot;
+  if (allowAgentRoot && parentId === agentRootId) {
+    const agentRoot = await rmi('CatalogService', 'getCatalogElementById', [agentRootId]);
+    if (agentRoot.retCode === 0 && agentRoot.result?.id) return agentRoot.result;
+  }
+  const parentResponse = await rmi('CatalogService', 'getCatalogElementById', [parentId]);
+  const parent = parentResponse.result;
+  if (
+    parentResponse.retCode !== 0
+    || !parent?.id
+    || !['DEFAULT_TREENODE', 'SELF_TREENODE'].includes(parent.type)
+    || !hasNamespace(parent.name || parent.alias)
+  ) {
+    throw new Error(`refusing a non-owned catalog parent: ${parentId}`);
+  }
+  const pathResponse = await rmi('CatalogService', 'getCatalogElementPath', [parentId]);
+  const ownedRoots = new Set([selfRoot.id]);
+  if (allowAgentRoot) ownedRoots.add(agentRootId);
+  if (
+    pathResponse.retCode !== 0
+    || !(pathResponse.result || []).some((node) => ownedRoots.has(node.id))
+  ) {
+    throw new Error(`catalog parent is outside the current personal workspace: ${parentId}`);
+  }
+  return parent;
+}
+
+
 async function cmdFolderCreate(parentId, requestedName, description = '') {
   if (!parentId || !requestedName) {
     throw new Error('folder-create requires <parentId> <name> [description]');
   }
-  await ensureSession();
+  await assertOwnedCatalogParent(parentId, { allowSelfRoot: true, allowAgentRoot: true });
   const name = applyNamespace(requestedName);
   const existingResult = await rmi('CatalogService', 'getChildElements', [parentId]);
   if (existingResult.retCode !== 0) {
@@ -1875,7 +1983,7 @@ async function cmdResourceDelete(parentId, resourceId) {
   if (!parentId || !resourceId) {
     throw new Error('resource-delete requires <parentId> <resourceId>');
   }
-  await ensureSession();
+  await assertOwnedCatalogParent(parentId, { allowSelfRoot: true, allowAgentRoot: true });
   const before = await rmi('CatalogService', 'getChildElements', [parentId]);
   if (before.retCode !== 0) throw new Error(`cannot list resource parent: ${JSON.stringify(before)}`);
   const resource = (before.result || []).find((node) => node.id === resourceId);
@@ -2148,6 +2256,7 @@ async function cmdEtlCreate(
     throw new Error(`invalid row-number column name: ${rowNumber}`);
   }
 
+  await assertOwnedCatalogParent(parentId);
   await ensureSession();
   const [sourceMeta, targetMeta, nodeCatalog] = await Promise.all([
     smartbixApi(`miningdatasource/table?tableId=${encodeURIComponent(sourceTableId)}`),

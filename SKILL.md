@@ -147,13 +147,13 @@ TMPDIR=/tmp node scripts/smartbi.mjs manuals        # official manual links
 | `setup [flags]` | First-run guided config (credentials + naming) | `{action:"setup_done", saved}` |
 | `config` | Show effective config + naming example | `{credFile, naming, example}` |
 | `login` / `health` | Authenticate and verify the workspace session | session state |
-| `invoke <class> <method> [json]` | Raw RMI call | decoded `{retCode, result, ...}` |
-| `api-get <path>` / `api-post <path> [json]` | Guarded Smartbix API discovery/replay | decoded response |
-| `plain-get <path>` / `plain-post <path> [json]` | Guarded `/smartbi/` plain-JSON API replay | JSON/text response |
+| `invoke <class> <method> [json]` | Read-only RMI discovery call; mutating and session-sensitive methods are refused | decoded `{retCode, result, ...}` |
+| `api-get <path>` / `api-post <path> [json]` | Guarded Smartbix discovery/query replay; mutating paths are refused | decoded response |
+| `plain-get <path>` / `plain-post <path> [json]` | Guarded `/smartbi/` discovery/query replay; mutating paths are refused | JSON/text response |
 | `tree [id]` | List catalog children of node | `{parent, nodes:[...]}` |
 | `folder-create <parentId> <name> [description]` | Idempotently create one namespaced catalog folder | `{created,id,name,alias}` |
 | `resource-delete <parentId> <resourceId>` | Delete one direct, namespaced catalog child after a permission check | deletion receipt |
-| `upload <file> [tableName]` | Import CSV/TXT/XLSX as a namespaced table | `{ok, table, rows, clientId}` |
+| `upload <file> [tableName] [--replace]` | Import CSV/TXT/XLSX as a namespaced table; replacement must be explicit | `{ok, table, rows, clientId}` |
 | `etl-create <parentId> <sourceTableId> <targetTableId> <name> [rowNumber|-] [description]` | Build an owned source→optional row-number→materialized-output ETL | saved DAG |
 | `etl-get <flowId>` / `etl-run <flowId>` | Inspect or execute one owned saved ETL | DAG / terminal node states |
 | `etl-node-list [keyword]` | List live ETL node templates, ports, and config contracts | node summaries |
@@ -178,6 +178,8 @@ TMPDIR=/tmp node scripts/smartbi.mjs manuals        # official manual links
 | `manuals` | Official wiki links | map |
 
 Artifact-creation commands apply `SMARTBI_NAMESPACE` (default `TEAM_`).
+All artifact-creation commands verify the destination is the authenticated
+personal workspace/Agent root or a namespaced descendant before mutation.
 `upload` also truncates table names at the platform limit, resolves the
 personal acquisition folder, and polls until import completes. Do not pass an
 existing table name unless you intend a REPLACE import (needs confirmation).

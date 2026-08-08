@@ -46,10 +46,10 @@ Selection is server-side via `NETWORK_TRANSNISSION_ALGORITHM` config (SF1 defaul
 | 3. Session probe | `AIextRemoteService.getCurrentUserName` `[]` → current user alias |
 
 Credentials are read from a two-line file (line 1 account, line 2 password).
-Guided setup writes it with mode `0600`; command output never contains the
-password. Smartbix and plain-JSON clients seed/login automatically when the
-cookie jar is empty and retry exactly once after a login redirect or
-`REDIRECT_TO_SMARTBI` response.
+Guided setup writes it with mode `0600`; command output never contains either
+credential or the authenticated account identifier. Smartbix and plain-JSON
+clients seed/login automatically when the cookie jar is empty and retry exactly
+once after a login redirect or `REDIRECT_TO_SMARTBI` response.
 
 ## 3. Resource tree (catalog)
 
@@ -295,3 +295,7 @@ editing and uncommon ETL transformations) require the browser:
 3. Intercept `DataPackageServlet` posts while driving the UI upload flow →
    `UPLOAD_FILE` / `GET_PREVIEW_DATA` / `GET_TARGET_DATASOURCES` / `INSERT_DATA`.
 4. Verify each call by replaying it from Node with a cookie jar (no browser).
+
+Generic `invoke`, `api-post`, and `plain-post` commands are discovery/query
+tools only. They reject mutating verbs and session-sensitive RMI methods;
+artifact mutations must use the ownership-checked dedicated commands.

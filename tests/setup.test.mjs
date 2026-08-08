@@ -134,6 +134,18 @@ test('generic API and ETL commands reject unsafe or incomplete input before auth
       SMARTBI_CONFIG_FILE: workspace.config,
     });
     assert.equal(plain.status, 1);
+
+    const rawMutation = runCli([
+      'invoke', 'CatalogService', 'deleteCatalogElement', '["foreign-id"]',
+    ], { SMARTBI_CONFIG_FILE: workspace.config });
+    assert.equal(rawMutation.status, 1);
+    assert.match(rawMutation.stderr, /only permits read-only discovery methods/);
+
+    const apiMutation = runCli(['api-post', 'pages/beans/create', '{}'], {
+      SMARTBI_CONFIG_FILE: workspace.config,
+    });
+    assert.equal(apiMutation.status, 1);
+    assert.match(apiMutation.stderr, /refuses a mutating path/);
     assert.match(plain.stderr, /relative Smartbi root API path/);
 
     const etl = runCli(['etl-insert'], { SMARTBI_CONFIG_FILE: workspace.config });
@@ -151,7 +163,7 @@ test('generic API and ETL commands reject unsafe or incomplete input before auth
     const dashboard = runCli(['ui-dashboard-check'], { SMARTBI_CONFIG_FILE: workspace.config });
     assert.equal(dashboard.status, 1);
     assert.match(dashboard.stderr, /ui-dashboard-check requires <resourceId>/);
-    assert.doesNotMatch(`${plain.stderr}${etl.stderr}${folder.stderr}${deletion.stderr}${dashboard.stderr}`, /password|cookie/i);
+    assert.doesNotMatch(`${plain.stderr}${rawMutation.stderr}${apiMutation.stderr}${etl.stderr}${folder.stderr}${deletion.stderr}${dashboard.stderr}`, /password|cookie/i);
   } finally {
     workspace.cleanup();
   }
