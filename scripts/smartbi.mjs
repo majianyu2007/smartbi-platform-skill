@@ -158,7 +158,20 @@ async function rmi(className, methodName, params = [], timeoutMs = 60000) {
 
 const SMARTBIX_API = `${BASE_URL.replace(/\/vision\/?$/, '')}/smartbix/api`;
 
-async function smartbixApi(path, { method = 'GET', body, timeoutMs = 60000 } = {}) {
+function isAuthenticationFailure(status, responseUrl, text, parsed = null) {
+  if ([401, 403, 406].includes(status)) return true;
+  if (String(responseUrl || '').includes('/login.jsp')) return true;
+  if (parsed?.code === 'REDIRECT_TO_SMARTBI') return true;
+  const sample = String(text || '').slice(0, 1000);
+  return sample.includes('REDIRECT_TO_SMARTBI')
+    || (sample.includes('/smartbi/vision/login.jsp') && sample.includes('<html'));
+}
+
+async function smartbixApi(
+  path,
+  { method = 'GET', body, timeoutMs = 60000, retryAuth = true } = {},
+) {
+  if (jar.size === 0) await ensureSession();
   const headers = {
     'Accept': 'application/json, text/plain, */*; charset=utf-8',
     'Cache-Control': 'no-cache',
@@ -185,8 +198,18 @@ async function smartbixApi(path, { method = 'GET', body, timeoutMs = 60000 } = {
   try {
     parsed = parseTransportJson(text);
   } catch {
+    if (isAuthenticationFailure(res.status, res.url, text) && retryAuth) {
+      jar.clear();
+      await ensureSession();
+      return smartbixApi(path, { method, body, timeoutMs, retryAuth: false });
+    }
     if (res.ok) return text;
     throw new Error(`Smartbix API returned non-JSON (${res.status} ${path}): ${text.slice(0, 240)}`);
+  }
+  if (isAuthenticationFailure(res.status, res.url, text, parsed) && retryAuth) {
+    jar.clear();
+    await ensureSession();
+    return smartbixApi(path, { method, body, timeoutMs, retryAuth: false });
   }
   if (!res.ok) throw new Error(`Smartbix API failed (${res.status} ${path}): ${JSON.stringify(parsed)}`);
   return parsed;
@@ -199,10 +222,12 @@ async function plainJsonRequest(path, {
   body,
   accept = 'application/json, text/plain, */*',
   timeoutMs = 120000,
+  retryAuth = true,
 } = {}) {
   if (!path || /^https?:/i.test(path) || String(path).includes('..')) {
     throw new Error('plain API request requires a relative Smartbi path');
   }
+  if (jar.size === 0) await ensureSession();
   const headers = {
     Accept: accept,
     'Cache-Control': 'no-cache',
@@ -219,14 +244,21 @@ async function plainJsonRequest(path, {
   });
   grabCookies(response);
   const text = await response.text();
+  let parsed = null;
+  try {
+    parsed = JSON.parse(text);
+  } catch {}
+  if (isAuthenticationFailure(response.status, response.url, text, parsed) && retryAuth) {
+    jar.clear();
+    await ensureSession();
+    return plainJsonRequest(path, {
+      method, body, accept, timeoutMs, retryAuth: false,
+    });
+  }
   if (!response.ok) {
     throw new Error(`Smartbi API failed (${response.status} ${path}): ${text.slice(0, 500)}`);
   }
-  try {
-    return JSON.parse(text);
-  } catch {
-    return text;
-  }
+  return parsed ?? text;
 }
 
 function resourceId() {

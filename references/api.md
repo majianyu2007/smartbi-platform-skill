@@ -1,7 +1,7 @@
 # Smartbi Insight V11 Reverse-Engineered API Reference
 
-> Status: verified live against `smartbi.example.com` (2026-08-08).
-> All endpoints are same-origin under `https://smartbi.example.com/smartbi/vision/`.
+> Status: verified live against `smartbi.example.com` (2026-08-09).
+> Endpoints span `/smartbi/vision/`, `/smartbi/smartbix/api/`, and `/smartbi/`.
 
 ## 1. Transport: RMIServlet (all business calls)
 
@@ -45,8 +45,11 @@ Selection is server-side via `NETWORK_TRANSNISSION_ALGORITHM` config (SF1 defaul
 | 2. Login | `UserService.login` `[user, password]` → `result: true` |
 | 3. Session probe | `AIextRemoteService.getCurrentUserName` `[]` → current user alias |
 
-Credentials are read from a two-line file (line 1 account, line 2 password);
-the tool never prints or stores the password.
+Credentials are read from a two-line file (line 1 account, line 2 password).
+Guided setup writes it with mode `0600`; command output never contains the
+password. Smartbix and plain-JSON clients seed/login automatically when the
+cookie jar is empty and retry exactly once after a login redirect or
+`REDIRECT_TO_SMARTBI` response.
 
 ## 3. Resource tree (catalog)
 
