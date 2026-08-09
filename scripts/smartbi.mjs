@@ -28,6 +28,7 @@ import {
   authorizeResourceDeletion,
   parseResourceDeleteArgs,
 } from './deletion-guard.mjs';
+import { assertReplacementSchemaCompatible } from './import-schema.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SKILL_DIR = join(__dirname, '..');
@@ -2221,6 +2222,17 @@ async function cmdUpload(
       throw new Error(
         `preview field contract mismatch: names=${resolvedFieldNames.length}, `
         + `types=${fieldTypeList?.length || 0}`,
+      );
+    }
+    if (existing && replace) {
+      const existingTable = await smartbixApi('datasets/table', {
+        method: 'POST',
+        body: tableRef,
+      });
+      assertReplacementSchemaCompatible(
+        existingTable?.fields,
+        resolvedFieldNames,
+        table,
       );
     }
 

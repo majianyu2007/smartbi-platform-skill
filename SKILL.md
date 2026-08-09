@@ -212,7 +212,7 @@ TMPDIR=/tmp node scripts/smartbi.mjs manuals        # official manual links
 | `tree [id]` | List catalog children of node | `{parent, nodes:[...]}` |
 | `folder-create <parentId> <name> [description]` | Idempotently create one namespaced catalog folder | `{created,id,name,alias}` |
 | `resource-delete <parentId> <resourceId> [--confirm-name <exactName>]` | Delete one direct owned child after permission and post-delete checks; exact-name confirmation is required for a legacy non-namespaced table and is accepted only in the authenticated personal acquisition folder | deletion receipt |
-| `upload <file> [tableName] [--replace]` | Import CSV/TXT/XLSX as a namespaced table; replacement must be explicit | `{ok, table, rows, clientId}` |
+| `upload <file> [tableName] [--replace]` | Import CSV/TXT/XLSX as a namespaced table; replacement must be explicit and schema-preserving | `{ok, table, tableRef, rows, fields, replaced}` |
 | `etl-create <parentId> <sourceTableId> <targetTableId> <name> [rowNumber|-] [description]` | Build an owned source→optional row-number→materialized-output ETL | saved DAG |
 | `etl-get <flowId>` / `etl-run <flowId>` | Inspect or execute one owned saved ETL | DAG / terminal node states |
 | `etl-node-list [keyword]` | List live ETL node templates, ports, and config contracts | node summaries |
@@ -240,8 +240,10 @@ Artifact-creation commands apply `SMARTBI_NAMESPACE` (default `TEAM_`).
 All artifact-creation commands verify the destination is the authenticated
 personal workspace/Agent root or a namespaced descendant before mutation.
 `upload` also truncates table names at the platform limit, resolves the
-personal acquisition folder, and polls until import completes. Do not pass an
-existing table name unless you intend a REPLACE import (needs confirmation).
+personal acquisition folder, validates preview fields, and polls until import
+completes. Do not pass an existing table name unless you intend a schema-preserving
+REPLACE import. Added, removed, or reordered fields fail closed; delete the owned
+table with exact-name confirmation and import it anew when the schema changes.
 
 ## Core Workflow
 
@@ -269,6 +271,8 @@ Dataset readiness notes (verified):
 - Platform auto-lowercases physical table names.
 - Encoding: AUTO/UTF-8/GBK radio; default AUTO works for UTF-8 CSV.
 - A BOM header on the first line is tolerated (observed with YRBSS CSVs).
+- `--replace` preserves the existing Smartbi schema; field additions, removals,
+  or reordering are rejected before insertion to prevent silent column loss.
 
 ### 2. Self-service ETL (数据准备)
 
