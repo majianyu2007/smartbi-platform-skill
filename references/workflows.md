@@ -202,6 +202,13 @@ Official sequence:
 
 Use pivot analysis first to validate dimensions, totals, filters, and calculated measures before building a dashboard.
 
+Live beginner-path clarification (2026-08-09): the `分析展现` landing page
+shows four cards—`交互式仪表盘`, `即席查询`, `透视分析`, and `Web电子表格`.
+Use `透视分析` for the reconciliation pivot; `即席查询` is not a substitute.
+Before saving, replace technical field names with business labels and remove an
+empty standalone filter portlet. The editor's built-in filter drop zone may
+still be visible in edit mode and is not itself an extra saved portlet.
+
 ### Interactive dashboard
 
 Official sequence:
@@ -227,6 +234,24 @@ Recommended AI build order:
 
 Do not mechanically copy the manuals' chart types. Select a chart that answers the project's decision question.
 
+Before binding a categorical X axis, profile it through the saved pivot with
+`analysis-profile <analysisId> <field,...>`. A comparison chart needs at least
+two usable non-blank categories. One-category dimensions should become a KPI or
+an explanatory note. Never count a single bar repeated across several
+components as a multi-view dashboard.
+
+Every comparison chart must persist:
+
+- a decision-specific title;
+- business labels for both bound fields;
+- visible X/Y-axis titles;
+- readable category labels and value labels;
+- a non-overlapping layout slot.
+
+After saving, reopen the headed-browser dashboard and compare the rendered
+category counts with the profile. A saved JSON definition or four Canvas
+elements alone does not prove that four charts display usable data.
+
 Verified minimal first-round pattern:
 
 - pivot rows: one categorical dimension (for example, survey city);
@@ -235,6 +260,12 @@ Verified minimal first-round pattern:
 - title: state the population and metric rather than using a generic chart name;
 - acceptance: saved dashboard preview displays the expected categories and
   weighted values, matching the independent aggregate.
+
+Final multi-chart acceptance adds an independent question per chart, axis and
+value labels, at least two profiled categories per comparison chart, and a
+headed-browser screenshot showing the expected category bars. Use
+`dashboard-repair-multi` for owned legacy dashboards whose bindings, labels, or
+layout metadata are stale.
 
 ## Stage 5: AIChat
 
@@ -250,8 +281,9 @@ Official sequence:
 
 ### Query
 
-1. Left sidebar `AIChat`.
-2. AIChat opens a separate page/tab in the current tenant.
+1. Left sidebar `AIChat` opens a separate `Smartbi AIChat` page/tab in the
+   current tenant.
+2. Choose `数据洞察`.
 3. Select the graph-enabled model.
 4. Ask a precise data question.
 5. Verify returned filters, dimensions, aggregations, and values against pivot/model results.

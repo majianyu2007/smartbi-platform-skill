@@ -9,8 +9,16 @@ const charts = [
   { dimension: 'age', measure: 'support', title: 'Support by age' },
 ];
 
-test('normalizes four independent dashboard chart definitions', () => {
-  assert.deepEqual(normalizeDashboardCharts(JSON.stringify(charts)), charts);
+test('normalizes chart definitions with explicit editable axis metadata', () => {
+  const normalized = normalizeDashboardCharts(JSON.stringify(charts));
+  assert.equal(normalized.length, 4);
+  assert.deepEqual(normalized[0], {
+    ...charts[0],
+    dimensionLabel: 'age',
+    measureLabel: 'risk',
+    xAxisTitle: 'age',
+    yAxisTitle: 'risk',
+  });
 });
 
 test('lays four charts out as a non-overlapping two-by-two grid', () => {
@@ -23,6 +31,30 @@ test('lays four charts out as a non-overlapping two-by-two grid', () => {
   );
   assert.equal(layout.canvas.width, 1280);
   assert.equal(layout.canvas.height, 720);
+});
+
+test('preserves business labels for chart fields and axes', () => {
+  const normalized = normalizeDashboardCharts([
+    {
+      dimension: 'context_group',
+      measure: 'quality_pass_flag',
+      title: '合格分析单元',
+      dimensionLabel: '分析情境',
+      measureLabel: '合格分析单元数',
+      xAxisTitle: '分析情境',
+      yAxisTitle: '单元数',
+    },
+    charts[1],
+  ]);
+  assert.deepEqual(normalized[0], {
+    dimension: 'context_group',
+    measure: 'quality_pass_flag',
+    title: '合格分析单元',
+    dimensionLabel: '分析情境',
+    measureLabel: '合格分析单元数',
+    xAxisTitle: '分析情境',
+    yAxisTitle: '单元数',
+  });
 });
 
 test('rejects one-chart dashboards and incomplete chart definitions', () => {

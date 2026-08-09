@@ -86,15 +86,19 @@ await navigation.click({ force: true, noWaitAfter: true });
 
 Use `force: true` only after asserting the locator is unique. The sidebar may be visually overlapped by Smartbi's own panels while still being the correct navigation target.
 
+Do not replace the locator click with `page.evaluate(() => element.click())`.
+The synthetic sidebar click was a no-op in the live tenant; a real
+Playwright/Puppeteer element-handle click changed the module reliably.
+
 Observed module markers:
 
 | Module | Safe visible marker after navigation |
 |---|---|
 | `数据连接` | `文件` |
-| `数据准备` | `自助ETL`, `数据模型` |
-| `分析展现` | `即席查询`, `透视分析`, `交互式仪表盘` |
+| `数据准备` | `数据集`, `自助ETL`; landing card `数据模型` |
+| `分析展现` | `即席查询`, `透视分析`, `交互式仪表盘`, `Web电子表格` |
 | `运维设置` | `AIChat系统选项` |
-| `AIChat` | New/existing page URL contains `/aichat/` |
+| `AIChat` | New/existing page URL contains `/aichat/`, title is `Smartbi AIChat`, and page shows `数据洞察` |
 
 Wait for a marker or URL, not a blind long delay.
 

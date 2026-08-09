@@ -23,7 +23,22 @@ export function normalizeDashboardCharts(input) {
     if (!dimension || !measure || !title) {
       throw new Error(`dashboard chart ${index + 1} requires dimension, measure, and title`);
     }
-    return { dimension, measure, title };
+    const dimensionLabel = String(chart.dimensionLabel || dimension).trim();
+    const measureLabel = String(chart.measureLabel || measure).trim();
+    const xAxisTitle = String(chart.xAxisTitle || dimensionLabel).trim();
+    const yAxisTitle = String(chart.yAxisTitle || measureLabel).trim();
+    if (!dimensionLabel || !measureLabel || !xAxisTitle || !yAxisTitle) {
+      throw new Error(`dashboard chart ${index + 1} requires non-empty field and axis labels`);
+    }
+    return {
+      dimension,
+      measure,
+      title,
+      dimensionLabel,
+      measureLabel,
+      xAxisTitle,
+      yAxisTitle,
+    };
   });
 }
 

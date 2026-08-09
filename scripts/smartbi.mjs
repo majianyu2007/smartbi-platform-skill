@@ -29,9 +29,15 @@ import {
   parseResourceDeleteArgs,
 } from './deletion-guard.mjs';
 import { normalizeCatalogElements } from './catalog-elements.mjs';
+import {
+  auditAnalysisPresentation,
+  improveAnalysisPresentation,
+} from './analysis-presentation.mjs';
 import { assertReplacementSchemaCompatible } from './import-schema.mjs';
 import { parseAichatStream } from './aichat-stream.mjs';
 import { dashboardGrid } from './dashboard-multi.mjs';
+import { auditDashboardPresentation } from './dashboard-presentation.mjs';
+import { summarizeDimensionKeys } from './dimension-profile.mjs';
 import { isEtlSuccessful, isEtlTerminalState } from './etl-state.mjs';
 import { layoutLinearEtlGraph } from './etl-layout.mjs';
 
@@ -961,6 +967,10 @@ function analysisMeasure(model, measure) {
   };
 }
 
+function defaultBusinessLabel(fieldName) {
+  return String(fieldName || '').trim().replaceAll('_', ' ');
+}
+
 function buildAnalysisReport(model, rowFieldName, measureFieldName, requestedName, description = '') {
   const dimensionField = (model.fields || []).find(
     (field) => field.name === rowFieldName || field.alias === rowFieldName,
@@ -974,57 +984,48 @@ function buildAnalysisReport(model, rowFieldName, measureFieldName, requestedNam
   const measure = analysisMeasure(model, modelMeasure);
   const dataSource = { id: model.id, type: 'AUGMENTED' };
   const sortSetting = { row: { sorts: [] }, col: { sorts: [] } };
-  return {
+  const rowLabel = defaultBusinessLabel(rowFieldName);
+  const measureLabel = defaultBusinessLabel(measureFieldName);
+  const report = {
     name: applyNamespace(requestedName),
     alias: applyNamespace(requestedName),
     desc: description,
     define: {
       reportSetting: { refresh: {}, tableHeader: null, tableFooter: null },
-      portlets: [
-        {
-          id: resourceId(),
-          name: '表格',
-          type: 'CROSS_TABLE',
-          extended: {
-            fields: {
-              cols: [{
-                id: 'MEASURE_GROUP_NAME',
-                name: 'MEASURE_GROUP_NAME',
-                alias: '度量名称',
-                label: '度量名称',
-                type: 'MEASURE_GROUP_NAME',
-                hierarchy: 'MEASURE_GROUP_NAME',
-                group: 'DIMENSION',
-                fieldType: 'DIMENSION',
-                dataType: 'STRING',
-                uniqueId: resourceId(),
-              }],
-              rows: [dimension],
-              measures: [measure],
-            },
-            sortSetting,
-            dataSource,
-            viewState: { groupOrderByState: null },
+      portlets: [{
+        id: resourceId(),
+        name: '表格',
+        type: 'CROSS_TABLE',
+        extended: {
+          fields: {
+            cols: [{
+              id: 'MEASURE_GROUP_NAME',
+              name: 'MEASURE_GROUP_NAME',
+              alias: '度量名称',
+              label: '度量名称',
+              type: 'MEASURE_GROUP_NAME',
+              hierarchy: 'MEASURE_GROUP_NAME',
+              group: 'DIMENSION',
+              fieldType: 'DIMENSION',
+              dataType: 'STRING',
+              uniqueId: resourceId(),
+            }],
+            rows: [dimension],
+            measures: [measure],
           },
+          sortSetting,
+          dataSource,
+          viewState: { groupOrderByState: null },
         },
-        {
-          id: resourceId(),
-          name: 'filterPanel',
-          type: 'FILTER_PANEL',
-          extended: {
-            children: [],
-            impactMap: {},
-            whereConditionalRelation: {},
-            havingConditionalRelation: {},
-            setting: {},
-            sortSetting,
-            dataSource,
-          },
-        },
-      ],
+      }],
       privateDataset: { folders: [], fields: [] },
     },
   };
+  return improveAnalysisPresentation(report, {
+    rowLabel,
+    measureLabel,
+    description: description || `${rowLabel} / ${measureLabel}`,
+  });
 }
 
 async function cmdAnalysisCreate(
@@ -1074,6 +1075,79 @@ async function cmdAnalysisCreate(
   });
 }
 
+async function cmdAnalysisRepair(
+  analysisId,
+  rowFieldName,
+  measureFieldName,
+  rowLabel,
+  measureLabel,
+  description = '',
+) {
+  if (![analysisId, rowFieldName, measureFieldName, rowLabel, measureLabel].every(Boolean)) {
+    throw new Error(
+      'analysis-repair requires <analysisId> <rowField> <measure> <rowLabel> <measureLabel> [description]',
+    );
+  }
+  const { report: current } = await loadAnalysis(analysisId);
+  requireNamespacedResource(current, 'analysis');
+  const currentTable = current.define?.portlets?.find((portlet) => portlet.type === 'CROSS_TABLE');
+  const modelId = currentTable?.extended?.dataSource?.id;
+  if (!modelId) throw new Error('analysis has no model-backed CROSS_TABLE');
+  const model = await loadModel(modelId);
+  requireNamespacedResource(model, 'model');
+
+  const rebuilt = buildAnalysisReport(
+    model,
+    rowFieldName,
+    measureFieldName,
+    current.name,
+    description || current.desc || '',
+  );
+  rebuilt.define.portlets[0].id = currentTable.id;
+  const repaired = improveAnalysisPresentation({
+    ...current,
+    desc: description || current.desc || rebuilt.desc,
+    define: rebuilt.define,
+  }, {
+    rowLabel,
+    measureLabel,
+    description: description || current.desc || rebuilt.desc,
+  });
+  const beforeAudit = auditAnalysisPresentation(current);
+  await smartbixApi('adhocanalysis/updateReport', {
+    method: 'POST',
+    body: repaired,
+    timeoutMs: 120000,
+  });
+  const { report: saved } = await loadAnalysis(analysisId);
+  const presentation = auditAnalysisPresentation(saved);
+  if (!presentation.ok) {
+    throw new Error(`analysis presentation repair failed: ${presentation.issues.join('; ')}`);
+  }
+  const queryResult = await smartbixApi(`adhocanalysis/data/${encodeURIComponent(analysisId)}`, {
+    method: 'POST',
+    body: buildAnalysisQuery(saved),
+    timeoutMs: 120000,
+  });
+  const rowKeys = Object.keys(queryResult.rowMap || {});
+  if (rowKeys.length === 0) throw new Error('repaired analysis returned no rows');
+  safeOutput({
+    ok: true,
+    id: analysisId,
+    name: saved.name,
+    rowField: rowFieldName,
+    measure: measureFieldName,
+    rowLabel,
+    measureLabel,
+    removedIssues: beforeAudit.issues,
+    presentation,
+    validation: {
+      rowCount: rowKeys.length,
+      columns: (queryResult.columns || []).filter(Boolean).map((column) => column.label || column.value),
+    },
+  });
+}
+
 async function cmdAnalysisRun(analysisId) {
   const { report } = await loadAnalysis(analysisId);
   requireNamespacedResource(report, 'analysis');
@@ -1083,6 +1157,53 @@ async function cmdAnalysisRun(analysisId) {
     timeoutMs: 120000,
   });
   safeOutput({ ok: true, analysisId, name: report.name, result });
+}
+
+async function cmdAnalysisProfile(analysisId, fieldNamesCsv) {
+  if (![analysisId, fieldNamesCsv].every(Boolean)) {
+    throw new Error('analysis-profile requires <analysisId> <field,...>');
+  }
+  const { report } = await loadAnalysis(analysisId);
+  requireNamespacedResource(report, 'analysis');
+  const table = report.define?.portlets?.find((portlet) => portlet.type === 'CROSS_TABLE');
+  const modelId = table?.extended?.dataSource?.id;
+  if (!modelId) throw new Error('analysis has no model-backed CROSS_TABLE');
+  const model = await loadModel(modelId);
+  requireNamespacedResource(model, 'model');
+  const fieldNames = [...new Set(
+    String(fieldNamesCsv).split(',').map((name) => name.trim()).filter(Boolean),
+  )];
+  if (fieldNames.length === 0) throw new Error('analysis-profile requires at least one field');
+
+  const profiles = [];
+  for (const fieldName of fieldNames) {
+    const field = (model.fields || []).find(
+      (candidate) => candidate.name === fieldName || candidate.alias === fieldName,
+    );
+    if (!field) throw new Error(`analysis profile field not found: ${fieldName}`);
+    const query = buildAnalysisQuery(report);
+    query.queryFields = {
+      ...query.queryFields,
+      rows: [analysisDimension(model, field)],
+    };
+    const result = await smartbixApi(`adhocanalysis/data/${encodeURIComponent(analysisId)}`, {
+      method: 'POST',
+      body: query,
+      timeoutMs: 120000,
+    });
+    profiles.push({
+      field: field.name,
+      label: field.alias || field.name,
+      ...summarizeDimensionKeys(Object.keys(result.rowMap || {})),
+    });
+  }
+  safeOutput({
+    ok: true,
+    analysisId,
+    name: report.name,
+    model: { id: model.id, name: model.name },
+    profiles,
+  });
 }
 
 async function cmdAnalysisClone(parentId, sourceAnalysisId, requestedName, description = '') {
@@ -1113,15 +1234,16 @@ async function cmdAnalysisClone(parentId, sourceAnalysisId, requestedName, descr
   });
 }
 
-function dashboardDimension(model, field) {
+function dashboardDimension(model, field, displayLabel = field.alias || field.name) {
   const parentId = model.nodes?.find((node) => node.id === field.id)?.parentId
     || `AUGMENTED_DATASET_FOLDER.${model.id}.${field.viewId}`;
+  const label = String(displayLabel || field.alias || field.name).trim();
   return {
     id: qualifyModelResource(model.id, 'FIELD', field.id),
-    alias: field.alias || field.name,
-    label: field.alias || field.name,
-    label0: field.alias || field.name,
-    showName: null,
+    alias: label,
+    label,
+    label0: label,
+    showName: label,
     aggregatedCalcField: false,
     aggregate: 'NONE',
     originAggregate: null,
@@ -1146,16 +1268,17 @@ function dashboardDimension(model, field) {
   };
 }
 
-function dashboardMeasure(model, measure) {
+function dashboardMeasure(model, measure, displayLabel = measure.alias || measure.name) {
   const aggregate = String(measure.aggregator || 'sum').toUpperCase();
   const parentId = model.nodes?.find((node) => node.id === measure.id)?.parentId
     || `AUGMENTED_DATASET_FOLDER.${model.id}.measure`;
+  const label = String(displayLabel || measure.alias || measure.name).trim();
   return {
     id: qualifyModelResource(model.id, 'MEASURE', measure.id),
-    alias: measure.alias || measure.name,
-    label: measure.alias || measure.name,
-    label0: measure.alias || measure.name,
-    showName: null,
+    alias: label,
+    label,
+    label0: label,
+    showName: label,
     aggregatedCalcField: false,
     aggregate,
     originAggregate: aggregate,
@@ -1183,7 +1306,14 @@ function dashboardMeasure(model, measure) {
   };
 }
 
-function buildBarDashboard(model, dimensionName, measureName, requestedName, chartTitle) {
+function buildBarDashboard(
+  model,
+  dimensionName,
+  measureName,
+  requestedName,
+  chartTitle,
+  presentation = {},
+) {
   const field = (model.fields || []).find(
     (item) => item.name === dimensionName || item.alias === dimensionName,
   );
@@ -1195,11 +1325,16 @@ function buildBarDashboard(model, dimensionName, measureName, requestedName, cha
   const pageId = resourceId();
   const portletId = resourceId();
   const name = applyNamespace(requestedName);
+  const dimensionLabel = String(presentation.dimensionLabel || field.alias || field.name).trim();
+  const measureLabel = String(presentation.measureLabel || measure.alias || measure.name).trim();
+  const xAxisTitle = String(presentation.xAxisTitle || dimensionLabel).trim();
+  const yAxisTitle = String(presentation.yAxisTitle || measureLabel).trim();
+  const title = String(chartTitle || `${measureLabel} by ${dimensionLabel}`).trim();
   return {
     id: pageId,
     name,
     alias: name,
-    desc: chartTitle || `${measureName} by ${dimensionName}`,
+    desc: title,
     define: {
       devices: {
         default: {
@@ -1239,11 +1374,11 @@ function buildBarDashboard(model, dimensionName, measureName, requestedName, cha
         macros: [],
         extended: {
           asFilter: false,
-          title: { text: chartTitle || `${measureName} by ${dimensionName}` },
+          title: { text: title, left: 'center', top: 8 },
           datasetIds: [model.id],
           fields: {
-            cols: [dashboardDimension(model, field)],
-            rows: [dashboardMeasure(model, measure)],
+            cols: [dashboardDimension(model, field, dimensionLabel)],
+            rows: [dashboardMeasure(model, measure, measureLabel)],
             filters: [],
           },
           markFieldGroups: { GLOBAL_MARK: {} },
@@ -1263,10 +1398,32 @@ function buildBarDashboard(model, dimensionName, measureName, requestedName, cha
           },
           table: {},
           chartDefine: {
-            tooltip: {},
-            seriesConfig: { global: { label: {}, stack: false } },
-            xAxis: { axisLabel: {} },
-            yAxis: { axisLabel: {} },
+            tooltip: { trigger: 'axis' },
+            grid: {
+              left: 72,
+              right: 24,
+              top: 64,
+              bottom: 96,
+              containLabel: true,
+            },
+            seriesConfig: {
+              global: {
+                label: { show: true, position: 'top', fontSize: 11 },
+                stack: false,
+              },
+            },
+            xAxis: {
+              name: xAxisTitle,
+              nameLocation: 'middle',
+              nameGap: 62,
+              axisLabel: { interval: 0, rotate: 24 },
+            },
+            yAxis: {
+              name: yAxisTitle,
+              nameLocation: 'middle',
+              nameGap: 54,
+              axisLabel: {},
+            },
           },
           refresh: { enable: false },
           viewState: {},
@@ -1306,6 +1463,7 @@ function buildMultiBarDashboard(model, requestedName, chartInput, description = 
     chart.measure,
     requestedName,
     chart.title,
+    chart,
   ));
   const dashboard = dashboards[0];
   const portlets = dashboards.map((item) => item.define.portlets[0]);
@@ -1366,6 +1524,58 @@ async function cmdDashboardCreateMulti(parentId, modelId, requestedName, chartsJ
     model: { id: model.id, name: model.name },
     portletCount,
     charts,
+  });
+}
+
+async function cmdDashboardRepairMulti(
+  dashboardId,
+  modelId,
+  chartsJson,
+  description = '',
+) {
+  if (![dashboardId, modelId, chartsJson].every(Boolean)) {
+    throw new Error(
+      'dashboard-repair-multi requires <dashboardId> <modelId> <chartsJson> [description]',
+    );
+  }
+  const current = requireNamespacedResource(
+    await loadDashboard(dashboardId),
+    'dashboard',
+  );
+  const model = await loadModel(modelId);
+  requireNamespacedResource(model, 'model');
+  const { dashboard: rebuilt, charts } = buildMultiBarDashboard(
+    model,
+    current.name,
+    chartsJson,
+    description || current.desc || '',
+  );
+  const repaired = {
+    ...current,
+    name: current.name,
+    alias: current.alias || current.name,
+    desc: description || current.desc || rebuilt.desc,
+    define: rebuilt.define,
+    editDefine: rebuilt.editDefine,
+  };
+  const beforeAudit = auditDashboardPresentation(current, charts.length);
+  await smartbixApi('pages/beans?_method=PUT', {
+    method: 'POST',
+    body: repaired,
+    timeoutMs: 120000,
+  });
+  const saved = await loadDashboard(dashboardId);
+  const presentation = auditDashboardPresentation(saved, charts.length);
+  if (!presentation.ok) {
+    throw new Error(`dashboard presentation repair failed: ${presentation.issues.join('; ')}`);
+  }
+  safeOutput({
+    ok: true,
+    id: saved.id,
+    name: saved.name,
+    model: { id: model.id, name: model.name },
+    removedIssues: beforeAudit.issues,
+    presentation,
   });
 }
 
@@ -3515,10 +3725,25 @@ try {
     case 'model-clone': await cmdModelClone(args[0], args[1], args[2], args[3]); break;
     case 'analysis-get': await cmdAnalysisGet(args[0]); break;
     case 'analysis-create': await cmdAnalysisCreate(args[0], args[1], args[2], args[3], args[4], args[5]); break;
+    case 'analysis-repair': await cmdAnalysisRepair(
+      args[0],
+      args[1],
+      args[2],
+      args[3],
+      args[4],
+      args.slice(5).join(' '),
+    ); break;
     case 'analysis-run': await cmdAnalysisRun(args[0]); break;
+    case 'analysis-profile': await cmdAnalysisProfile(args[0], args[1]); break;
     case 'analysis-clone': await cmdAnalysisClone(args[0], args[1], args[2], args[3]); break;
     case 'dashboard-get': await cmdDashboardGet(args[0]); break;
     case 'dashboard-create-multi': await cmdDashboardCreateMulti(args[0], args[1], args[2], args[3], args.slice(4).join(' ')); break;
+    case 'dashboard-repair-multi': await cmdDashboardRepairMulti(
+      args[0],
+      args[1],
+      args[2],
+      args.slice(3).join(' '),
+    ); break;
     case 'dashboard-create': await cmdDashboardCreate(args[0], args[1], args[2], args[3], args[4], args[5]); break;
     case 'dashboard-clone': await cmdDashboardClone(args[0], args[1], args[2], args[3]); break;
     case 'aichat-query': await cmdAichat(args[0], args.slice(1).join(' ')); break;
@@ -3560,7 +3785,7 @@ try {
       orderRiskWarning: 'https://wiki.smartbi.com.cn/pages/viewpage.action?pageId=168629228',
     }); break;
     default:
-      throw new Error(`Unknown command: ${command}\nusage: smartbi.mjs <setup|doctor|login|health|config|codec-status|invoke|api-get|api-post|plain-get|plain-post|tree|folder-create|resource-delete|upload|etl-node-list|etl-create|etl-union-create|etl-describe|etl-insert|etl-output-dataset|etl-get|etl-run|etl-row-number|model-get|model-create|model-clone|analysis-get|analysis-create|analysis-run|analysis-clone|dashboard-get|dashboard-create|dashboard-create-multi|dashboard-clone|aichat-graph-list|aichat-graph-status|aichat-graph-fields|aichat-graph-build|aichat-query|aichat-report|aichat-export|agent-get|agent-create|agent-run|agent-deploy|nav|ui-open|ui-dashboard-check|manuals> ...`);
+      throw new Error(`Unknown command: ${command}\nusage: smartbi.mjs <setup|doctor|login|health|config|codec-status|invoke|api-get|api-post|plain-get|plain-post|tree|folder-create|resource-delete|upload|etl-node-list|etl-create|etl-union-create|etl-describe|etl-insert|etl-output-dataset|etl-get|etl-run|etl-row-number|model-get|model-create|model-clone|analysis-get|analysis-create|analysis-repair|analysis-run|analysis-profile|analysis-clone|dashboard-get|dashboard-create|dashboard-create-multi|dashboard-repair-multi|dashboard-clone|aichat-graph-list|aichat-graph-status|aichat-graph-fields|aichat-graph-build|aichat-query|aichat-report|aichat-export|agent-get|agent-create|agent-run|agent-deploy|nav|ui-open|ui-dashboard-check|manuals> ...`);
   }
   process.exit(0);
 } catch (error) {

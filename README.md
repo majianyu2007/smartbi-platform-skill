@@ -133,6 +133,24 @@ AIChat graph when required. Never union, append, or join candidate outcome rows
 before selection. Compare candidates in an external scorecard or metadata-only
 record, and validate every folder independently.
 
+### Beginner UI to Skill command map
+
+- `数据连接 → 文件 → 新建数据表` maps to `upload`;
+- `数据准备 → 自助ETL` maps to `etl-*`, while `数据准备 → 数据集`
+  (the landing card says `数据模型`) maps to `model-*`;
+- `分析展现 → 透视分析` maps to `analysis-*`, and
+  `交互式仪表盘` maps to `dashboard-*`;
+- the `AIChat` sidebar item opens a separate `Smartbi AIChat` page whose query
+  entry is `数据洞察`; model graphs are still managed under
+  `运维设置 → AIChat系统选项`.
+
+Before building comparison charts, use `analysis-profile` to require at least
+two non-blank categories per dimension. Use `analysis-repair` and
+`dashboard-repair-multi` to correct labels, axes, layout, and field bindings on
+owned legacy resources. Reopen the result in the headed browser for final
+visual verification.
+
+
 The inspector reuses Playwright in this order:
 
 1. `SMARTBI_PLAYWRIGHT_PATH`;

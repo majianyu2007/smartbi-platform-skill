@@ -236,9 +236,10 @@ use `api-get`/`api-post` for Smartbix paths.
 |---|---|
 | `GET augmentedDataSet/{id}` | Load a model with nodes, fields, measures, and views |
 | `POST augmentedDataSet/{parentId}` | Create a model |
-| `GET report/{id}` / `POST report/{parentId}` | Load/create pivot analysis |
-| `POST freequery/queryData` | Execute a pivot definition |
+| `GET adhocanalysis/getReport/{id}` / `POST adhocanalysis/createReport?pid={parentId}` | Load/create pivot analysis |
+| `POST adhocanalysis/updateReport` / `POST adhocanalysis/data/{id}` | Update and execute a pivot definition |
 | `GET pages/beans?id={id}` / `POST pages/beans/create?pid={parentId}` | Load/create dashboard |
+| `POST pages/beans?_method=PUT` | Update a dashboard; verified from the editor's Save request |
 | `POST cgi/aichat-train/list-knowledge-graph-node` | List built/building model graphs |
 | `POST cgi/aichat-train/get-resource-field-tree/{modelId}` | Resolve selectable, fully qualified graph field IDs |
 | `POST cgi/aichat-train/validate_field_data_count/{modelId}` | Validate selected field cardinalities |

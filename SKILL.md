@@ -231,6 +231,9 @@ TMPDIR=/tmp node scripts/smartbi.mjs etl-row-number <flowId> row_number
 TMPDIR=/tmp node scripts/smartbi.mjs etl-run <flowId>       # run and verify terminal preview
 TMPDIR=/tmp node scripts/smartbi.mjs etl-node-list 派生列
 TMPDIR=/tmp node scripts/smartbi.mjs etl-insert <flowId> DATAPREPARE_SAMPLE '{"fraction":"0.8","seed":"10"}' sample_train
+TMPDIR=/tmp node scripts/smartbi.mjs analysis-profile <analysisId> metric_name,age_group,sex,metric_domain
+TMPDIR=/tmp node scripts/smartbi.mjs analysis-repair <analysisId> <rowField> <measure> <rowLabel> <measureLabel> [description]
+TMPDIR=/tmp node scripts/smartbi.mjs dashboard-repair-multi <dashboardId> <modelId> '<chartsJson>' [description]
 TMPDIR=/tmp node scripts/smartbi.mjs aichat-graph-fields <modelId>
 TMPDIR=/tmp node scripts/smartbi.mjs aichat-graph-build <modelId> survey_city,age_code
 TMPDIR=/tmp node scripts/smartbi.mjs aichat-graph-status <modelId>
@@ -263,8 +266,8 @@ TMPDIR=/tmp node scripts/smartbi.mjs manuals        # official manual links
 | `etl-insert <flowId> <nodeName> [configJson] [instanceKey]` | Idempotently insert/update one unary transform before the target | saved node/config summary |
 | `etl-row-number <flowId> [column]` | Idempotently add/update `增加序列号` | `{changed,nodeId,column}` |
 | `model-get <id>` / `model-create ...` / `model-clone ...` | Inspect, build, or clone a data model | model metadata |
-| `analysis-get <id>` / `analysis-create ...` / `analysis-run <id>` / `analysis-clone ...` | Operate pivot analyses | definition / reconciled result |
-| `dashboard-get <id>` / `dashboard-create ...` / `dashboard-clone ...` | Operate API-generated dashboards | definition / saved dashboard |
+| `analysis-get <id>` / `analysis-create ...` / `analysis-run <id>` / `analysis-profile <id> <field,...>` / `analysis-repair ...` / `analysis-clone ...` | Operate pivot analyses, profile candidate chart dimensions, and repair presentation metadata | definition / category profile / reconciled result |
+| `dashboard-get <id>` / `dashboard-create ...` / `dashboard-create-multi ...` / `dashboard-repair-multi ...` / `dashboard-clone ...` | Operate API-generated dashboards; multi-chart commands persist titles, business labels, axis titles, and complete layout slots | definition / presentation audit / saved dashboard |
 | `aichat-graph-list [keyword]` / `aichat-graph-status <modelId>` | List or inspect model-graph build state | graph status and selected fields |
 | `aichat-graph-fields <modelId>` | Resolve selectable field names to fully qualified IDs | model field list |
 | `aichat-graph-build <modelId> <field,...>` | Validate and idempotently build one owned model graph | terminal build result |
@@ -288,6 +291,22 @@ personal acquisition folder, validates preview fields, and polls until import
 completes. Do not pass an existing table name unless you intend a schema-preserving
 REPLACE import. Added, removed, or reordered fields fail closed; delete the owned
 table with exact-name confirmation and import it anew when the schema changes.
+
+## Beginner UI Map (verified live 2026-08-09)
+
+Use the labels a first-time operator actually sees. The home page and sidebar
+are module launchers; CLI names describe the underlying artifact.
+
+| Sidebar module | Visible beginner path | Skill/API equivalent | Important distinction |
+|---|---|---|---|
+| `数据连接` | `文件` → `加载文件数据（上传文件）` → `新建数据表` | `upload` | Use a real Playwright click. A synthetic DOM click did not open this wizard. |
+| `数据准备` | `数据集` for data models; `自助ETL` for transformation flows | `model-*`; `etl-*` | The landing-page card says `数据模型`, while the resource tree says `数据集`. |
+| `分析展现` | `透视分析` first; then `交互式仪表盘` | `analysis-*`; `dashboard-*` | `即席查询` is a separate detail-query tool, not the pivot used for reconciliation. |
+| `AIChat` | Opens a separate `Smartbi AIChat` page; choose `数据洞察` | `aichat-graph-*`; `aichat-query/report/export` | Graph construction remains under `运维设置 → AIChat系统选项`; chat and graph management are different screens. |
+| `Agent` | Agent canvas and execution pages | `agent-*` | Keep Agent graph creation separate from AIChat model-graph construction. |
+
+The browser may open a new tab for AIChat. Re-enumerate pages, select the tab
+whose title is `Smartbi AIChat`, and verify the exact model before querying.
 
 ## Core Workflow
 
@@ -343,7 +362,8 @@ Rules:
 
 ### 3. Data model (数据准备)
 
-1. 数据模型 → `数据源` → `数据表` → select the owned, namespaced table.
+1. `数据准备` → `数据集` (landing-page card: `数据模型`) → `数据源` →
+   `数据表` → select the owned, namespaced table.
 2. Flat survey files may use a one-table model; do not invent joins. For
    multi-table models, treat detected joins as proposals and verify keys,
    cardinality, and grain.
@@ -354,15 +374,26 @@ Rules:
 
 ### 4. Analysis and dashboard (分析展现)
 
-1. Build a pivot first. Place the grouping dimension in rows and set the
-   measure aggregation explicitly; run and reconcile against an independent
-   computation.
-2. Save the pivot, then create an interactive dashboard from the model/pivot.
-3. Bind the same validated dimension and measure to a chart. Use exact titles
-   that name the metric and population; verify the preview after saving.
-4. For larger deliverables, continue with KPI cards, comparison/risk charts,
+1. Build a `透视分析` first. Place one grouping dimension in rows, set the
+   measure aggregation explicitly, replace technical field names with business
+   labels, and remove an empty standalone filter panel. Run and reconcile the
+   result against an independent computation.
+2. Before choosing chart dimensions, run
+   `analysis-profile <analysisId> <field,...>`. A categorical chart requires at
+   least two usable non-blank categories; a one-category field belongs in a KPI
+   card or note, not a comparison chart.
+3. Create `交互式仪表盘` charts from the same model. Each chart must answer a
+   different named question. Persist an exact title, business field labels,
+   visible X/Y-axis titles, data labels, and a complete non-overlapping layout.
+4. Save and reopen the dashboard. Verify every expected chart renders multiple
+   categories where the profile predicted them; inspect the headed-browser
+   screenshot, not only the saved JSON.
+5. Use `analysis-repair` or `dashboard-repair-multi` to correct owned legacy
+   artifacts. These commands reload the saved resource, audit presentation
+   metadata, and rerun the analysis or dashboard contract after updating it.
+6. For larger deliverables, continue with KPI cards, comparison/risk charts,
    detail tables, filters, and linkage. Every component must answer a named
-   decision question.
+   decision question; decorative or degenerate charts do not count.
 
 ### 5. AIChat
 
@@ -383,9 +414,10 @@ API path (preferred):
 UI fallback: 运维设置 → AIChat系统选项 → 新建 → 全部资源 → 数据集 →
 team folder → target model → `构建模型图谱`. Select the same field set, click
 `校验`, require `校验通过`, confirm, refresh the graph list, and require the
-exact namespaced model row to show `成功` plus build time/duration. In AIChat,
-refresh the model picker after a new build and verify the exact selected model
-text before sending. For reports choose 技能 → 分析报告.
+exact namespaced model row to show `成功` plus build time/duration. Clicking the
+main sidebar `AIChat` opens a separate `Smartbi AIChat` tab; choose `数据洞察`,
+refresh its model picker after a new graph build, and verify the exact selected
+model text before sending. For reports choose 技能 → 分析报告.
 
 ### 6. Agent
 
@@ -418,7 +450,10 @@ text before sending. For reports choose 技能 → 分析报告.
 - import → `upload` ok + table visible in personal acquisition tree + row/field check;
 - ETL → terminal node success + expected field/row preview (and output table if materialized);
 - model → grain and total reconciliation, plus join checks when joins exist;
-- pivot/dashboard → saved preview with reconciled values; filters/linkage exercised when present;
+- pivot/dashboard → business labels + no empty standalone filter portlet +
+  reconciled values; dashboard definition audit + headed-browser screenshot +
+  at least two usable categories for every comparison chart; filters/linkage
+  exercised when present;
 - AIChat → graph status success, exact model selected, and one reproducible query reconciled.
 - Agent → saved Start→LLM→Finish graph, terminal `FINISH`, non-empty response,
   and persisted deployment relation when publication was requested.
