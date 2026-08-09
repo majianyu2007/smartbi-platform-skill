@@ -317,6 +317,10 @@ Verified graph/query acceptance:
 
 ## Stage 6: Agent
 
+> `competition-2026` exception: Agent is outside the allowed competition
+> stages. All `agent-*` commands fail closed; use the AIChat model graph and
+> reproducible AIChat query/report workflow instead.
+
 ### Minimal verified graph
 
 1. Open `新建智能体`; add exactly `开始`, `大模型`, and `结束`.
@@ -343,6 +347,25 @@ Critical binding rule: selecting `开始-输出1 / question` for the LLM leaves
 the test question empty. The test runner supplies the question as
 `会话变量 / 问句`; bind that exact source.
 
+
+## Resource organization and migration
+
+Routine resource-tree operations use API commands, not manual browser menus:
+
+1. Resolve the destination with `competition-home` or inspect it with `tree`.
+2. Inventory the source and destination with `catalog-audit`.
+3. Apply visible business aliases with `resource-rename`; keep stable IDs and
+   physical names when renaming them would require destructive recreation.
+4. Consolidate owned resources with `resource-move`. The command rejects target
+   collisions and moves into a descendant.
+5. Use `resource-copy` only when an actual duplicate is required. Non-folder
+   resources use the live `copyAndPaste` contract; folders copy recursively.
+6. Re-run `catalog-audit`. Require zero namespaced resources outside the intended
+   destination and verify every moved ETL/model/analysis/dashboard by its stable
+   ID.
+
+Playwright remains appropriate only for the final visible dashboard check or a
+canvas edit with no stable API.
 
 ## Save And Recovery Discipline
 

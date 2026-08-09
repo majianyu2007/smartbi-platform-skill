@@ -2,7 +2,7 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-An API-first automation Skill for Smartbi Insight V11. It covers authentication, catalog operations, file import, self-service ETL, data models, pivot analyses, dashboards, AIChat, and Agents. Playwright/CDP is reserved for visual operations that cannot be inferred safely through the HTTP interfaces.
+An API-first automation Skill for Smartbi Insight V11. It covers authentication, guarded catalog create/rename/move/copy/delete, file import, self-service ETL, data models, pivot analyses, dashboards, AIChat, and Agents. Playwright/CDP is reserved for visual operations that cannot be inferred safely through the HTTP interfaces. The optional `competition-2026` profile applies stricter event rules and disables Agent.
 
 ## Requirements
 
@@ -143,6 +143,9 @@ record, and validate every folder independently.
 - the `AIChat` sidebar item opens a separate `Smartbi AIChat` page whose query
   entry is `数据洞察`; model graphs are still managed under
   `运维设置 → AIChat系统选项`.
+- resource-tree `新建/重命名/移动/复制/删除` maps to
+  `folder-create`, `resource-rename`, `resource-move`, `resource-copy`, and
+  `resource-delete`; use `catalog-audit` to verify the resulting tree;
 
 Before building comparison charts, use `analysis-profile` to require at least
 two non-blank categories per dimension. Use `analysis-repair` and
@@ -229,6 +232,20 @@ node scripts/smartbi.mjs setup \
   --naming prefix
 ```
 
+Optional 2026 competition profile (valid only on the official competition
+host):
+
+```bash
+node scripts/smartbi.mjs setup \
+  --profile competition-2026 \
+  --school-name 西北农林科技大学
+node scripts/smartbi.mjs competition-home --create --migrate-legacy
+```
+
+This profile requires a public `upload --source-url`, limits AIChat training to
+10,000 rows, prohibits Agent, and places workspace artifacts under the exact
+school competition folder. See `references/competition-guardrails.md`.
+
 Credential file format:
 
 ```text
@@ -286,6 +303,8 @@ The transport coder is rediscovered from the new tenant's frontend resources and
 | `SMARTBI_BROWSER_PATH` | Chrome/Chromium executable |
 | `SMARTBI_NAMESPACE` | Resource namespace override |
 | `SMARTBI_NAMING` | `prefix` or `suffix` |
+| `SMARTBI_PLATFORM_PROFILE` | Optional platform profile (`competition-2026` or `general`) |
+| `SMARTBI_SCHOOL_NAME` | School name used by the competition folder |
 
 ## 10. Development Checks
 
@@ -314,6 +333,11 @@ sh -n scripts/install.sh
 - Installing Playwright requires the explicit `--install-playwright` flag.
 - Passwords are read only from the private credential file and never enter environment reports, logs, transport caches, or Git.
 - Platform mutations remain protected by namespace and personal-workspace ownership checks.
+- Routine catalog management uses the guarded API commands, not manual
+  Playwright menu clicks. Rename/move/copy require an exact direct-child
+  confirmation and verify the saved postcondition.
+- The competition profile is opt-in and host-bound. It rejects Agent, private
+  dataset source URLs, and AIChat training counts above 10,000.
 - `upload --replace` is allowed only when incoming field names and order match
   the existing table schema; schema changes fail before insertion to prevent
   silent column loss.

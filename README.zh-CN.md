@@ -2,7 +2,7 @@
 
 [English](README.md) | **简体中文**
 
-面向 Smartbi Insight V11 的 API-first 自动化 Skill。支持登录、目录、数据导入、自助 ETL、数据模型、透视分析、仪表盘、AIChat 和 Agent；只有无法安全推断的可视化操作才使用 Playwright/CDP。
+面向 Smartbi Insight V11 的 API-first 自动化 Skill。支持登录、受保护的目录新建／重命名／移动／复制／删除、数据导入、自助 ETL、数据模型、透视分析、仪表盘、AIChat 和 Agent；只有无法安全推断的可视化操作才使用 Playwright/CDP。可选的 `competition-2026` profile 会启用比赛专属限制并禁用 Agent。
 
 ## 环境要求
 
@@ -148,6 +148,9 @@ Smartbi ETL 节点完成。`关系数据源 → 覆盖到关系表` 的直接复
   对应 `dashboard-*`；
 - 侧栏 `AIChat` 会打开单独的 `Smartbi AIChat` 页面，问答入口为
   `数据洞察`；模型图谱仍在 `运维设置 → AIChat系统选项` 管理。
+- 资源树的 `新建/重命名/移动/复制/删除` 分别对应
+  `folder-create`、`resource-rename`、`resource-move`、`resource-copy`、
+  `resource-delete`；变更后用 `catalog-audit` 验证完整目录树。
 
 正式制作比较图前，先用 `analysis-profile` 检查维度至少有两个非空分类；
 用 `analysis-repair` 和 `dashboard-repair-multi` 修复自有旧资源的业务标签、
@@ -231,6 +234,19 @@ node scripts/smartbi.mjs setup \
   --naming prefix
 ```
 
+2026 比赛 profile（仅允许赛事官方租户）：
+
+```bash
+node scripts/smartbi.mjs setup \
+  --profile competition-2026 \
+  --school-name 西北农林科技大学
+node scripts/smartbi.mjs competition-home --create --migrate-legacy
+```
+
+该 profile 要求 `upload --source-url` 提供公开数据源地址，AIChat 训练数据
+不得超过 10,000 条，禁止 Agent，并把工作区资源集中到精确的学校比赛目录。
+完整规则见 `references/competition-guardrails.md`。
+
 凭据文件格式：
 
 ```text
@@ -288,6 +304,8 @@ node scripts/smartbi.mjs doctor --require-browser
 | `SMARTBI_BROWSER_PATH` | 指定 Chrome/Chromium 可执行文件 |
 | `SMARTBI_NAMESPACE` | 覆盖资源命名空间 |
 | `SMARTBI_NAMING` | `prefix` 或 `suffix` |
+| `SMARTBI_PLATFORM_PROFILE` | 可选平台 profile（`competition-2026` 或 `general`） |
+| `SMARTBI_SCHOOL_NAME` | 比赛资源目录使用的学校名称 |
 
 ## 10. 开发验证
 
@@ -315,6 +333,10 @@ sh -n scripts/install.sh
 - 安装 Playwright 必须显式传入 `--install-playwright`。
 - 密码只从私有凭据文件读取，不进入环境报告、日志、缓存或 Git。
 - 所有平台写操作仍受命名空间与个人工作区所有权检查保护。
+- 常规目录管理必须使用受保护的 API 命令，而不是手动点击 Playwright
+  菜单；重命名、移动和复制都会校验直接父子关系、精确名称和保存结果。
+- 比赛 profile 必须显式启用且绑定官方域名；Agent、私有数据源地址及
+  超过 10,000 条的 AIChat 训练会被拒绝。
 - `upload --replace` 仅在新文件字段名及顺序与现有表完全一致时执行；
   字段新增、删除或重排会在写入前失败，防止平台静默丢列。
 - 清理旧版未命名空间化资源时，只允许删除当前登录账号个人数据采集空间中的直接子级 `BASETABLE`，并且必须提供用户确认的精确名称：

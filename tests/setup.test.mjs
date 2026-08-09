@@ -98,6 +98,53 @@ test('non-interactive setup validates credentials and writes private config', ()
   }
 });
 
+test('setup persists an explicit competition profile only on its official tenant', () => {
+  const workspace = temporaryWorkspace();
+  try {
+    writeFileSync(workspace.credentials, 'test-account\ntest-password\n', { mode: 0o600 });
+    const configured = runCli([
+      'setup',
+      '--base-url', 'https://tiaozhanbei.cloud.smartbi.com.cn/smartbi/vision',
+      '--cred-file', workspace.credentials,
+      '--namespace', 'MJY_',
+      '--naming', 'prefix',
+      '--profile', 'competition-2026',
+      '--school-name', '西北农林科技大学',
+    ], { SMARTBI_CONFIG_FILE: workspace.config });
+    assert.equal(configured.status, 0, configured.stderr);
+    assert.deepEqual(JSON.parse(configured.stdout).saved.platformProfile, {
+      id: 'competition-2026',
+      schoolName: '西北农林科技大学',
+    });
+
+    const agent = runCli(['agent-get', 'test-agent'], {
+      SMARTBI_CONFIG_FILE: workspace.config,
+    });
+    assert.equal(agent.status, 1);
+    assert.match(agent.stderr, /Agent is prohibited by platform profile competition-2026/);
+
+    const upload = runCli(['upload', 'dataset.csv'], {
+      SMARTBI_CONFIG_FILE: workspace.config,
+    });
+    assert.equal(upload.status, 1);
+    assert.match(upload.stderr, /competition public dataset source URL must not be empty/);
+
+    const wrongHost = runCli([
+      'setup',
+      '--base-url', 'https://portable.example.test/smartbi/vision',
+      '--cred-file', workspace.credentials,
+      '--namespace', 'MJY_',
+      '--naming', 'prefix',
+      '--profile', 'competition-2026',
+      '--school-name', '西北农林科技大学',
+    ], { SMARTBI_CONFIG_FILE: join(workspace.root, 'wrong-host.json') });
+    assert.equal(wrongHost.status, 1);
+    assert.match(wrongHost.stderr, /requires host tiaozhanbei\.cloud\.smartbi\.com\.cn/);
+  } finally {
+    workspace.cleanup();
+  }
+});
+
 test('setup rejects unsupported naming modes', () => {
   const workspace = temporaryWorkspace();
   try {
@@ -188,6 +235,30 @@ test('generic API and ETL commands reject unsafe or incomplete input before auth
     assert.equal(folder.status, 1);
     assert.match(folder.stderr, /folder-create requires <parentId> <name>/);
 
+    const rename = runCli([
+      'resource-rename', 'parent', 'resource', 'new-name',
+    ], { SMARTBI_CONFIG_FILE: workspace.config });
+    assert.equal(rename.status, 1);
+    assert.match(rename.stderr, /resource-rename requires --confirm-name/);
+
+    const move = runCli([
+      'resource-move', 'source-parent', 'resource', 'target-parent',
+    ], { SMARTBI_CONFIG_FILE: workspace.config });
+    assert.equal(move.status, 1);
+    assert.match(move.stderr, /resource-move requires --confirm-name/);
+
+    const copy = runCli([
+      'resource-copy', 'source-parent', 'resource', 'target-parent', 'new-name',
+    ], { SMARTBI_CONFIG_FILE: workspace.config });
+    assert.equal(copy.status, 1);
+    assert.match(copy.stderr, /resource-copy requires --confirm-name/);
+
+    const competitionHome = runCli([
+      'competition-home',
+    ], { SMARTBI_CONFIG_FILE: workspace.config });
+    assert.equal(competitionHome.status, 1);
+    assert.match(competitionHome.stderr, /requires platform profile competition-2026/);
+
     const deletion = runCli(['resource-delete'], { SMARTBI_CONFIG_FILE: workspace.config });
     assert.equal(deletion.status, 1);
     assert.match(deletion.stderr, /resource-delete requires <parentId> <resourceId>/);
@@ -201,7 +272,7 @@ test('generic API and ETL commands reject unsafe or incomplete input before auth
     const dashboard = runCli(['ui-dashboard-check'], { SMARTBI_CONFIG_FILE: workspace.config });
     assert.equal(dashboard.status, 1);
     assert.match(dashboard.stderr, /ui-dashboard-check requires <resourceId>/);
-    assert.doesNotMatch(`${plain.stderr}${rawMutation.stderr}${apiMutation.stderr}${etl.stderr}${folder.stderr}${deletion.stderr}${legacyDeletion.stderr}${dashboard.stderr}${doctor.stderr}`, /password|cookie/i);
+    assert.doesNotMatch(`${plain.stderr}${rawMutation.stderr}${apiMutation.stderr}${etl.stderr}${folder.stderr}${rename.stderr}${move.stderr}${copy.stderr}${competitionHome.stderr}${deletion.stderr}${legacyDeletion.stderr}${dashboard.stderr}${doctor.stderr}`, /password|cookie/i);
   } finally {
     workspace.cleanup();
   }

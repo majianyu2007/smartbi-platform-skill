@@ -28,7 +28,7 @@ Useful official cross-checks:
 | Official class | Confirmed public contract | Skill relevance |
 |---|---|---|
 | `smartbi.sdk.ClientConnector` | `open`, `close`, `remoteInvoke`, `remoteMultipartInvoke`, `newRemoteInvoke`, `upload`, `download`, `setAccessToken` | Validates the session/client abstraction and class-method-parameter invocation shape |
-| `smartbi.sdk.service.catalog.CatalogService` | `getCatalogElementById`, `getChildElements`, `isCatalogElementAccessible`, `createFolder`, `deleteCatalogElement` | Authoritative catalog semantics; live UI-only variants such as `createFolderElement` remain tenant-verified internals |
+| `smartbi.sdk.service.catalog.CatalogService` | `getCatalogElementById`, `getChildElements`, `getCatalogElementPath`, `isCatalogElementAccessible`, `createFolder`, `updateCatalogNode`, `copyAndPasteReturnNewId`, `deleteCatalogElement` | Authoritative catalog semantics; live frontend variants (`createFolderElement`, `moveCatalogElement`, `supportsCopy`, `copyAndPaste`) remain tenant-verified HTTP/RMI contracts |
 | `smartbi.sdk.service.datasource.DataSourceService` | `getFields`, `getSampleTableData`, `getDataByQuerySql`, `execute`, `executeUpdate` | Field, preview, and reconciliation candidates; mutation still requires ownership guards |
 | `smartbi.sdk.service.insight.ClientInsightService` | `createInsightQuery`, `openQuery`, `getInsightQuery`, `getRawReportData`, parameter methods | Official pivot-analysis lifecycle and result/parameter semantics |
 | `smartbix.sdk.page.service.PageService` / `IPageClientService` | dashboard export and parameter definitions/values | Public SDK covers consumption, not dashboard authoring; `pages/beans` create/update remains live-verified |
@@ -110,6 +110,7 @@ once after a login redirect or `REDIRECT_TO_SMARTBI` response.
 |---|---|---|
 | `CatalogService.getChildElements` | `[parentId]` | Children of any node; parent `""` = root |
 | `DataPackageModule.getChildElementsWithoutUnionDBChilds` | `[parentId, [typeFilter], "READ", false]` | Data-connection scoped listing |
+| `CatalogService.getCatalogElementPath` | `[resourceId]` | Full ancestry used for personal-workspace and descendant-cycle checks |
 
 Node shape: `{id, name, alias, type, hasChild, ...}`. Key root ids:
 
@@ -128,6 +129,28 @@ Personal acquisition folder under `可导入数据库 > input > 数据采集空�
 Folder creation uses `CatalogService.createFolderElement` with
 `[parentId, name, alias, description, null, false, "DEFAULT_TREENODE.png"]`.
 The CLI namespaces the name and verifies the saved child before returning.
+
+Owned resource management uses the same live frontend calls as the resource-tree
+menus, but without manual clicks:
+
+| Operation | Live RMI call | Guarded verification |
+|---|---|---|
+| rename visible alias/description | `updateCatalogNode(id, JSON.stringify({alias,desc}), null)` | exact direct-child confirmation, `WRITE`, sibling collision check, saved alias reload |
+| move | `moveCatalogElement(resourceId, targetParentId)` | source/target ownership, no descendant cycle, no collision, post-move absence/presence |
+| copy non-folder | `supportsCopy(resourceId)`, then `copyAndPaste(targetParentId, sourceId, name, alias, desc)` | source `READ`, target `WRITE`, unique target name, saved child reload |
+| copy folder | `createFolderElement`, then guarded recursive child copy | recursive rollback on child failure, final target reload |
+
+The public Javadoc currently documents `copyAndPasteReturnNewId`, but the live
+Vision frontend calls `copyAndPaste`; direct tenant verification showed that the
+former is not exposed by this HTTP/RMI service. `changeAlias` appears in an
+older tree bundle but is likewise unavailable; `updateCatalogNode` is the
+verified mutation. The CLI therefore follows the live frontend contract and
+uses Javadoc only for semantic cross-checking.
+
+`catalog-audit` recursively reloads children and records `{id,parentId,name,
+alias,type,path,namespaced}`. Resource moves or mass alias changes are complete
+only when this manifest proves containment and no namespaced resource remains
+outside the intended root.
 Deletion uses `CatalogService.isCatalogElementAccessible(id, "DELETE")` then
 `deleteCatalogElement(id)`. The CLI requires an exact parent-child match,
 an approved parent scope, delete permission, and post-delete absence. Normal

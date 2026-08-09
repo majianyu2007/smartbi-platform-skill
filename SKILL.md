@@ -71,6 +71,7 @@ Read what the task needs:
 - `references/workflows.md` — reusable end-to-end procedures derived from official manuals.
 - `references/playwright-patterns.md` — browser lifecycle, selectors, state detection, new-tab handling.
 - `references/shared-tenant-guardrails.md` — shared-tenant privacy, evidence, naming, and delivery boundaries.
+- `references/competition-guardrails.md` — optional 2026 competition profile, stage boundaries, data-source rules, AIChat limits, and prohibited Agent usage.
 
 ## Operating Contract
 
@@ -154,6 +155,7 @@ The wizard asks for:
 3. Smartbi login password;
 4. artifact naming mode (`prefix` or `suffix`);
 5. namespace marker (for example `TEAM_` or `_TEAM`).
+6. optional platform profile and school name for a scoped competition tenant.
 
 For non-interactive provisioning, first create an external two-line credentials
 file with mode `0600`, then configure both credentials and naming:
@@ -164,6 +166,15 @@ TMPDIR=/tmp node scripts/smartbi.mjs setup \
   --cred-file /path/to/credentials.txt \
   --namespace TEAM_ \
   --naming prefix
+```
+
+For the 2026 competition tenant, opt in explicitly; the profile is never
+inferred from the hostname:
+
+```bash
+TMPDIR=/tmp node scripts/smartbi.mjs setup \
+  --profile competition-2026 \
+  --school-name 西北农林科技大学
 ```
 
 Configuration is saved to `config.json` (gitignored and mode `0600` by
@@ -180,12 +191,34 @@ default). Environment variables override it per invocation:
 | `SMARTBI_BROWSER_PATH` | explicit Chrome/Chromium executable | `/path/to/chrome` |
 | `SMARTBI_NAMESPACE` | namespace marker | `TEAM_` or `_TEAM` |
 | `SMARTBI_NAMING` | `prefix` or `suffix` | `prefix` |
+| `SMARTBI_PLATFORM_PROFILE` | optional profile id (`competition-2026` or `general`) | `competition-2026` |
+| `SMARTBI_SCHOOL_NAME` | school name used by the competition resource folder | `西北农林科技大学` |
 
 `setup` without a TTY prints safe guidance. `config` shows the effective
 configuration and concrete idempotent naming examples without revealing secrets.
 
 > Shared-tenant rule: the namespace marker distinguishes YOUR resources from
 > other members'. Verify `config` output before creating anything.
+
+### Optional competition profile
+
+`competition-2026` is a thin policy layer over the reusable Skill. It is valid
+only on `tiaozhanbei.cloud.smartbi.com.cn`; general tenants retain every normal
+capability. The profile:
+
+- reserves the direct personal-workspace folder
+  `<school>-2026“揭榜挂帅”挑战杯擂台赛`;
+- keeps imported source tables in the authenticated personal acquisition
+  folder while placing ETL, models, analyses, dashboards, and AIChat resources
+  under that competition folder;
+- blocks Agent commands, requires `upload --source-url <public-http(s)-url>`,
+  and rejects AIChat training counts above 10,000;
+- permits only the official competition delivery stages documented in
+  `references/competition-guardrails.md`.
+
+Use `competition-home [--create] [--migrate-legacy]` to resolve, create, or
+migrate the exact destination. It checks direct placement and observable
+postconditions; never recreate this operation through manual browser clicks.
 
 ### Tenant migration and transport compatibility
 
@@ -224,8 +257,14 @@ TMPDIR=/tmp node scripts/smartbi.mjs login          # reads credentials file
 TMPDIR=/tmp node scripts/smartbi.mjs health         # workspace
 TMPDIR=/tmp node scripts/smartbi.mjs tree           # catalog root
 TMPDIR=/tmp node scripts/smartbi.mjs tree DS.input  # 可导入数据库
-TMPDIR=/tmp node scripts/smartbi.mjs upload <csv> <name>   # import as new table (auto-namespaced)
+TMPDIR=/tmp node scripts/smartbi.mjs competition-home --create --migrate-legacy
+TMPDIR=/tmp node scripts/smartbi.mjs catalog-audit <rootId>
+TMPDIR=/tmp node scripts/smartbi.mjs folder-create <parentId> <name> [description]
+TMPDIR=/tmp node scripts/smartbi.mjs resource-rename <parentId> <resourceId> <newAlias> --confirm-name <exactName>
+TMPDIR=/tmp node scripts/smartbi.mjs resource-move <sourceParentId> <resourceId> <targetParentId> --confirm-name <exactName>
+TMPDIR=/tmp node scripts/smartbi.mjs resource-copy <sourceParentId> <resourceId> <targetParentId> <newName> --confirm-name <exactName>
 TMPDIR=/tmp node scripts/smartbi.mjs resource-delete <parentId> <resourceId> --confirm-name <exactName>
+TMPDIR=/tmp node scripts/smartbi.mjs upload <csv> <name> --source-url <public-url>
 TMPDIR=/tmp node scripts/smartbi.mjs etl-get <flowId>       # inspect saved ETL DAG
 TMPDIR=/tmp node scripts/smartbi.mjs etl-row-number <flowId> row_number
 TMPDIR=/tmp node scripts/smartbi.mjs etl-run <flowId>       # run and verify terminal preview
@@ -257,9 +296,14 @@ TMPDIR=/tmp node scripts/smartbi.mjs manuals        # official manual links
 | `api-get <path>` / `api-post <path> [json]` | Guarded Smartbix discovery/query replay; mutating paths are refused | decoded response |
 | `plain-get <path>` / `plain-post <path> [json]` | Guarded `/smartbi/` discovery/query replay; mutating paths are refused | JSON/text response |
 | `tree [id]` | List catalog children of node | `{parent, nodes:[...]}` |
+| `catalog-audit <rootId>` | Recursively inventory a catalog subtree with parent IDs, paths, types, and namespace ownership | auditable catalog manifest |
+| `competition-home [--create] [--migrate-legacy]` | Resolve/create the exact competition folder or relabel a direct legacy school folder | profile, folder, and placement receipt |
 | `folder-create <parentId> <name> [description]` | Idempotently create one namespaced catalog folder | `{created,id,name,alias}` |
+| `resource-rename <parentId> <resourceId> <newAlias> --confirm-name <exactName> [--description <text>]` | Rename one direct owned resource alias with collision, permission, and post-save checks | rename receipt |
+| `resource-move <sourceParentId> <resourceId> <targetParentId> --confirm-name <exactName>` | Move one owned resource with descendant/conflict checks and source/target postconditions | move receipt |
+| `resource-copy <sourceParentId> <resourceId> <targetParentId> <newName> --confirm-name <exactName> [--description <text>]` | Copy one owned resource; folders use guarded recursive copy with rollback | copy receipt |
 | `resource-delete <parentId> <resourceId> [--confirm-name <exactName>]` | Delete one direct owned child after permission and post-delete checks; exact-name confirmation is required for a legacy non-namespaced table and is accepted only in the authenticated personal acquisition folder | deletion receipt |
-| `upload <file> [tableName] [--replace]` | Import CSV/TXT/XLSX as a namespaced table; replacement must be explicit and schema-preserving | `{ok, table, tableRef, rows, fields, replaced}` |
+| `upload <file> [tableName] [--replace] [--source-url <url>]` | Import CSV/TXT/XLSX as a namespaced table; competition profile requires a public source URL; replacement must be explicit and schema-preserving | `{ok, table, tableRef, rows, fields, replaced}` |
 | `etl-create <parentId> <sourceTableId> <targetTableId> <name> [rowNumber|-] [description]` | Build an owned source→optional row-number→materialized-output ETL | saved DAG |
 | `etl-get <flowId>` / `etl-run <flowId>` | Inspect or execute one owned saved ETL | DAG / terminal node states |
 | `etl-node-list [keyword]` | List live ETL node templates, ports, and config contracts | node summaries |
@@ -286,6 +330,9 @@ TMPDIR=/tmp node scripts/smartbi.mjs manuals        # official manual links
 Artifact-creation commands apply `SMARTBI_NAMESPACE` (default `TEAM_`).
 All artifact-creation commands verify the destination is the authenticated
 personal workspace/Agent root or a namespaced descendant before mutation.
+Catalog create/rename/move/copy/delete operations are first-class API commands.
+Use Playwright only for a canvas or visual postcondition that has no stable API;
+never manually click routine resource-management menus.
 `upload` also truncates table names at the platform limit, resolves the
 personal acquisition folder, validates preview fields, and polls until import
 completes. Do not pass an existing table name unless you intend a schema-preserving

@@ -40,6 +40,13 @@ import { auditDashboardPresentation } from './dashboard-presentation.mjs';
 import { summarizeDimensionKeys } from './dimension-profile.mjs';
 import { isEtlSuccessful, isEtlTerminalState } from './etl-state.mjs';
 import { layoutLinearEtlGraph } from './etl-layout.mjs';
+import {
+  assertCompetitionTrainingCount,
+  assertCompetitionUploadSource,
+  assertProfileAllowsAgent,
+  isCompetitionFolder,
+  normalizePlatformProfile,
+} from './platform-profile.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SKILL_DIR = join(__dirname, '..');
@@ -81,6 +88,15 @@ function normalizeBaseUrl(value) {
 }
 
 const BASE_URL = normalizeBaseUrl(process.env.SMARTBI_BASE_URL || CONFIG.baseUrl || DEFAULT_BASE_URL);
+const PLATFORM_PROFILE = normalizePlatformProfile(
+  process.env.SMARTBI_PLATFORM_PROFILE
+    ? {
+        id: process.env.SMARTBI_PLATFORM_PROFILE,
+        schoolName: process.env.SMARTBI_SCHOOL_NAME || CONFIG.platformProfile?.schoolName,
+      }
+    : CONFIG.platformProfile,
+  BASE_URL,
+);
 const LOGIN_URL = `${BASE_URL}/index.jsp`;
 const CRED_FILE = process.env.SMARTBI_CRED_FILE
   || CONFIG.credFile
@@ -1928,6 +1944,7 @@ async function cmdAichatGraphBuild(modelId, fieldSelectorsCsv) {
     ),
     'validate model graph fields',
   );
+  assertCompetitionTrainingCount(PLATFORM_PROFILE, validation);
   if (!validation?.valid) {
     throw new Error(`model graph field validation failed: ${validation?.message || 'unknown reason'}`);
   }
@@ -2087,6 +2104,7 @@ async function buildBasicAgent(systemPrompt, userPrompt) {
 }
 
 async function cmdAgentGet(agentId) {
+  assertProfileAllowsAgent(PLATFORM_PROFILE);
   const agent = await loadAgent(agentId);
   const deployment = await smartbixApi(`dataagent/deploy/agent/${encodeURIComponent(agent.id)}`);
   safeOutput({
@@ -2103,6 +2121,7 @@ async function cmdAgentCreate(
   systemPrompt = '你是数据分析助手。仅基于已提供的数据和上下文回答，区分事实、推断与建议；不编造指标或因果结论。',
   userPrompt = '请回答以下用户问题，并给出可核验的分析：{{question}}',
 ) {
+  assertProfileAllowsAgent(PLATFORM_PROFILE);
   if (!parentId || !requestedName) {
     throw new Error('agent-create requires <parentId> <name> [description] [systemPrompt] [userPrompt]');
   }
@@ -2135,6 +2154,7 @@ async function cmdAgentCreate(
 }
 
 async function cmdAgentRun(agentId, question) {
+  assertProfileAllowsAgent(PLATFORM_PROFILE);
   if (!agentId || !question) throw new Error('agent-run requires <agentId> <question>');
   const agent = await loadAgent(agentId, true);
   const instanceId = resourceId();
@@ -2187,6 +2207,7 @@ async function cmdAgentRun(agentId, question) {
 }
 
 async function cmdAgentDeploy(agentId) {
+  assertProfileAllowsAgent(PLATFORM_PROFILE);
   const agent = await loadAgent(agentId, true);
   let deployment = await smartbixApi(`dataagent/deploy/agent/${encodeURIComponent(agent.id)}`);
   if (!Array.isArray(deployment) || deployment.length === 0) {
@@ -2214,40 +2235,107 @@ async function cmdTree(rootId) {
   safeOutput({ parent: id, nodes });
 }
 
-async function assertOwnedCatalogParent(
-  parentId,
-  { allowSelfRoot = false, allowAgentRoot = false } = {},
-) {
+async function cmdCatalogAudit(rootId) {
+  if (!rootId) throw new Error('catalog-audit requires <rootId>');
+  await ensureSession();
+  const root = await loadCatalogElement(rootId, 'catalog audit root');
+  const queue = [{ parentId: root.id, path: [root.alias || root.name] }];
+  const visited = new Set();
+  const nodes = [];
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (visited.has(current.parentId)) continue;
+    visited.add(current.parentId);
+    if (visited.size > 2000) throw new Error('catalog audit exceeded 2000 folders');
+    const children = await listCatalogChildren(current.parentId, 'catalog audit');
+    for (const node of children) {
+      const label = node.alias || node.name;
+      const path = [...current.path, label];
+      nodes.push({
+        id: node.id,
+        parentId: current.parentId,
+        name: node.name,
+        alias: node.alias,
+        type: node.type,
+        hasChild: node.hasChild,
+        namespaced: hasNamespace(node.name) || hasNamespace(node.alias),
+        path,
+      });
+      if (node.hasChild) queue.push({ parentId: node.id, path });
+    }
+  }
+  safeOutput({
+    ok: true,
+    root: { id: root.id, name: root.name, alias: root.alias, type: root.type },
+    count: nodes.length,
+    namespacedCount: nodes.filter((node) => node.namespaced).length,
+    nodes,
+  });
+}
+
+async function loadSelfRoot() {
   await ensureSession();
   const rootResponse = await rmi('CatalogService', 'getChildElements', ['']);
   const selfRoot = (rootResponse.result || []).find((node) => node.type === 'SELF_TREENODE');
   if (rootResponse.retCode !== 0 || !selfRoot?.id) {
     throw new Error('cannot resolve the current personal workspace root');
   }
+  return selfRoot;
+}
+
+async function loadCatalogElement(resourceId, label = 'catalog resource') {
+  const response = await rmi('CatalogService', 'getCatalogElementById', [resourceId]);
+  if (response.retCode !== 0 || !response.result?.id) {
+    throw new Error(`${label} not found: ${resourceId}`);
+  }
+  return response.result;
+}
+
+async function listCatalogChildren(parentId, label = 'catalog parent') {
+  return normalizeCatalogElements(
+    await rmi('CatalogService', 'getChildElements', [parentId]),
+    label,
+  );
+}
+
+async function assertOwnedCatalogParent(
+  parentId,
+  {
+    allowSelfRoot = false,
+    allowAgentRoot = false,
+    allowProfileDestination = false,
+  } = {},
+) {
+  const selfRoot = await loadSelfRoot();
   const agentRootId = `SELF_AGENT_GRAPHS_${String(selfRoot.id).replace(/^SELF_/, '')}`;
   if (allowSelfRoot && parentId === selfRoot.id) return selfRoot;
   if (allowAgentRoot && parentId === agentRootId) {
-    const agentRoot = await rmi('CatalogService', 'getCatalogElementById', [agentRootId]);
-    if (agentRoot.retCode === 0 && agentRoot.result?.id) return agentRoot.result;
+    return loadCatalogElement(agentRootId, 'agent workspace root');
   }
-  const parentResponse = await rmi('CatalogService', 'getCatalogElementById', [parentId]);
-  const parent = parentResponse.result;
-  if (
-    parentResponse.retCode !== 0
-    || !parent?.id
-    || !['DEFAULT_TREENODE', 'SELF_TREENODE'].includes(parent.type)
-    || !hasNamespace(parent.name || parent.alias)
-  ) {
-    throw new Error(`refusing a non-owned catalog parent: ${parentId}`);
+  const parent = await loadCatalogElement(parentId, 'catalog parent');
+  if (!['DEFAULT_TREENODE', 'SELF_TREENODE', 'AUGMENTED_DATASET_FOLDER'].includes(parent.type)) {
+    throw new Error(`refusing a non-folder catalog parent: ${parentId}`);
   }
   const pathResponse = await rmi('CatalogService', 'getCatalogElementPath', [parentId]);
   const ownedRoots = new Set([selfRoot.id]);
   if (allowAgentRoot) ownedRoots.add(agentRootId);
+  const path = pathResponse.result || [];
   if (
     pathResponse.retCode !== 0
-    || !(pathResponse.result || []).some((node) => ownedRoots.has(node.id))
+    || !path.some((node) => ownedRoots.has(node.id))
   ) {
     throw new Error(`catalog parent is outside the current personal workspace: ${parentId}`);
+  }
+  const namespaced = hasNamespace(parent.name) || hasNamespace(parent.alias);
+  const ownedModelFolder = parent.type === 'AUGMENTED_DATASET_FOLDER'
+    && path.some((node) => hasNamespace(node.name) || hasNamespace(node.alias));
+  let competitionDestination = false;
+  if (allowProfileDestination && isCompetitionFolder(PLATFORM_PROFILE, parent)) {
+    const selfChildren = await listCatalogChildren(selfRoot.id, 'personal workspace root');
+    competitionDestination = selfChildren.some((node) => node.id === parent.id);
+  }
+  if (!namespaced && !ownedModelFolder && !competitionDestination) {
+    throw new Error(`refusing a non-owned catalog parent: ${parentId}`);
   }
   return parent;
 }
@@ -2257,7 +2345,11 @@ async function cmdFolderCreate(parentId, requestedName, description = '') {
   if (!parentId || !requestedName) {
     throw new Error('folder-create requires <parentId> <name> [description]');
   }
-  await assertOwnedCatalogParent(parentId, { allowSelfRoot: true, allowAgentRoot: true });
+  await assertOwnedCatalogParent(parentId, {
+    allowSelfRoot: true,
+    allowAgentRoot: true,
+    allowProfileDestination: true,
+  });
   const name = applyNamespace(requestedName);
   const existingResult = await rmi('CatalogService', 'getChildElements', [parentId]);
   if (existingResult.retCode !== 0) {
@@ -2268,7 +2360,7 @@ async function cmdFolderCreate(parentId, requestedName, description = '') {
     && (node.name === name || node.alias === name)
   ));
   if (existing) {
-    if (!hasNamespace(existing.name || existing.alias)) {
+    if (!hasNamespace(existing.name) && !hasNamespace(existing.alias)) {
       throw new Error(`refusing to reuse non-namespaced folder: ${existing.alias || existing.name}`);
     }
     safeOutput({ ok: true, created: false, id: existing.id, name: existing.name, alias: existing.alias });
@@ -2294,9 +2386,429 @@ async function cmdFolderCreate(parentId, requestedName, description = '') {
   safeOutput({ ok: true, created: true, id: saved.id, name: saved.name, alias: saved.alias });
 }
 
+function parseCatalogMutationArgs(argsList, positionalKeys, command) {
+  if (argsList.length < positionalKeys.length) {
+    throw new Error(`${command} requires <${positionalKeys.join('> <')}> --confirm-name <exactName>`);
+  }
+  const parsed = Object.fromEntries(
+    positionalKeys.map((key, index) => [key, argsList[index]]),
+  );
+  for (let index = positionalKeys.length; index < argsList.length; index += 1) {
+    const flag = argsList[index];
+    if (!['--confirm-name', '--description'].includes(flag)) {
+      throw new Error(`unexpected ${command} argument: ${flag}`);
+    }
+    const value = argsList[index + 1];
+    if (!value || value.startsWith('--')) throw new Error(`missing value for ${flag}`);
+    parsed[flag.slice(2).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase())] = value;
+    index += 1;
+  }
+  if (!parsed.confirmName) throw new Error(`${command} requires --confirm-name <exactName>`);
+  return parsed;
+}
+
+function assertExactResourceConfirmation(resource, confirmName) {
+  if (confirmName !== resource.name && confirmName !== resource.alias) {
+    throw new Error(`resource confirmation mismatch: expected ${resource.name} or ${resource.alias}`);
+  }
+}
+
+function assertNamespacedResource(resource) {
+  if (!hasNamespace(resource.name) && !hasNamespace(resource.alias)) {
+    throw new Error(`refusing a non-namespaced resource: ${resource.id}`);
+  }
+}
+
+async function assertCatalogPermission(resourceId, purview, label) {
+  const result = await rmi('CatalogService', 'isCatalogElementAccessible', [resourceId, purview]);
+  if (result.retCode !== 0 || result.result !== true) {
+    throw new Error(`${label} permission denied: ${resourceId}`);
+  }
+}
+
+async function loadOwnedDirectResource(parentId, resourceId) {
+  await assertOwnedCatalogParent(parentId, {
+    allowSelfRoot: true,
+    allowAgentRoot: true,
+    allowProfileDestination: true,
+  });
+  const children = await listCatalogChildren(parentId, 'resource parent');
+  const resource = children.find((node) => node.id === resourceId);
+  if (!resource) {
+    throw new Error(`resource is not a direct child of the supplied parent: ${resourceId}`);
+  }
+  assertNamespacedResource(resource);
+  return { resource, children };
+}
+
+function findCatalogConflict(children, name, ignoredId = null) {
+  return children.find((node) => (
+    node.id !== ignoredId
+    && (node.name === name || node.alias === name)
+  ));
+}
+
+async function cmdCompetitionHome(argsList) {
+  if (argsList.some((argument) => !['--create', '--migrate-legacy'].includes(argument))) {
+    throw new Error('competition-home accepts only [--create] [--migrate-legacy]');
+  }
+  if (!PLATFORM_PROFILE) {
+    throw new Error('competition-home requires platform profile competition-2026');
+  }
+  const selfRoot = await loadSelfRoot();
+  let children = await listCatalogChildren(selfRoot.id, 'personal workspace root');
+  const matches = children.filter((node) => isCompetitionFolder(PLATFORM_PROFILE, node));
+  if (matches.length > 1) {
+    throw new Error(`multiple competition folders named ${PLATFORM_PROFILE.resourceFolderName}`);
+  }
+  let folder = matches[0];
+  let created = false;
+  let migratedLegacy = false;
+  if (!folder && argsList.includes('--migrate-legacy')) {
+    const legacyMatches = children.filter((node) => (
+      node.name === PLATFORM_PROFILE.schoolName || node.alias === PLATFORM_PROFILE.schoolName
+    ));
+    if (legacyMatches.length > 1) {
+      throw new Error(`multiple legacy school folders named ${PLATFORM_PROFILE.schoolName}`);
+    }
+    const legacy = legacyMatches[0];
+    if (legacy) {
+      if (!['DEFAULT_TREENODE', 'SELF_TREENODE'].includes(legacy.type)) {
+        throw new Error(`legacy competition destination is not a folder: ${legacy.id}`);
+      }
+      await assertCatalogPermission(legacy.id, 'WRITE', 'competition folder migration');
+      const detail = await loadCatalogElement(legacy.id);
+      const renamed = await rmi('CatalogService', 'updateCatalogNode', [
+        legacy.id,
+        JSON.stringify({
+          alias: PLATFORM_PROFILE.resourceFolderName,
+          desc: detail.desc || '2026“揭榜挂帅”挑战杯擂台赛 Smartbi Insight 专用资源目录',
+        }),
+        null,
+      ]);
+      if (renamed.retCode !== 0) {
+        throw new Error(`legacy competition folder migration failed: ${JSON.stringify(renamed)}`);
+      }
+      children = await listCatalogChildren(selfRoot.id, 'personal workspace root after migration');
+      folder = children.find((node) => (
+        node.id === legacy.id && isCompetitionFolder(PLATFORM_PROFILE, node)
+      ));
+      if (!folder) throw new Error(`legacy competition folder rename was not persisted: ${legacy.id}`);
+      migratedLegacy = true;
+    }
+  }
+  if (!folder && argsList.includes('--create')) {
+    const createdResult = await rmi('CatalogService', 'createFolderElement', [
+      selfRoot.id,
+      PLATFORM_PROFILE.resourceFolderName,
+      PLATFORM_PROFILE.resourceFolderName,
+      '2026“揭榜挂帅”挑战杯擂台赛 Smartbi Insight 专用资源目录',
+      null,
+      false,
+      'DEFAULT_TREENODE.png',
+    ]);
+    if (createdResult.retCode !== 0 || !createdResult.result?.id) {
+      throw new Error(`competition folder creation failed: ${JSON.stringify(createdResult)}`);
+    }
+    children = await listCatalogChildren(selfRoot.id, 'personal workspace root after creation');
+    folder = children.find((node) => node.id === createdResult.result.id);
+    created = true;
+  }
+  if (!folder) {
+    safeOutput({
+      ok: false,
+      exists: false,
+      profile: PLATFORM_PROFILE,
+      selfRootId: selfRoot.id,
+    });
+    return;
+  }
+  if (!['DEFAULT_TREENODE', 'SELF_TREENODE'].includes(folder.type)) {
+    throw new Error(`competition destination is not a folder: ${folder.id}`);
+  }
+  safeOutput({
+    ok: true,
+    exists: true,
+    created,
+    migratedLegacy,
+    profile: PLATFORM_PROFILE,
+    selfRootId: selfRoot.id,
+    folder: { id: folder.id, name: folder.name, alias: folder.alias, type: folder.type },
+    placement: {
+      artifacts: folder.id,
+      importedTables: PLATFORM_PROFILE.dataImportLocation,
+    },
+  });
+}
+
+async function cmdResourceRename(argsList) {
+  const {
+    parentId,
+    resourceId,
+    requestedAlias,
+    confirmName,
+    description,
+  } = parseCatalogMutationArgs(
+    argsList,
+    ['parentId', 'resourceId', 'requestedAlias'],
+    'resource-rename',
+  );
+  const { resource, children } = await loadOwnedDirectResource(parentId, resourceId);
+  assertExactResourceConfirmation(resource, confirmName);
+  const alias = applyNamespace(requestedAlias);
+  const conflict = findCatalogConflict(children, alias, resource.id);
+  if (conflict) throw new Error(`target alias already exists in the parent: ${alias}`);
+  if (resource.alias === alias && description == null) {
+    safeOutput({
+      ok: true,
+      renamed: false,
+      id: resource.id,
+      name: resource.name,
+      alias: resource.alias,
+    });
+    return;
+  }
+  await assertCatalogPermission(resource.id, 'WRITE', 'rename');
+  const detail = await loadCatalogElement(resource.id);
+  const updated = await rmi('CatalogService', 'updateCatalogNode', [
+    resource.id,
+    JSON.stringify({
+      alias,
+      desc: description ?? detail.desc ?? '',
+    }),
+    null,
+  ]);
+  if (updated.retCode !== 0) {
+    throw new Error(`resource rename failed: ${JSON.stringify(updated)}`);
+  }
+  const saved = (await listCatalogChildren(parentId, 'resource parent after rename'))
+    .find((node) => node.id === resource.id);
+  if (!saved || saved.alias !== alias) {
+    throw new Error(`renamed resource was not persisted: ${resource.id}`);
+  }
+  safeOutput({
+    ok: true,
+    renamed: true,
+    id: saved.id,
+    name: saved.name,
+    oldAlias: resource.alias,
+    alias: saved.alias,
+  });
+}
+
+async function cmdResourceMove(argsList) {
+  const {
+    sourceParentId,
+    resourceId,
+    targetParentId,
+    confirmName,
+  } = parseCatalogMutationArgs(
+    argsList,
+    ['sourceParentId', 'resourceId', 'targetParentId'],
+    'resource-move',
+  );
+  if (sourceParentId === targetParentId) {
+    throw new Error('resource-move source and target parents must differ');
+  }
+  await assertOwnedCatalogParent(sourceParentId, {
+    allowSelfRoot: true,
+    allowAgentRoot: true,
+    allowProfileDestination: true,
+  });
+  await assertOwnedCatalogParent(targetParentId, {
+    allowSelfRoot: true,
+    allowAgentRoot: true,
+    allowProfileDestination: true,
+  });
+  const [sourceChildren, targetChildren] = await Promise.all([
+    listCatalogChildren(sourceParentId, 'source parent'),
+    listCatalogChildren(targetParentId, 'target parent'),
+  ]);
+  const resource = sourceChildren.find((node) => node.id === resourceId);
+  if (!resource) {
+    const alreadyMoved = targetChildren.find((node) => node.id === resourceId);
+    if (!alreadyMoved) {
+      throw new Error(`resource is not a direct child of source or target: ${resourceId}`);
+    }
+    assertNamespacedResource(alreadyMoved);
+    assertExactResourceConfirmation(alreadyMoved, confirmName);
+    safeOutput({
+      ok: true,
+      moved: false,
+      id: alreadyMoved.id,
+      name: alreadyMoved.name,
+      alias: alreadyMoved.alias,
+      parentId: targetParentId,
+    });
+    return;
+  }
+  assertNamespacedResource(resource);
+  assertExactResourceConfirmation(resource, confirmName);
+  const conflict = findCatalogConflict(targetChildren, resource.name, resource.id)
+    || findCatalogConflict(targetChildren, resource.alias, resource.id);
+  if (conflict) {
+    throw new Error(`target parent already contains a conflicting resource: ${conflict.id}`);
+  }
+  const targetPath = await rmi('CatalogService', 'getCatalogElementPath', [targetParentId]);
+  if (
+    targetPath.retCode !== 0
+    || (targetPath.result || []).some((node) => node.id === resource.id)
+  ) {
+    throw new Error(`refusing to move a resource into itself or its descendant: ${resource.id}`);
+  }
+  await assertCatalogPermission(resource.id, 'WRITE', 'move');
+  await assertCatalogPermission(targetParentId, 'WRITE', 'target parent');
+  const moved = await rmi('CatalogService', 'moveCatalogElement', [resource.id, targetParentId]);
+  if (moved.retCode !== 0) throw new Error(`resource move failed: ${JSON.stringify(moved)}`);
+  const [sourceAfter, targetAfter] = await Promise.all([
+    listCatalogChildren(sourceParentId, 'source parent after move'),
+    listCatalogChildren(targetParentId, 'target parent after move'),
+  ]);
+  const saved = targetAfter.find((node) => node.id === resource.id);
+  if (sourceAfter.some((node) => node.id === resource.id) || !saved) {
+    throw new Error(`resource move was not persisted: ${resource.id}`);
+  }
+  safeOutput({
+    ok: true,
+    moved: true,
+    id: saved.id,
+    name: saved.name,
+    alias: saved.alias,
+    parentId: targetParentId,
+  });
+}
+
+const COPYABLE_FOLDER_TYPES = new Set(['DEFAULT_TREENODE', 'SELF_TREENODE']);
+
+async function deleteCopiedSubtree(resourceId) {
+  const resource = await loadCatalogElement(resourceId, 'copied resource rollback');
+  if (COPYABLE_FOLDER_TYPES.has(resource.type)) {
+    const children = await listCatalogChildren(resource.id, 'copied subtree rollback');
+    for (const child of children) await deleteCopiedSubtree(child.id);
+  }
+  const deleted = await rmi('CatalogService', 'deleteCatalogElement', [resource.id]);
+  if (deleted.retCode !== 0) {
+    throw new Error(`copied resource rollback failed: ${resource.id}`);
+  }
+}
+
+async function copyCatalogResourceToParent(resource, targetParentId, name, alias, description) {
+  const targetChildren = await listCatalogChildren(targetParentId, 'copy target parent');
+  const conflict = targetChildren.find((node) => (
+    node.name === name || node.alias === alias || node.alias === name || node.name === alias
+  ));
+  if (conflict) throw new Error(`copy target already contains a conflicting resource: ${conflict.id}`);
+  await assertCatalogPermission(resource.id, 'READ', 'copy source');
+  if (!COPYABLE_FOLDER_TYPES.has(resource.type)) {
+    const supported = await rmi('CatalogService', 'supportsCopy', [resource.id]);
+    if (supported.retCode !== 0 || supported.result !== true) {
+      throw new Error(`resource type does not support copy: ${resource.id}`);
+    }
+    const copied = await rmi('CatalogService', 'copyAndPaste', [
+      targetParentId,
+      resource.id,
+      name,
+      alias,
+      description,
+    ]);
+    if (copied.retCode !== 0) {
+      throw new Error(`resource copy failed: ${JSON.stringify(copied)}`);
+    }
+    const after = await listCatalogChildren(targetParentId, 'copy target parent after copy');
+    const saved = after.find((node) => node.name === name || node.alias === alias);
+    if (!saved) throw new Error(`copied resource was not visible: ${name}`);
+    return saved;
+  }
+
+  const created = await rmi('CatalogService', 'createFolderElement', [
+    targetParentId,
+    name,
+    alias,
+    description,
+    null,
+    false,
+    'DEFAULT_TREENODE.png',
+  ]);
+  if (created.retCode !== 0 || !created.result?.id) {
+    throw new Error(`folder copy creation failed: ${JSON.stringify(created)}`);
+  }
+  try {
+    const sourceChildren = await listCatalogChildren(resource.id, 'copy source folder');
+    for (const child of sourceChildren) {
+      const detail = await loadCatalogElement(child.id, 'copy source child');
+      await copyCatalogResourceToParent(
+        detail,
+        created.result.id,
+        child.name,
+        child.alias || child.name,
+        detail.desc || '',
+      );
+    }
+  } catch (error) {
+    try {
+      await deleteCopiedSubtree(created.result.id);
+    } catch (rollbackError) {
+      throw new Error(`${error.message}; ${rollbackError.message}`);
+    }
+    throw error;
+  }
+  const after = await listCatalogChildren(targetParentId, 'copy target parent after folder copy');
+  const saved = after.find((node) => node.id === created.result.id);
+  if (!saved) throw new Error(`copied folder was not visible: ${created.result.id}`);
+  return saved;
+}
+
+async function cmdResourceCopy(argsList) {
+  const {
+    sourceParentId,
+    resourceId,
+    targetParentId,
+    requestedName,
+    confirmName,
+    description,
+  } = parseCatalogMutationArgs(
+    argsList,
+    ['sourceParentId', 'resourceId', 'targetParentId', 'requestedName'],
+    'resource-copy',
+  );
+  const { resource } = await loadOwnedDirectResource(sourceParentId, resourceId);
+  assertExactResourceConfirmation(resource, confirmName);
+  await assertOwnedCatalogParent(targetParentId, {
+    allowSelfRoot: true,
+    allowAgentRoot: true,
+    allowProfileDestination: true,
+  });
+  const name = applyNamespace(requestedName);
+  await assertCatalogPermission(targetParentId, 'WRITE', 'copy target parent');
+  const detail = await loadCatalogElement(resource.id);
+  const saved = await copyCatalogResourceToParent(
+    detail,
+    targetParentId,
+    name,
+    name,
+    description ?? detail.desc ?? '',
+  );
+  if (!hasNamespace(saved.name) && !hasNamespace(saved.alias)) {
+    throw new Error(`copied resource is not namespaced: ${saved.id}`);
+  }
+  safeOutput({
+    ok: true,
+    copied: true,
+    sourceId: resource.id,
+    id: saved.id,
+    name: saved.name,
+    alias: saved.alias,
+    parentId: targetParentId,
+  });
+}
+
 async function resolveDeletionParentKind(parentId) {
   try {
-    await assertOwnedCatalogParent(parentId, { allowSelfRoot: true, allowAgentRoot: true });
+    await assertOwnedCatalogParent(parentId, {
+      allowSelfRoot: true,
+      allowAgentRoot: true,
+      allowProfileDestination: true,
+    });
     return DELETION_PARENT_KINDS.OWNED_CATALOG;
   } catch (error) {
     if (!/refusing a non-owned catalog parent|outside the current personal workspace/.test(error.message)) {
@@ -2544,11 +3056,30 @@ async function cmdUpload(
 }
 
 async function cmdUploadArgs(argsList) {
-  const unknown = argsList.filter((value) => value.startsWith('--') && value !== '--replace');
-  if (unknown.length > 0) throw new Error(`unknown upload option: ${unknown[0]}`);
-  const replace = argsList.includes('--replace');
-  const positional = argsList.filter((value) => value !== '--replace');
-  if (positional.length > 2) throw new Error('upload accepts only <file> [tableName] [--replace]');
+  let replace = false;
+  let sourceUrl = null;
+  const positional = [];
+  for (let index = 0; index < argsList.length; index += 1) {
+    const argument = argsList[index];
+    if (argument === '--replace') {
+      replace = true;
+      continue;
+    }
+    if (argument === '--source-url') {
+      sourceUrl = argsList[index + 1];
+      if (!sourceUrl || sourceUrl.startsWith('--')) {
+        throw new Error('--source-url requires a public dataset URL');
+      }
+      index += 1;
+      continue;
+    }
+    if (argument.startsWith('--')) throw new Error(`unknown upload option: ${argument}`);
+    positional.push(argument);
+  }
+  if (positional.length > 2) {
+    throw new Error('upload accepts only <file> [tableName] [--replace] [--source-url <url>]');
+  }
+  assertCompetitionUploadSource(PLATFORM_PROFILE, sourceUrl);
   await cmdUpload(positional[0], positional[1], { replace });
 }
 
@@ -3483,7 +4014,7 @@ async function cmdNav(moduleName) {
 // First-run guided configuration: account/password file + naming preference.
 // Usage:
 //   smartbi.mjs setup --interactive
-//   smartbi.mjs setup --cred-file <path> --namespace <value> --naming prefix|suffix
+//   smartbi.mjs setup --profile competition-2026 --school-name <name>
 function parseSetupArgs(argsList) {
   const options = {};
   for (let index = 0; index < argsList.length; index += 1) {
@@ -3634,8 +4165,18 @@ async function cmdSetup(argsList) {
     baseUrl: BASE_URL,
     credFile: CRED_FILE,
     naming: { mode: NAMING_MODE, value: NAMESPACE },
+    platformProfile: PLATFORM_PROFILE
+      ? { id: PLATFORM_PROFILE.id, schoolName: PLATFORM_PROFILE.schoolName }
+      : null,
   };
-  if (!options['base-url'] && !options['cred-file'] && !options.namespace && !options.naming) {
+  if (
+    !options['base-url']
+    && !options['cred-file']
+    && !options.namespace
+    && !options.naming
+    && !options.profile
+    && !options['school-name']
+  ) {
     safeOutput({
       action: 'setup_needed',
       message: 'First-run setup: configure the Smartbi tenant, login account/password, and prefix or suffix naming.',
@@ -3645,18 +4186,30 @@ async function cmdSetup(argsList) {
         'node scripts/smartbi.mjs setup --interactive',
         'node scripts/smartbi.mjs setup --base-url https://host/smartbi/vision --cred-file /path/to/credentials.txt --namespace TEAM_ --naming prefix',
         'node scripts/smartbi.mjs setup --base-url https://host/smartbi/vision --cred-file /path/to/credentials.txt --namespace _TEAM --naming suffix',
+        'node scripts/smartbi.mjs setup --profile competition-2026 --school-name 西北农林科技大学',
       ],
     });
     return;
   }
 
+  const baseUrl = normalizeBaseUrl(options['base-url'] || CONFIG.baseUrl || current.baseUrl);
+  const profile = normalizePlatformProfile(
+    options.profile || options['school-name']
+      ? {
+          id: options.profile || CONFIG.platformProfile?.id,
+          schoolName: options['school-name'] || CONFIG.platformProfile?.schoolName,
+        }
+      : CONFIG.platformProfile,
+    baseUrl,
+  );
   const saved = {
-    baseUrl: normalizeBaseUrl(options['base-url'] || CONFIG.baseUrl || current.baseUrl),
+    baseUrl,
     credFile: options['cred-file'] || CONFIG.credFile || current.credFile,
     naming: normalizeNaming(
       options.naming || CONFIG.naming?.mode || current.naming.mode,
       options.namespace || CONFIG.naming?.value || current.naming.value,
     ),
+    platformProfile: profile ? { id: profile.id, schoolName: profile.schoolName } : null,
   };
   await persistSetup(saved);
 }
@@ -3669,6 +4222,7 @@ async function cmdConfig() {
     credFile: CRED_FILE,
     codecCacheFile: CODEC_CACHE_FILE,
     naming: { mode: NAMING_MODE, value: NAMESPACE },
+    platformProfile: PLATFORM_PROFILE,
     example: applyNamespace('survey_demo'),
     alreadyNamespacedExample: applyNamespace(
       NAMING_MODE === 'suffix' ? `survey_demo${NAMESPACE}` : `${NAMESPACE}survey_demo`,
@@ -3683,6 +4237,8 @@ async function cmdConfig() {
       'SMARTBI_CODEC_CACHE_FILE',
       'SMARTBI_NAMESPACE',
       'SMARTBI_NAMING',
+      'SMARTBI_PLATFORM_PROFILE',
+      'SMARTBI_SCHOOL_NAME',
     ],
   });
 }
@@ -3754,11 +4310,16 @@ try {
     case 'aichat-graph-status': await cmdAichatGraphStatus(args[0]); break;
     case 'aichat-graph-build': await cmdAichatGraphBuild(args[0], args[1]); break;
     case 'agent-get': await cmdAgentGet(args[0]); break;
+    case 'catalog-audit': await cmdCatalogAudit(args[0]); break;
     case 'agent-create': await cmdAgentCreate(args[0], args[1], args[2], args[3], args[4]); break;
     case 'agent-run': await cmdAgentRun(args[0], args.slice(1).join(' ')); break;
     case 'agent-deploy': await cmdAgentDeploy(args[0]); break;
     case 'tree': await cmdTree(args[0]); break;
+    case 'competition-home': await cmdCompetitionHome(args); break;
     case 'folder-create': await cmdFolderCreate(args[0], args[1], args.slice(2).join(' ')); break;
+    case 'resource-rename': await cmdResourceRename(args); break;
+    case 'resource-move': await cmdResourceMove(args); break;
+    case 'resource-copy': await cmdResourceCopy(args); break;
     case 'resource-delete': await cmdResourceDelete(parseResourceDeleteArgs(args)); break;
     case 'upload': await cmdUploadArgs(args); break;
     case 'etl-describe': await cmdEtlDescribe(args[0], args.slice(1).join(' ')); break;
@@ -3785,12 +4346,11 @@ try {
       pageApi: 'https://wiki.smartbi.com.cn/api/javaapi/smartbix/sdk/page/service/PageService.html',
       quickStart: 'https://wiki.smartbi.com.cn/pages/viewpage.action?pageId=111897106',
       competition: 'https://wiki.smartbi.com.cn/pages/viewpage.action?pageId=168628225',
-      higherEducation: 'https://wiki.smartbi.com.cn/pages/viewpage.action?pageId=168628227',
       financialCollection: 'https://wiki.smartbi.com.cn/pages/viewpage.action?pageId=168629240',
       orderRiskWarning: 'https://wiki.smartbi.com.cn/pages/viewpage.action?pageId=168629228',
     }); break;
     default:
-      throw new Error(`Unknown command: ${command}\nusage: smartbi.mjs <setup|doctor|login|health|config|codec-status|invoke|api-get|api-post|plain-get|plain-post|tree|folder-create|resource-delete|upload|etl-node-list|etl-create|etl-union-create|etl-describe|etl-insert|etl-output-dataset|etl-get|etl-run|etl-row-number|model-get|model-create|model-clone|analysis-get|analysis-create|analysis-repair|analysis-run|analysis-profile|analysis-clone|dashboard-get|dashboard-create|dashboard-create-multi|dashboard-repair-multi|dashboard-clone|aichat-graph-list|aichat-graph-status|aichat-graph-fields|aichat-graph-build|aichat-query|aichat-report|aichat-export|agent-get|agent-create|agent-run|agent-deploy|nav|ui-open|ui-dashboard-check|manuals> ...`);
+      throw new Error(`Unknown command: ${command}\nusage: smartbi.mjs <setup|doctor|login|health|config|codec-status|invoke|api-get|api-post|plain-get|plain-post|tree|catalog-audit|competition-home|folder-create|resource-rename|resource-move|resource-copy|resource-delete|upload|etl-node-list|etl-create|etl-union-create|etl-describe|etl-insert|etl-output-dataset|etl-get|etl-run|etl-row-number|model-get|model-create|model-clone|analysis-get|analysis-create|analysis-repair|analysis-run|analysis-profile|analysis-clone|dashboard-get|dashboard-create|dashboard-create-multi|dashboard-repair-multi|dashboard-clone|aichat-graph-list|aichat-graph-status|aichat-graph-fields|aichat-graph-build|aichat-query|aichat-report|aichat-export|agent-get|agent-create|agent-run|agent-deploy|nav|ui-open|ui-dashboard-check|manuals> ...`);
   }
   process.exit(0);
 } catch (error) {
