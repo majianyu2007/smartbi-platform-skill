@@ -19,6 +19,34 @@ workflow with two execution engines:
 
 Core chain: `login → 数据连接(import) → 自助ETL → 数据模型 → 透视/仪表盘 → AIChat → validation`.
 
+### Platform-first data processing (hard rule)
+
+Use Smartbi as the primary data-processing environment, not merely as a place
+to display locally prepared results.
+
+- Local work SHOULD stop at dataset discovery, download, authorization checks,
+  and integrity checks. When Smartbi cannot read a source container, local work
+  MAY perform the minimum lossless format conversion needed to produce a flat,
+  one-record-per-row import file.
+- Local code MUST NOT perform analytical filtering, missing-value treatment,
+  deduplication, joins, derived indicators, aggregation, pivoting, ranking, or
+  model-ready feature engineering unless the user explicitly approves an
+  exception after the platform limitation is demonstrated.
+- Perform those operations with visible Smartbi ETL nodes. A
+  `source → 覆盖到关系表` flow, or a flow whose only transform is a sequence
+  number, is not meaningful evidence of platform use and MUST NOT be delivered
+  as a completed competition ETL.
+- Choose transformations from the data contract: for example type conversion,
+  missing-value handling, row-quality filters, duplicate removal, derived
+  fields, grouping/aggregation, pivoting, and deterministic sorting. Do not add
+  decorative nodes that leave the business result unchanged.
+- Build downstream models, analyses, dashboards, and AIChat resources from the
+  materialized Smartbi ETL output, preserving the visible lineage from imported
+  source to submitted result.
+- Local calculations MAY independently reconcile platform outputs, but MUST
+  NOT replace the platform pipeline. Record both the Smartbi terminal-node
+  preview and input/output row-field reconciliation as completion evidence.
+
 ## Required References
 
 Read what the task needs:

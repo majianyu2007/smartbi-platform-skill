@@ -30,6 +30,9 @@ import {
 } from './deletion-guard.mjs';
 import { assertReplacementSchemaCompatible } from './import-schema.mjs';
 import { parseAichatStream } from './aichat-stream.mjs';
+import { dashboardGrid } from './dashboard-multi.mjs';
+import { isEtlSuccessful, isEtlTerminalState } from './etl-state.mjs';
+import { layoutLinearEtlGraph } from './etl-layout.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SKILL_DIR = join(__dirname, '..');
@@ -1294,6 +1297,77 @@ function buildBarDashboard(model, dimensionName, measureName, requestedName, cha
   };
 }
 
+function buildMultiBarDashboard(model, requestedName, chartInput, description = '') {
+  const layout = dashboardGrid(chartInput);
+  const dashboards = layout.charts.map((chart) => buildBarDashboard(
+    model,
+    chart.dimension,
+    chart.measure,
+    requestedName,
+    chart.title,
+  ));
+  const dashboard = dashboards[0];
+  const portlets = dashboards.map((item) => item.define.portlets[0]);
+  dashboard.desc = description || `${layout.charts.length} independent charts`;
+  dashboard.define.portlets = portlets;
+  dashboard.define.devices.default.layout.define.floats = Object.fromEntries(
+    portlets.map((portlet, index) => {
+      const position = layout.floats[index + 1];
+      return [position.slot, {
+        portletId: portlet.id,
+        type: 'ECHARTS_BAR',
+        left: position.left,
+        top: position.top,
+        width: position.width,
+        height: position.height,
+        'z-index': 1000 + index,
+        id: position.slot,
+      }];
+    }),
+  );
+  dashboard.define.devices.default.layout.define.table = { direction: 'vertical', slots: [] };
+  dashboard.define.devices.default.layout.size = {
+    ...layout.canvas,
+    scaleType: 'FIT_WIDTH',
+  };
+  return { dashboard, charts: layout.charts };
+}
+
+async function cmdDashboardCreateMulti(parentId, modelId, requestedName, chartsJson, description = '') {
+  if (![parentId, modelId, requestedName, chartsJson].every(Boolean)) {
+    throw new Error(
+      'dashboard-create-multi requires <parentId> <modelId> <name> <chartsJson> [description]',
+    );
+  }
+  await assertOwnedCatalogParent(parentId);
+  const model = await loadModel(modelId);
+  requireNamespacedResource(model, 'model');
+  const { dashboard, charts } = buildMultiBarDashboard(
+    model,
+    requestedName,
+    chartsJson,
+    description,
+  );
+  const result = await smartbixApi(
+    `pages/beans/create?pid=${encodeURIComponent(parentId)}`,
+    { method: 'POST', body: dashboard },
+  );
+  const createdId = createdResourceId(result, dashboard.id);
+  const saved = await loadDashboard(createdId);
+  const portletCount = saved.define?.portlets?.length || 0;
+  if (portletCount !== charts.length) {
+    throw new Error(`dashboard saved with ${portletCount} charts; expected ${charts.length}`);
+  }
+  safeOutput({
+    ok: true,
+    id: saved.id,
+    name: saved.name,
+    model: { id: model.id, name: model.name },
+    portletCount,
+    charts,
+  });
+}
+
 async function cmdDashboardCreate(
   parentId,
   modelId,
@@ -2444,6 +2518,207 @@ async function cmdEtlCreate(
   });
 }
 
+async function cmdEtlUnionCreate(
+  parentId,
+  targetTableId,
+  requestedName,
+  sourceTableIdsJson,
+  description = '',
+) {
+  if (![parentId, targetTableId, requestedName, sourceTableIdsJson].every(Boolean)) {
+    throw new Error(
+      'etl-union-create requires <parentId> <targetTableId> <name> <sourceTableIdsJson> [description]',
+    );
+  }
+  const sourceTableIds = JSON.parse(sourceTableIdsJson);
+  if (!Array.isArray(sourceTableIds) || sourceTableIds.length < 2 || sourceTableIds.length > 6) {
+    throw new Error('etl-union-create requires an array of 2 to 6 source table ids');
+  }
+  await assertOwnedCatalogParent(parentId);
+  await ensureSession();
+  const [sourceMetas, targetMeta, nodeCatalog] = await Promise.all([
+    Promise.all(sourceTableIds.map(async (tableId) => {
+      const tableRef = parseImportedTableId(tableId);
+      const [sourceMeta, table] = await Promise.all([
+        smartbixApi(`miningdatasource/table?tableId=${encodeURIComponent(tableId)}`),
+        smartbixApi('datasets/table', {
+          method: 'POST',
+          body: {
+            dataSourceId: tableRef.dataSourceId,
+            tableId,
+            tableName: tableRef.tableName,
+          },
+        }),
+      ]);
+      return { ...sourceMeta, fields: table.fields || [] };
+    })),
+    smartbixApi(`miningdatasource/table?tableId=${encodeURIComponent(targetTableId)}`),
+    smartbixApi('datamining/nodes'),
+  ]);
+  for (let index = 0; index < sourceMetas.length; index += 1) {
+    if (!hasNamespace(sourceMetas[index]?.alias || sourceMetas[index]?.name)) {
+      throw new Error(`refusing to read non-namespaced source table: ${sourceTableIds[index]}`);
+    }
+  }
+  if (!hasNamespace(targetMeta?.alias || targetMeta?.name)) {
+    throw new Error(`refusing to overwrite non-namespaced target table: ${targetTableId}`);
+  }
+  const templates = nodeCatalog.defaultOptions || [];
+  const sourceTemplate = templates.find((node) => node.name === 'JDBC_DATASOURCE');
+  const unionTemplate = templates.find((node) => node.name === 'UNION_ALL');
+  if (!sourceTemplate || !unionTemplate || unionTemplate.inputs?.length < sourceTableIds.length) {
+    throw new Error('required JDBC source or UNION_ALL node template is unavailable');
+  }
+  const sources = sourceMetas.map((sourceMeta, index) => {
+    const tableId = sourceTableIds[index];
+    const sourceRef = parseImportedTableId(tableId);
+    const source = instantiateEtlNode(sourceTemplate, 350, 50 + (index * 120));
+    source.alias = sourceMeta.alias || sourceMeta.name;
+    const jdbc = source.configs?.find((config) => config.name === 'jdbc');
+    if (!jdbc) throw new Error('JDBC source template has no jdbc config');
+    jdbc.value = JSON.stringify({
+      datasourceId: sourceRef.dataSourceId,
+      schemaId: sourceRef.schemaId,
+      tableData: {
+        id: tableId,
+        schema: sourceMeta.schema ?? null,
+        name: sourceMeta.name || sourceRef.tableName,
+        alias: sourceMeta.alias || sourceMeta.name || sourceRef.tableName,
+        desc: sourceMeta.desc || sourceMeta.alias || sourceMeta.name || sourceRef.tableName,
+        type: sourceMeta.type ?? null,
+        extended: sourceMeta.extended ?? null,
+      },
+      advancedSettings: '# 读取数据批次大小\n# QUERY_JDBC_FETCHSIZE=5000',
+      tableId,
+    });
+    return source;
+  });
+  const canonicalFields = sourceMetas[0].fields || [];
+  if (canonicalFields.length === 0) throw new Error('union source metadata has no fields');
+  const canonicalNames = canonicalFields.map((field) => field.name);
+  for (let index = 1; index < sourceMetas.length; index += 1) {
+    const names = (sourceMetas[index].fields || []).map((field) => field.name);
+    if (JSON.stringify(names) !== JSON.stringify(canonicalNames)) {
+      throw new Error(`union source schema mismatch at index ${index}`);
+    }
+  }
+  const union = instantiateEtlNode(unionTemplate, 540, 50 + ((sources.length - 1) * 60));
+  union.smartbiCliKey = 'decision_master_union';
+  const inputColumns = sourceMetas.map((meta) => meta.fields || []);
+  const mappedInputs = inputColumns.map((fields) => fields.map((field) => ({ ...field, tag: 'name' })));
+  const tableData = canonicalFields.map((field, fieldIndex) => {
+    const row = {
+      output: field.name,
+      dataType: field.dataType,
+      tag: 'name',
+      index: fieldIndex,
+    };
+    for (let sourceIndex = 0; sourceIndex < sources.length; sourceIndex += 1) {
+      row[`input${sourceIndex + 1}`] = field.name;
+    }
+    return row;
+  });
+  const columns = [
+    { key: 'output', label: '输出列' },
+    ...sources.map((source, index) => ({
+      key: `input${index + 1}`,
+      label: source.alias,
+      options: canonicalNames,
+      columns: inputColumns[index],
+    })),
+  ];
+  applyEtlNodeConfigs(union, {
+    unionAll: JSON.stringify({
+      tableData: JSON.stringify(tableData),
+      columns: JSON.stringify(columns),
+      outputColumn: JSON.stringify(canonicalFields.map((field) => ({ ...field, tag: 'name' }))),
+      inputColumns: JSON.stringify(inputColumns),
+      unionAllData: JSON.stringify([
+        JSON.stringify(canonicalFields.map((field) => ({ ...field, tag: 'name' }))),
+        ...mappedInputs.map((fields) => JSON.stringify(fields)),
+      ]),
+      recordOperateType: 'byName',
+    }),
+    type: 'unionAll',
+  });
+  const tempDag = await smartbixApi('dataprocess/jdbcDataTargetDag', {
+    method: 'POST',
+    body: {
+      id: null,
+      name: null,
+      alias: '未命名',
+      cache: false,
+      smallBatch: false,
+      desc: null,
+      createdDate: null,
+      lastModifiedDate: null,
+      runningInfo: { dagState: null, costTime: null },
+      define: null,
+      targetTableId,
+    },
+  });
+  if (!tempDag?.id || !tempDag?.define) {
+    throw new Error(`target-node template creation failed: ${JSON.stringify(tempDag)}`);
+  }
+  const targetGraph = JSON.parse(tempDag.define);
+  const target = targetGraph.nodes?.find((node) => node.type === 'JDBC_DATATARGER_OVERWRITE');
+  if (!target) throw new Error('target-node template contains no overwrite node');
+  target.state = 'INITED';
+  target.x = 730;
+  target.y = union.y;
+  const nodes = [...sources, union, target];
+  const links = sources.map((source, index) => ({
+    from: source.id,
+    to: union.id,
+    inputPortId: source.outputs[0].id,
+    outputPortId: union.inputs[index].id,
+  }));
+  links.push(connectEtlNodes(union, target));
+  const name = applyNamespace(requestedName);
+  const processDag = {
+    ...tempDag,
+    pid: parentId,
+    name,
+    alias: name,
+    desc: description,
+    cache: true,
+    smallBatch: false,
+    state: 'INITED',
+    currentInstanceId: null,
+    runningInfo: { dagState: 'INITED', costTime: 0 },
+    define: JSON.stringify({
+      version: { editor: 'HORIZONTAL' },
+      nodes,
+      links,
+      top: 10,
+      left: 37,
+    }),
+  };
+  const saved = await smartbixApi('dataprocess/processflowdefine/define', {
+    method: 'POST',
+    body: {
+      processDag,
+      dagRemark: null,
+      toSaveTempDag: true,
+      cover: false,
+    },
+  });
+  const flowId = saved.id || tempDag.id;
+  const verified = await loadEtlFlow(flowId, { requireOwned: true });
+  safeOutput({
+    ok: true,
+    id: flowId,
+    name: verified.processDag.name,
+    sources: sourceTableIds.map((id, index) => ({
+      id,
+      name: sourceMetas[index].alias || sourceMetas[index].name,
+    })),
+    target: { id: targetTableId, name: targetMeta.alias || targetMeta.name },
+    nodeCount: verified.graph.nodes?.length || 0,
+    linkCount: verified.graph.links?.length || 0,
+  });
+}
+
 async function loadEtlFlow(flowId, { requireOwned = false } = {}) {
   if (!flowId) throw new Error('flow id is required');
   await ensureSession();
@@ -2483,6 +2758,27 @@ async function saveEtlGraph(processDag, graph) {
       toSaveTempDag: false,
       cover: false,
     },
+  });
+}
+
+async function cmdEtlDescribe(flowId, description) {
+  const text = String(description || '').trim();
+  if (!flowId || !text) {
+    throw new Error('etl-describe requires <flowId> <natural-language description>');
+  }
+  const { processDag, graph } = await loadEtlFlow(flowId, { requireOwned: true });
+  processDag.desc = text;
+  processDag.currentInstanceId = null;
+  await saveEtlGraph(processDag, graph);
+  const verified = await loadEtlFlow(flowId, { requireOwned: true });
+  if (verified.processDag.desc !== text) {
+    throw new Error(`ETL description update was not persisted: ${flowId}`);
+  }
+  safeOutput({
+    ok: true,
+    id: flowId,
+    name: verified.processDag.name,
+    description: verified.processDag.desc,
   });
 }
 
@@ -2599,6 +2895,7 @@ async function cmdEtlInsert(flowId, nodeName, configJson = '{}', instanceKey = n
     changed = true;
   }
 
+  changed = layoutLinearEtlGraph(graph) || changed;
   const saved = changed ? await saveEtlGraph(processDag, graph) : processDag;
   safeOutput({
     ok: true,
@@ -2611,6 +2908,70 @@ async function cmdEtlInsert(flowId, nodeName, configJson = '{}', instanceKey = n
       alias: node.alias,
       instanceKey,
       configs: Object.fromEntries((node.configs || []).map((config) => [config.name, config.value])),
+    },
+  });
+}
+
+async function cmdEtlOutputDataset(flowId, requestedName) {
+  if (!flowId || !requestedName) {
+    throw new Error('etl-output-dataset requires <flowId> <datasetName>');
+  }
+  const { processDag, graph } = await loadEtlFlow(flowId, { requireOwned: true });
+  graph.nodes ||= [];
+  graph.links ||= [];
+  const targets = graph.nodes.filter((item) => (
+    (item.inputs?.length || 0) > 0 && (item.outputs?.length || 0) === 0
+  ));
+  if (targets.length !== 1) {
+    throw new Error(`ETL must have one terminal target; found ${targets.length}`);
+  }
+  const target = targets[0];
+  const inbound = graph.links.filter((link) => link.to === target.id);
+  if (inbound.length !== 1) {
+    throw new Error(`ETL terminal target must have one inbound link; found ${inbound.length}`);
+  }
+  const tableName = applyNamespace(requestedName);
+  let changed = false;
+  let output = target;
+  if (target.name === 'SMARTBI_DATASET_OUTPUT') {
+    const before = JSON.stringify(target.configs || []);
+    applyEtlNodeConfigs(target, { tableName });
+    changed = before !== JSON.stringify(target.configs || []);
+    if (changed) target.state = 'INITED';
+  } else {
+    const catalog = await smartbixApi('datamining/nodes');
+    const template = (catalog.defaultOptions || [])
+      .find((item) => item.name === 'SMARTBI_DATASET_OUTPUT');
+    if (!template || template.inputs?.length !== 1 || template.outputs?.length !== 0) {
+      throw new Error('SMARTBI_DATASET_OUTPUT template is unavailable or has an unexpected port contract');
+    }
+    output = instantiateEtlNode(template, Number(target.x || 0), Number(target.y || 0));
+    output.smartbiCliKey = 'materialized_dataset_output';
+    applyEtlNodeConfigs(output, { tableName });
+    graph.nodes = graph.nodes.filter((item) => item !== target);
+    graph.nodes.push(output);
+    const previousLink = inbound[0];
+    graph.links = graph.links.filter((link) => link !== previousLink);
+    graph.links.push({
+      from: previousLink.from,
+      to: output.id,
+      inputPortId: previousLink.inputPortId,
+      outputPortId: output.inputs[0].id,
+    });
+    changed = true;
+  }
+  changed = layoutLinearEtlGraph(graph) || changed;
+  const saved = changed ? await saveEtlGraph(processDag, graph) : processDag;
+  safeOutput({
+    ok: true,
+    changed,
+    flowId: saved.id || processDag.id,
+    flowName: saved.name || processDag.name,
+    output: {
+      id: output.id,
+      name: output.name,
+      alias: output.alias,
+      tableName,
     },
   });
 }
@@ -2685,16 +3046,16 @@ async function cmdEtlRun(flowId) {
   for (let attempt = 0; attempt < 120; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 1000));
     state = await smartbixApi(`datamining/flowstate/${encodeURIComponent(instanceId)}`);
-    if (['FINISH', 'ERROR', 'FAILED', 'KILLED'].includes(state.state)) break;
+    if (isEtlTerminalState(state.state)) break;
   }
-  if (!state || !['FINISH', 'ERROR', 'FAILED', 'KILLED'].includes(state.state)) {
+  if (!state || !isEtlTerminalState(state.state)) {
     throw new Error(`ETL run timed out: ${instanceId}`);
   }
 
   const fromIds = new Set((graph.links || []).map((link) => link.from));
   const terminalNodes = (graph.nodes || []).filter((node) => !fromIds.has(node.id));
   let preview = null;
-  if (state.state === 'FINISH' && terminalNodes.length === 1 && terminalNodes[0].outputs?.[0]?.id) {
+  if (isEtlSuccessful(state.state) && terminalNodes.length === 1 && terminalNodes[0].outputs?.[0]?.id) {
     const node = terminalNodes[0];
     try {
       const result = await smartbixApi(
@@ -2707,7 +3068,7 @@ async function cmdEtlRun(flowId) {
   }
 
   safeOutput({
-    ok: state.state === 'FINISH',
+    ok: isEtlSuccessful(state.state),
     flowId: processDag.id,
     flowName: processDag.name,
     instanceId,
@@ -2729,7 +3090,6 @@ async function cmdEtlRowNumber(flowId, columnName = 'row_number') {
   }
   const { processDag, graph } = await loadEtlFlow(flowId, { requireOwned: true });
   graph.nodes ||= [];
-  graph.links ||= [];
   let node = graph.nodes.find((item) => item.name === 'DATAPREPARE_ROW_NUMBER');
   let changed = false;
 
@@ -3152,6 +3512,7 @@ try {
     case 'analysis-run': await cmdAnalysisRun(args[0]); break;
     case 'analysis-clone': await cmdAnalysisClone(args[0], args[1], args[2], args[3]); break;
     case 'dashboard-get': await cmdDashboardGet(args[0]); break;
+    case 'dashboard-create-multi': await cmdDashboardCreateMulti(args[0], args[1], args[2], args[3], args.slice(4).join(' ')); break;
     case 'dashboard-create': await cmdDashboardCreate(args[0], args[1], args[2], args[3], args[4], args[5]); break;
     case 'dashboard-clone': await cmdDashboardClone(args[0], args[1], args[2], args[3]); break;
     case 'aichat-query': await cmdAichat(args[0], args.slice(1).join(' ')); break;
@@ -3169,9 +3530,12 @@ try {
     case 'folder-create': await cmdFolderCreate(args[0], args[1], args.slice(2).join(' ')); break;
     case 'resource-delete': await cmdResourceDelete(parseResourceDeleteArgs(args)); break;
     case 'upload': await cmdUploadArgs(args); break;
+    case 'etl-describe': await cmdEtlDescribe(args[0], args.slice(1).join(' ')); break;
     case 'etl-create': await cmdEtlCreate(args[0], args[1], args[2], args[3], args[4], args[5]); break;
+    case 'etl-union-create': await cmdEtlUnionCreate(args[0], args[1], args[2], args[3], args.slice(4).join(' ')); break;
     case 'etl-node-list': await cmdEtlNodeList(args.join(' ')); break;
     case 'etl-insert': await cmdEtlInsert(args[0], args[1], args[2], args[3]); break;
+    case 'etl-output-dataset': await cmdEtlOutputDataset(args[0], args[1]); break;
     case 'etl-get': await cmdEtlGet(args[0]); break;
     case 'etl-run': await cmdEtlRun(args[0]); break;
     case 'etl-row-number': await cmdEtlRowNumber(args[0], args[1]); break;
@@ -3190,7 +3554,7 @@ try {
       orderRiskWarning: 'https://wiki.smartbi.com.cn/pages/viewpage.action?pageId=168629228',
     }); break;
     default:
-      throw new Error(`Unknown command: ${command}\nusage: smartbi.mjs <setup|doctor|login|health|config|codec-status|invoke|api-get|api-post|plain-get|plain-post|tree|folder-create|resource-delete|upload|etl-node-list|etl-create|etl-insert|etl-get|etl-run|etl-row-number|model-get|model-create|model-clone|analysis-get|analysis-create|analysis-run|analysis-clone|dashboard-get|dashboard-create|dashboard-clone|aichat-graph-list|aichat-graph-status|aichat-graph-fields|aichat-graph-build|aichat-query|aichat-report|aichat-export|agent-get|agent-create|agent-run|agent-deploy|nav|ui-open|ui-dashboard-check|manuals> ...`);
+      throw new Error(`Unknown command: ${command}\nusage: smartbi.mjs <setup|doctor|login|health|config|codec-status|invoke|api-get|api-post|plain-get|plain-post|tree|folder-create|resource-delete|upload|etl-node-list|etl-create|etl-union-create|etl-describe|etl-insert|etl-output-dataset|etl-get|etl-run|etl-row-number|model-get|model-create|model-clone|analysis-get|analysis-create|analysis-run|analysis-clone|dashboard-get|dashboard-create|dashboard-create-multi|dashboard-clone|aichat-graph-list|aichat-graph-status|aichat-graph-fields|aichat-graph-build|aichat-query|aichat-report|aichat-export|agent-get|agent-create|agent-run|agent-deploy|nav|ui-open|ui-dashboard-check|manuals> ...`);
   }
   process.exit(0);
 } catch (error) {

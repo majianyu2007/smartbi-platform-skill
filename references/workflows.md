@@ -26,6 +26,26 @@ Official Smartbi V11 help pages:
 
 The documented scenarios use the same five-stage platform chain. Their schemas are examples, not mandatory project designs.
 
+## Stage 0: Keep preprocessing on the platform
+
+The imported source SHOULD be the closest platform-readable representation of
+the acquired dataset. Local work is limited to discovery, download, integrity
+checks, authorization checks, and—only when required—lossless conversion from
+an unsupported container such as SAV/SAS/Stata to a flat record-level CSV.
+
+Do not locally filter cohorts, recode missing values, deduplicate, join,
+calculate indicators, aggregate, pivot, or produce dashboard-ready marts.
+Implement those steps as named Smartbi ETL nodes. A local calculation is
+permitted only as an independent reconciliation check after the platform result
+exists. If Smartbi cannot perform a required operation, capture the failing
+platform attempt and obtain explicit user approval before using a local
+exception.
+
+For competition delivery, the saved DAG itself is evidence. A direct
+`关系数据源 → 覆盖到关系表` copy and a row-number-only flow are incomplete.
+Each flow must expose the transformations that materially produce its submitted
+output, and downstream artifacts must read that ETL output.
+
 ## Stage 1: Import files
 
 Official sequence:
@@ -88,6 +108,18 @@ Minimum reconciliation after ETL:
 - null/type conversion counts;
 - primary-key uniqueness;
 - a small safe sample checked against rules.
+
+Competition acceptance gate:
+
+- The imported source is record-level or otherwise minimally transformed.
+- Every analytical filter, recode, cleaning rule, derived indicator,
+  aggregation, pivot, and ranking operation is represented by a configured
+  Smartbi node whose business purpose is documented.
+- Decorative no-op nodes do not count.
+- A run is accepted only when every node succeeds, the materialized output is
+  reopened, and the reconciled row/field counts match the documented rules.
+- The data model, analyses, dashboard, and AIChat graph use the materialized ETL
+  output rather than a separately prepared local mart.
 
 Verified API-first pattern for a flat survey table:
 
