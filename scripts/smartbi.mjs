@@ -2426,16 +2426,31 @@ async function assertCatalogPermission(resourceId, purview, label) {
   }
 }
 
-async function loadOwnedDirectResource(parentId, resourceId) {
-  await assertOwnedCatalogParent(parentId, {
-    allowSelfRoot: true,
-    allowAgentRoot: true,
-    allowProfileDestination: true,
-  });
+async function loadOwnedDirectResource(
+  parentId,
+  resourceId,
+  { allowPersonalAcquisition = false } = {},
+) {
+  let personalAcquisition = false;
+  if (allowPersonalAcquisition) {
+    await ensureSession();
+    const personal = await locatePersonalFolder();
+    personalAcquisition = parentId === personal.folderId;
+  }
+  if (!personalAcquisition) {
+    await assertOwnedCatalogParent(parentId, {
+      allowSelfRoot: true,
+      allowAgentRoot: true,
+      allowProfileDestination: true,
+    });
+  }
   const children = await listCatalogChildren(parentId, 'resource parent');
   const resource = children.find((node) => node.id === resourceId);
   if (!resource) {
     throw new Error(`resource is not a direct child of the supplied parent: ${resourceId}`);
+  }
+  if (personalAcquisition && resource.type !== 'BASETABLE') {
+    throw new Error(`personal acquisition rename accepts only BASETABLE resources: ${resourceId}`);
   }
   assertNamespacedResource(resource);
   return { resource, children };
@@ -2553,7 +2568,11 @@ async function cmdResourceRename(argsList) {
     ['parentId', 'resourceId', 'requestedAlias'],
     'resource-rename',
   );
-  const { resource, children } = await loadOwnedDirectResource(parentId, resourceId);
+  const { resource, children } = await loadOwnedDirectResource(
+    parentId,
+    resourceId,
+    { allowPersonalAcquisition: true },
+  );
   assertExactResourceConfirmation(resource, confirmName);
   const alias = applyNamespace(requestedAlias);
   const conflict = findCatalogConflict(children, alias, resource.id);

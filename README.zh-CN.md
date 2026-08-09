@@ -151,6 +151,8 @@ Smartbi ETL 节点完成。`关系数据源 → 覆盖到关系表` 的直接复
 - 资源树的 `新建/重命名/移动/复制/删除` 分别对应
   `folder-create`、`resource-rename`、`resource-move`、`resource-copy`、
   `resource-delete`；变更后用 `catalog-audit` 验证完整目录树。
+  当前账号个人数据采集目录中的命名空间表也可用 `resource-rename`
+  设置业务别名，物理表名和依赖 ID 保持不变。
 
 正式制作比较图前，先用 `analysis-profile` 检查维度至少有两个非空分类；
 用 `analysis-repair` 和 `dashboard-repair-multi` 修复自有旧资源的业务标签、

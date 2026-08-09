@@ -135,7 +135,7 @@ menus, but without manual clicks:
 
 | Operation | Live RMI call | Guarded verification |
 |---|---|---|
-| rename visible alias/description | `updateCatalogNode(id, JSON.stringify({alias,desc}), null)` | exact direct-child confirmation, `WRITE`, sibling collision check, saved alias reload |
+| rename visible alias/description | `updateCatalogNode(id, JSON.stringify({alias,desc}), null)` | exact direct-child confirmation, namespace, `WRITE`, sibling collision check, saved alias reload; also supports a `BASETABLE` directly inside the authenticated personal acquisition folder |
 | move | `moveCatalogElement(resourceId, targetParentId)` | source/target ownership, no descendant cycle, no collision, post-move absence/presence |
 | copy non-folder | `supportsCopy(resourceId)`, then `copyAndPaste(targetParentId, sourceId, name, alias, desc)` | source `READ`, target `WRITE`, unique target name, saved child reload |
 | copy folder | `createFolderElement`, then guarded recursive child copy | recursive rollback on child failure, final target reload |

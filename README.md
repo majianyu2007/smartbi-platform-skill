@@ -146,6 +146,8 @@ record, and validate every folder independently.
 - resource-tree `新建/重命名/移动/复制/删除` maps to
   `folder-create`, `resource-rename`, `resource-move`, `resource-copy`, and
   `resource-delete`; use `catalog-audit` to verify the resulting tree;
+  namespaced imported tables in the authenticated personal acquisition folder
+  can also receive business aliases through `resource-rename`;
 
 Before building comparison charts, use `analysis-profile` to require at least
 two non-blank categories per dimension. Use `analysis-repair` and

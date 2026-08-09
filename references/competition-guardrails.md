@@ -65,6 +65,9 @@ this profile is active.
 - Every team-owned artifact keeps the configured namespace (`MJY_` in the
   current project). Visible aliases must add business meaning rather than only
   `FINAL`, `MODEL`, `DASH`, `CONTEXT`, or similar technical status words.
+- Namespaced source/materialized tables in the authenticated personal acquisition
+  folder may receive business aliases through `resource-rename`; their physical
+  names and table IDs remain stable for ETL dependencies.
 - Use `catalog-audit`, `folder-create`, `resource-rename`, `resource-move`,
   `resource-copy`, and `resource-delete`. Routine resource management MUST NOT
   be performed through manual Playwright clicks.
