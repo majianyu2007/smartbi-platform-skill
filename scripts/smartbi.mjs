@@ -29,6 +29,7 @@ import {
   parseResourceDeleteArgs,
 } from './deletion-guard.mjs';
 import { assertReplacementSchemaCompatible } from './import-schema.mjs';
+import { parseAichatStream } from './aichat-stream.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SKILL_DIR = join(__dirname, '..');
@@ -1369,56 +1370,6 @@ async function cmdDashboardClone(parentId, sourceDashboardId, requestedName, des
   });
 }
 
-function parseAichatStream(text) {
-  const messages = [];
-  for (const line of String(text).split(/\r?\n/)) {
-    if (!line.startsWith('data:')) continue;
-    try {
-      messages.push(JSON.parse(line.slice(5)));
-    } catch {
-      // Ignore malformed incremental frames; later frames carry the complete artifact.
-    }
-  }
-  const artifacts = new Map();
-  let state = null;
-  for (const message of messages) {
-    const result = message.result;
-    if (result?.kind === 'artifact-update' && result.artifact?.artifactId) {
-      artifacts.set(result.artifact.artifactId, result.artifact);
-    }
-    if (result?.kind === 'status-update' && result.taskId === message.id) {
-      state = result.status?.state || state;
-    }
-  }
-  const answers = [];
-  const tables = [];
-  const files = [];
-  for (const artifact of artifacts.values()) {
-    const mimeType = artifact.metadata?.mimeType;
-    for (const part of artifact.parts || []) {
-      if (part.kind === 'text' && part.text && mimeType === 'text/plain') answers.push(part.text);
-      if (part.kind === 'data' && Array.isArray(part.data) && mimeType === 'json/table') {
-        tables.push({ title: artifact.metadata?.title || null, rows: part.data });
-      }
-      if (part.kind === 'file' && part.file) {
-        files.push({
-          name: part.file.name || null,
-          display: part.file.display?.split('/').pop() || null,
-          mimeType: part.file.mimeType || null,
-          size: part.file.size ?? null,
-        });
-      }
-    }
-  }
-  return {
-    ok: state === 'completed',
-    state,
-    answer: answers.at(-1) || null,
-    tables: [...new Map(tables.map((table) => [JSON.stringify(table), table])).values()],
-    files: [...new Map(files.map((file) => [JSON.stringify(file), file])).values()],
-    eventCount: messages.length,
-  };
-}
 
 async function cmdAichat(modelId, question, { report = false, outputPath = null } = {}) {
   if (!modelId || !question) {

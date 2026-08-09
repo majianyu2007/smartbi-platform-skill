@@ -266,6 +266,7 @@ node --test tests/*.test.mjs
 ```bash
 node --check scripts/install.mjs
 node --check scripts/transport-codec.mjs
+node --check scripts/aichat-stream.mjs
 node --check scripts/import-schema.mjs
 node --check scripts/deletion-guard.mjs
 node --check scripts/smartbi.mjs
