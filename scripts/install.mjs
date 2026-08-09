@@ -5,6 +5,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -387,7 +388,7 @@ async function main() {
 }
 
 const invokedAsScript = process.argv[1]
-  && pathToFileURL(resolve(process.argv[1])).href === import.meta.url;
+  && realpathSync(resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url));
 if (invokedAsScript) {
   main().catch((error) => {
     process.stderr.write(`${JSON.stringify({ error: error.message })}\n`);

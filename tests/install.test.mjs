@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 import {
@@ -71,4 +73,17 @@ test('shell bootstrap reports a missing Node.js before invoking MJS', () => {
   assert.equal(result.status, 2);
   assert.match(result.stderr, /Node\.js was not found/);
   assert.match(result.stderr, /Node\.js 20 or newer/);
+});
+
+test('installer runs when invoked through a symlinked MJS path', () => {
+  const root = mkdtempSync(join(tmpdir(), 'smartbi-install-link-'));
+  const linkedScript = join(root, 'install.mjs');
+  try {
+    symlinkSync(join(testDir, '..', 'scripts', 'install.mjs'), linkedScript);
+    const result = spawnSync(process.execPath, [linkedScript, '--help'], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /Usage: scripts\/install\.sh/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
