@@ -85,8 +85,7 @@ The platform account is **shared by multiple team members**. You MUST:
 
 - **Never modify, delete, rename, or overwrite any resource not created by this namespace.**
   Foreign resources = anything whose name/alias does not carry the configured namespace in the selected prefix/suffix mode.
-  The sole deletion exception is a legacy `BASETABLE` in the authenticated personal acquisition folder that the user identifies by exact name; use `resource-delete ... --confirm-name <exactName>`.
-  This exception never applies to shared catalog folders or non-table resources.
+  Every deletion requires the selected resource's exact current name. The sole non-namespaced exception is a legacy `BASETABLE` in the authenticated personal acquisition folder; this exception never applies to shared catalog folders or non-table resources.
 - **Namespace every artifact you create** (tables, ETL flows, models, analyses,
   dashboards, folders). Configure a neutral team prefix or suffix through
   `SMARTBI_NAMESPACE` (default example: `TEAM_`). Format:
@@ -178,7 +177,7 @@ inferred from the hostname:
 ```bash
 TMPDIR=/tmp node scripts/smartbi.mjs setup \
   --profile competition-2026 \
-  --school-name 西北农林科技大学
+  --school-name "<school>"
 ```
 
 Configuration is saved to `config.json` (gitignored and mode `0600` by
@@ -196,7 +195,7 @@ default). Environment variables override it per invocation:
 | `SMARTBI_NAMESPACE` | namespace marker | `TEAM_` or `_TEAM` |
 | `SMARTBI_NAMING` | `prefix` or `suffix` | `prefix` |
 | `SMARTBI_PLATFORM_PROFILE` | optional profile id (`competition-2026` or `general`) | `competition-2026` |
-| `SMARTBI_SCHOOL_NAME` | school name used by the competition resource folder | `西北农林科技大学` |
+| `SMARTBI_SCHOOL_NAME` | school name used by the competition resource folder | `<school>` |
 
 `setup` without a TTY prints safe guidance. `config` shows the effective
 configuration and concrete idempotent naming examples without revealing secrets.
@@ -220,9 +219,10 @@ capability. The profile:
 - permits only the official competition delivery stages documented in
   `references/competition-guardrails.md`.
 
-Use `competition-home [--create] [--migrate-legacy]` to resolve, create, or
-migrate the exact destination. It checks direct placement and observable
-postconditions; never recreate this operation through manual browser clicks.
+Use `competition-home [--create] [--migrate-legacy --confirm-name <exactName>]`
+to resolve, create, or migrate the exact destination. Legacy migration requires
+the selected old folder's exact visible name, direct placement, write permission,
+and a persisted postcondition; never recreate this through browser clicks.
 
 ### Tenant migration and transport compatibility
 
@@ -261,29 +261,30 @@ TMPDIR=/tmp node scripts/smartbi.mjs login          # reads credentials file
 TMPDIR=/tmp node scripts/smartbi.mjs health         # workspace
 TMPDIR=/tmp node scripts/smartbi.mjs tree           # catalog root
 TMPDIR=/tmp node scripts/smartbi.mjs tree DS.input  # 可导入数据库
-TMPDIR=/tmp node scripts/smartbi.mjs competition-home --create --migrate-legacy
+TMPDIR=/tmp node scripts/smartbi.mjs competition-home --create
+TMPDIR=/tmp node scripts/smartbi.mjs competition-home --migrate-legacy --confirm-name <exactLegacyFolderName>
 TMPDIR=/tmp node scripts/smartbi.mjs catalog-audit <rootId>
 TMPDIR=/tmp node scripts/smartbi.mjs folder-create <parentId> <name> [description]
 TMPDIR=/tmp node scripts/smartbi.mjs resource-rename <parentId> <resourceId> <newAlias> --confirm-name <exactName>
-TMPDIR=/tmp node scripts/smartbi.mjs resource-move <sourceParentId> <resourceId> <targetParentId> --confirm-name <exactName>
-TMPDIR=/tmp node scripts/smartbi.mjs resource-copy <sourceParentId> <resourceId> <targetParentId> <newName> --confirm-name <exactName>
+TMPDIR=/tmp node scripts/smartbi.mjs resource-move <sourceParentId> <resourceId> <targetParentId> --confirm-name <exactName> # general profile only
+TMPDIR=/tmp node scripts/smartbi.mjs resource-copy <sourceParentId> <resourceId> <targetParentId> <newName> --confirm-name <exactName> # general profile only
 TMPDIR=/tmp node scripts/smartbi.mjs resource-delete <parentId> <resourceId> --confirm-name <exactName>
 TMPDIR=/tmp node scripts/smartbi.mjs upload <csv> <name> --source-url <public-url> # source URL required only by competition-2026
 TMPDIR=/tmp node scripts/smartbi.mjs etl-get <flowId>       # inspect saved ETL DAG
 TMPDIR=/tmp node scripts/smartbi.mjs etl-row-number <flowId> row_number
-TMPDIR=/tmp node scripts/smartbi.mjs etl-run <flowId>       # run and verify terminal preview
+TMPDIR=/tmp node scripts/smartbi.mjs etl-run <flowId> --confirm-target <exactTargetName>
 TMPDIR=/tmp node scripts/smartbi.mjs etl-node-list 派生列
 TMPDIR=/tmp node scripts/smartbi.mjs etl-insert <flowId> DATAPREPARE_SAMPLE '{"fraction":"0.8","seed":"10"}' sample_train
 TMPDIR=/tmp node scripts/smartbi.mjs analysis-profile <analysisId> metric_name,age_group,sex,metric_domain
-TMPDIR=/tmp node scripts/smartbi.mjs analysis-repair <analysisId> <rowField> <measure> <rowLabel> <measureLabel> [description]
-TMPDIR=/tmp node scripts/smartbi.mjs dashboard-repair-multi <dashboardId> <modelId> '<chartsJson>' [description]
+TMPDIR=/tmp node scripts/smartbi.mjs analysis-repair <analysisId> <rowField> <measure> <rowLabel> <measureLabel> [description] --confirm-name <exactAnalysisName>
+TMPDIR=/tmp node scripts/smartbi.mjs dashboard-repair-multi <dashboardId> <modelId> '<chartsJson>' [description] --confirm-name <exactDashboardName>
 TMPDIR=/tmp node scripts/smartbi.mjs aichat-graph-fields <modelId>
 TMPDIR=/tmp node scripts/smartbi.mjs aichat-graph-build <modelId> survey_city,age_code
 TMPDIR=/tmp node scripts/smartbi.mjs aichat-graph-status <modelId>
 # General tenants only; competition-2026 rejects every agent-* command:
 TMPDIR=/tmp node scripts/smartbi.mjs agent-get <agentId>
 TMPDIR=/tmp node scripts/smartbi.mjs agent-run <agentId> "请分析指定问题"
-TMPDIR=/tmp node scripts/smartbi.mjs agent-deploy <agentId>
+TMPDIR=/tmp node scripts/smartbi.mjs agent-deploy <agentId> --confirm-name <exactAgentName>
 TMPDIR=/tmp node scripts/smartbi.mjs nav 数据准备     # browser fallback
 TMPDIR=/tmp node scripts/smartbi.mjs manuals        # official manual links
 ```
@@ -298,25 +299,26 @@ TMPDIR=/tmp node scripts/smartbi.mjs manuals        # official manual links
 | `codec-status [--refresh]` | Discover, hash, cache, and negotiate the frontend transport coder | source/fingerprint/algorithm |
 | `login` / `health` | Authenticate and verify the workspace session | session state |
 | `invoke <class> <method> [json]` | Read-only RMI discovery call; mutating and session-sensitive methods are refused | decoded `{retCode, result, ...}` |
-| `api-get <path>` / `api-post <path> [json]` | Guarded Smartbix discovery/query replay; mutating paths are refused | decoded response |
-| `plain-get <path>` / `plain-post <path> [json]` | Guarded `/smartbi/` discovery/query replay; mutating paths are refused | JSON/text response |
+| `api-get <path>` / `api-post <path> [json]` | Guarded Smartbix discovery/query replay; POST accepts only `datasets/table` and `adhocanalysis/data/<id>` | decoded response |
+| `plain-get <path>` / `plain-post <path> [json]` | Guarded `/smartbi/` discovery/query replay; POST accepts only `cgi/aichat-train/validate_field_data_count/<id>` | JSON/text response |
 | `tree [id]` | List catalog children of node | `{parent, nodes:[...]}` |
 | `catalog-audit <rootId>` | Recursively inventory a catalog subtree with parent IDs, paths, types, and namespace ownership | auditable catalog manifest |
-| `competition-home [--create] [--migrate-legacy]` | Resolve/create the exact competition folder or relabel a direct legacy school folder | profile, folder, and placement receipt |
+| `competition-home [--create] [--migrate-legacy --confirm-name <exactName>]` | Resolve/create the exact competition folder or exactly confirm and relabel a direct legacy school folder | profile, folder, and placement receipt |
 | `folder-create <parentId> <name> [description]` | Idempotently create one namespaced catalog folder | `{created,id,name,alias}` |
 | `resource-rename <parentId> <resourceId> <newAlias> --confirm-name <exactName> [--description <text>]` | Rename one direct owned workspace resource or namespaced `BASETABLE` in the authenticated personal acquisition folder, with collision, permission, and post-save checks | rename receipt |
-| `resource-move <sourceParentId> <resourceId> <targetParentId> --confirm-name <exactName>` | Move one owned resource with descendant/conflict checks and source/target postconditions | move receipt |
-| `resource-copy <sourceParentId> <resourceId> <targetParentId> <newName> --confirm-name <exactName> [--description <text>]` | Copy one owned resource; folders use guarded recursive copy with rollback | copy receipt |
-| `resource-delete <parentId> <resourceId> [--confirm-name <exactName>]` | Delete one direct owned child after permission and post-delete checks; exact-name confirmation is required for a legacy non-namespaced table and is accepted only in the authenticated personal acquisition folder | deletion receipt |
-| `upload <file> [tableName] [--replace] [--source-url <url>]` | Import CSV/TXT/XLSX as a namespaced table; competition profile requires a public source URL; replacement must be explicit and schema-preserving | `{ok, table, tableRef, rows, fields, replaced}` |
-| `etl-create <parentId> <sourceTableId> <targetTableId> <name> [rowNumber|-] [description]` | Build an owned source→optional row-number→materialized-output ETL | saved DAG |
-| `etl-get <flowId>` / `etl-run <flowId>` | Inspect or execute one owned saved ETL | DAG / terminal node states |
+| `resource-move <sourceParentId> <resourceId> <targetParentId> --confirm-name <exactName>` | Move one owned resource with descendant/conflict checks and source/target postconditions; competition profile rejects generic moves | move receipt |
+| `resource-copy <sourceParentId> <resourceId> <targetParentId> <newName> --confirm-name <exactName> [--description <text>]` | Copy one owned resource with guarded recursive folder rollback; competition profile rejects generic copies | copy receipt |
+| `resource-delete <parentId> <resourceId> --confirm-name <exactName>` | Delete one exactly confirmed direct owned child after permission and post-delete checks; the sole non-namespaced exception is a legacy table in the authenticated personal acquisition folder | deletion receipt |
+| `upload <file> [tableName] [--replace --confirm-target <exactName>] [--source-url <url>]` | Import CSV/TXT/XLSX as a namespaced table; competition profile requires and returns a public source URL; replacement must be schema-preserving and exactly confirmed | `{ok, table, tableRef, rows, fields, replaced, sourceUrl}` |
+| `etl-create <parentId> <sourceTableId> <targetTableId> <name> [rowNumber|-] [description] --confirm-target <exactName>` | Build an intermediate owned source→optional row-number→materialized-output ETL; target overwrite is exactly confirmed and competition runs remain blocked until a meaningful transform exists | saved DAG |
+| `etl-union-create ... --confirm-target <exactName>` | Build a confirmed multi-source union on general tenants only; competition profile always rejects it | saved DAG |
+| `etl-get <flowId>` / `etl-run <flowId> [--confirm-target <exactName>]` | Inspect or execute one owned saved ETL; materialized overwrite requires exact target confirmation, every node success, and reconciliation with the reopened target | DAG / run and materialized-target receipt |
 | `etl-node-list [keyword]` | List live ETL node templates, ports, and config contracts | node summaries |
-| `etl-insert <flowId> <nodeName> [configJson] [instanceKey]` | Idempotently insert/update one unary transform before the target | saved node/config summary |
+| `etl-insert <flowId> <nodeName> [configJson] [instanceKey]` | Idempotently insert/update one unary transform before the target and record the explicitly configured keys; competition accepts only supported transforms with substantive settings | saved node/config summary |
 | `etl-row-number <flowId> [column]` | Idempotently add/update `增加序列号` | `{changed,nodeId,column}` |
-| `model-get <id>` / `model-create ...` / `model-clone ...` | Inspect, build, or clone a data model | model metadata |
-| `analysis-get <id>` / `analysis-create ...` / `analysis-run <id>` / `analysis-profile <id> <field,...>` / `analysis-repair ...` / `analysis-clone ...` | Operate pivot analyses, profile candidate chart dimensions, and repair presentation metadata | definition / category profile / reconciled result |
-| `dashboard-get <id>` / `dashboard-create ...` / `dashboard-create-multi ...` / `dashboard-repair-multi ...` / `dashboard-clone ...` | Operate API-generated dashboards; multi-chart commands persist titles, business labels, axis titles, and complete layout slots | definition / presentation audit / saved dashboard |
+| `model-get <id>` / `model-create <parentId> <dataSourceId> <tableId> <tableName> <name> [description] [--etl-flow <flowId>]` / `model-clone ...` | Inspect/build/clone a model; competition creation requires same-folder ETL lineage and rejects cloning | model metadata and lineage |
+| `analysis-get <id>` / `analysis-create ...` / `analysis-run <id>` / `analysis-profile <id> <field,...>` / `analysis-repair ... --confirm-name <exactName>` / `analysis-clone ...` | Operate pivot analyses; repair is exactly confirmed, and competition create/clone/repair sources must stay in the same candidate folder | definition / category profile / reconciled result |
+| `dashboard-get <id>` / `dashboard-create ...` / `dashboard-create-multi ...` / `dashboard-repair-multi ... --confirm-name <exactName>` / `dashboard-clone ...` | Operate dashboards; repair is exactly confirmed, and competition create/clone/repair sources must stay in the same candidate folder | definition / presentation audit / saved dashboard |
 | `aichat-graph-list [keyword]` / `aichat-graph-status <modelId>` | List or inspect model-graph build state | graph status and selected fields |
 | `aichat-graph-fields <modelId>` | Resolve selectable field names to fully qualified IDs | model field list |
 | `aichat-graph-build <modelId> <field,...>` | Validate and idempotently build one owned model graph | terminal build result |
@@ -326,7 +328,7 @@ TMPDIR=/tmp node scripts/smartbi.mjs manuals        # official manual links
 | `agent-get <agentId>` | Inspect graph, parameters, and deployment state; general profile only | parsed Agent resource |
 | `agent-create <parentId> <name> [desc] [systemPrompt] [userPrompt]` | Build a Start→LLM→Finish Agent from live node templates; general profile only | saved Agent summary |
 | `agent-run <agentId> <question>` | Run one owned Agent and poll/read LLM output; general profile only | answer, tokens, node states |
-| `agent-deploy <agentId>` | Idempotently publish one owned Agent; general profile only | deployment relation |
+| `agent-deploy <agentId> --confirm-name <exactAgentName>` | Idempotently publish one exactly confirmed owned Agent; general profile only | deployment relation |
 | `ui-open <resourceId>` | Open one owned catalog resource in the headed CDP browser | page title and URL |
 | `ui-dashboard-check <resourceId>` | Open and assert one owned dashboard renders | title, chart count, visible text |
 | `nav <module>` | Browser module navigation (CDP fallback) | `{state:"module", module, url}` |
@@ -385,9 +387,10 @@ Dataset readiness notes (verified):
   (dialog warning) — rename files/columns before upload.
 - Platform auto-lowercases physical table names.
 - Encoding: AUTO/UTF-8/GBK radio; default AUTO works for UTF-8 CSV.
-- A BOM header on the first line is tolerated (observed with YRBSS CSVs).
-- `--replace` preserves the existing Smartbi schema; field additions, removals,
-  or reordering are rejected before insertion to prevent silent column loss.
+- BOM-prefixed first headers are tolerated.
+- `--replace` requires `--confirm-target <exactName>` and preserves the existing
+  Smartbi schema; field additions, removals, reordering, or type changes are
+  rejected before insertion.
 
 ### 2. Self-service ETL (数据准备)
 
@@ -395,14 +398,17 @@ API-first path, verified live:
 
 1. Import an owned source table and, for materialized output, an owned target
    table with the intended schema.
-2. Create the saved DAG directly:
-   `etl-create <parentId> <sourceTableId> <targetTableId> <name> [rowNumber|-]`.
+2. Create the saved DAG directly, explicitly confirming the existing target:
+   `etl-create <parentId> <sourceTableId> <targetTableId> <name> [rowNumber|-] [description] --confirm-target <exactName>`.
 3. Inspect with `etl-get`; discover live node contracts with `etl-node-list`.
-4. Add or update supported unary transforms with `etl-insert`, or use the
-   idempotent `etl-row-number` helper.
-5. Run with `etl-run`. Require the flow and every node to reach `FINISH`.
-   Validate a terminal preview when available; for materialized output, reopen
-   the target table and reconcile its fields and rows.
+4. Add or update a supported unary transform with substantive `configJson` via
+   `etl-insert`. The command records the explicitly configured keys. A default,
+   empty, unknown, or no-op transform (including sample fraction `1`) does not
+   satisfy the competition ETL contract; `etl-row-number` never counts.
+5. Run with `etl-run <flowId> --confirm-target <exactName>` for a materialized target.
+   The command reads the last transform's output, reopens the materialized
+   target, and rejects a field-count mismatch. Competition runs also reject
+   source-only or row-number-only DAGs and missing row/field previews.
 6. Use Playwright only for multi-input/output wiring or uncommon transforms
    whose port semantics are not safely inferable from the live node template.
 
@@ -416,13 +422,16 @@ Rules:
 
 1. `数据准备` → `数据集` (landing-page card: `数据模型`) → `数据源` →
    `数据表` → select the owned, namespaced table.
-2. Flat survey files may use a one-table model; do not invent joins. For
+2. On `competition-2026`, pass `--etl-flow <flowId>`. The command verifies that
+   the flow is meaningful, belongs to the same candidate folder, and materializes
+   the exact selected table before creating the model.
+3. Flat survey files may use a one-table model; do not invent joins. For
    multi-table models, treat detected joins as proposals and verify keys,
    cardinality, and grain.
-3. Confirm the model field count and reconcile a base total before saving.
-4. Time hierarchies only on validated date fields; identifiers as unique-count
+4. Confirm the model field count and reconcile a base total before saving.
+5. Time hierarchies only on validated date fields; identifiers as unique-count
    measures; weights as summed measures when estimating weighted populations.
-5. Save under the team folder with a namespaced name.
+6. Save under the team folder with a namespaced name.
 
 ### 4. Analysis and dashboard (分析展现)
 
@@ -485,8 +494,8 @@ model text before sending. For reports choose 技能 → 分析报告.
    Markdown output.
 4. Save, then run `agent-run <agentId> <question>`. Accept only terminal
    `FINISH` plus a non-empty LLM `result_content`.
-5. Publish with `agent-deploy`; verify `dataagent/deploy/agent/{id}` returns a
-   persisted relation. Deployment is idempotent.
+5. Publish with `agent-deploy <agentId> --confirm-name <exactAgentName>`; verify
+   `dataagent/deploy/agent/{id}` returns a persisted relation. Deployment is idempotent.
 6. Only run or deploy namespaced Agents; do not modify shared or built-in ones.
 
 

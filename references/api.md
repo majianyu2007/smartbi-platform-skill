@@ -275,15 +275,23 @@ The save/run body contains `processDag` plus `dagRemark`, `useCache` or
 `toSaveTempDag`, and save flags. Preserve the server-returned `processDag`
 metadata; only replace its serialized `define` when changing the graph.
 
-Safety invariant implemented by `scripts/smartbi.mjs`: mutation and execution
+Safety invariants implemented by `scripts/smartbi.mjs`: mutation and execution
 refuse any flow whose saved name does not match the configured namespace.
+Creation and execution that overwrite a materialized target require its exact
+visible name. Competition mode rejects union creation and model cloning, and it
+refuses a DAG unless every non-plumbing transform is a supported type with
+substantive configuration explicitly recorded by `etl-insert`; default/unknown
+nodes and no-op sampling do not count.
 `etl-row-number` appends an `增加序列号` node only when the graph has exactly one
-connectable sink, then saves through the endpoint above.
-`etl-node-list` exposes those live contracts. `etl-insert` inserts or updates a
-named unary transformation immediately before the single materialized target,
-preserves the target wiring, and marks the graph `INITED`. Its `instanceKey`
-makes retries idempotent; multi-input/output nodes remain explicit workflows
-because their port semantics cannot be inferred safely.
+connectable sink, then saves through the endpoint above. `etl-node-list` exposes
+live contracts. `etl-insert` inserts or updates a named unary transformation,
+records the explicitly changed config keys, preserves target wiring, and marks
+the graph `INITED`. Its `instanceKey` makes retries idempotent.
+
+After a successful run, the CLI requires every reported node state to be
+successful, reads the output port immediately before an overwrite sink, reopens
+the materialized table, and compares field counts. Competition mode fails
+closed when terminal preview evidence is unavailable.
 
 ### 6.1 Data models, analyses, dashboards, AIChat, and model graphs
 
@@ -291,6 +299,11 @@ The model/report/dashboard paths use the `/smartbi/smartbix/api/` base. Paths
 beginning `cgi/` or `sdk/` below use the `/smartbi/` base and plain JSON.
 Use `plain-get`/`plain-post` for guarded discovery and replay of the latter;
 use `api-get`/`api-post` for Smartbix paths.
+
+Competition analysis/dashboard creation, clone, and repair commands require
+their source model, analysis, or dashboard to be a direct child of the same
+candidate folder. Generic resource move/copy and model cloning are rejected.
+Repair commands also require the exact current analysis/dashboard name.
 
 | Method and path | Purpose |
 |---|---|
@@ -380,5 +393,8 @@ editing and uncommon ETL transformations) require the browser:
 4. Verify each call by replaying it from Node with a cookie jar (no browser).
 
 Generic `invoke`, `api-post`, and `plain-post` commands are discovery/query
-tools only. They reject mutating verbs and session-sensitive RMI methods;
-artifact mutations must use the ownership-checked dedicated commands.
+tools only. Paths are recursively decoded, canonicalized, and checked for
+traversal, method overrides, and mutating verbs. Generic POST is allowlisted to
+`datasets/table`, `adhocanalysis/data/<id>`, and
+`cgi/aichat-train/validate_field_data_count/<id>`; artifact mutations must use
+the ownership-checked dedicated commands.

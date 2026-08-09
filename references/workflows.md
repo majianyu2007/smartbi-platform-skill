@@ -144,15 +144,21 @@ Verified API-first pattern for a flat survey table:
 
 1. Import namespaced source and target tables; the target defines the intended
    materialized schema.
-2. Create the DAG with
-   `smartbi.mjs etl-create <parentId> <sourceTableId> <targetTableId> <name> [rowNumber|-]`.
+2. Create the DAG and exactly confirm the existing output table with
+   `smartbi.mjs etl-create <parentId> <sourceTableId> <targetTableId> <name> [rowNumber|-] [description] --confirm-target <exactName>`.
 3. Inspect the saved DAG with `etl-get` and the live node catalog with
    `etl-node-list`.
-4. Add supported unary transforms with `etl-insert`; use `etl-row-number` when
-   a deterministic row key is required and will be represented downstream.
-5. Run with `etl-run`; require the flow and every node to reach `FINISH`.
-6. Validate the terminal preview when the platform exposes one. For a
-   materialized target, reopen the table and reconcile schema and row counts.
+4. Add a supported unary transform with substantive `configJson` through
+   `etl-insert`. The CLI records the configured keys; default/empty/unknown
+   transforms and no-op sample fraction `1` do not satisfy competition evidence.
+5. Run materialized output with
+   `etl-run <flowId> --confirm-target <exactName>`; require the flow and every
+   node to reach a successful terminal state. Competition mode rejects
+   source-only and row-number-only DAGs.
+6. The command reads the output port immediately before the materialized sink,
+   reopens the target table, and reconciles the preview field count and rows
+   reported by the platform. Treat an unavailable preview as failure in
+   competition mode.
 7. Fall back to the headed UI only for multi-port wiring or transformations
    whose live port contracts cannot be inferred safely.
 
@@ -166,8 +172,16 @@ Official sequence:
 4. Manually add missing relations.
 5. Create time hierarchies such as year, year-quarter, year-month, year-month-day.
 6. Convert fields to measures when required.
+
 7. Add calculated columns and calculated measures.
 8. Save.
+
+For `competition-2026`, create a single-table model with
+`model-create ... --etl-flow <flowId>`. The flow and model must share the same
+candidate folder, the DAG must contain a supported, explicitly configured
+transformation, and its materialized target must be the selected model table.
+Model cloning is rejected. Analyses and dashboards may consume or clone only
+resources that are direct children of their own candidate folder.
 
 AI model checklist:
 

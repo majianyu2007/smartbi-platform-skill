@@ -39,6 +39,7 @@ test('replacement rejects removed and reordered fields', () => {
       added: [],
       removed: [],
       reordered: true,
+      typeChanges: [],
     },
   );
   assert.throws(
@@ -48,5 +49,22 @@ test('replacement rejects removed and reordered fields', () => {
       'TEAM_focus',
     ),
     /removed=estimate_value/,
+  );
+});
+
+test('replacement rejects field type changes', () => {
+  assert.throws(
+    () => assertReplacementSchemaCompatible(
+      [
+        { name: 'city_cn', dataType: 'STRING' },
+        { name: 'estimate_value', dataType: 'DOUBLE' },
+      ],
+      [
+        { name: 'city_cn', dataType: 'STRING' },
+        { name: 'estimate_value', dataType: 'INTEGER' },
+      ],
+      'TEAM_focus',
+    ),
+    /type-changed=estimate_value:DOUBLE->INTEGER/,
   );
 });

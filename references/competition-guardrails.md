@@ -13,12 +13,14 @@ Insight V11 tenant.
   folder because Smartbi imports cannot be persisted in the workspace folder.
 - ETL flows, materialized models, pivot analyses, dashboards, and AIChat model
   graphs belong under the competition folder or its namespaced descendants.
-- Submission deadline recorded for this event: 2026-09-01. Recheck the live
-  submission portal before final delivery; never infer an extension.
+- Recheck the live submission portal for the current deadline before final
+  delivery; never store participant-specific deadlines in this repository.
 
-Run `competition-home --create --migrate-legacy` instead of manually using the
-resource-tree menu. It is idempotent, accepts only the direct personal-workspace
-location, and verifies the saved folder after mutation.
+Run `competition-home --create` instead of manually using the resource-tree
+menu. To relabel a direct legacy school folder, use
+`competition-home --migrate-legacy --confirm-name <exactLegacyFolderName>`.
+Migration requires the exact selected name, write permission, direct personal-
+workspace placement, and a verified saved result.
 
 ## Allowed platform stages
 
@@ -42,9 +44,10 @@ this profile is active.
 - Do not add private, purchased, partner-supplied, scraped-without-permission,
   or unrelated third-party data.
 - `upload` requires `--source-url <public-http(s)-url>` while this profile is
-  active. Local, loopback, private-network, credential-bearing, and non-HTTP(S)
-  URLs are rejected.
-- The source URL is provenance evidence, not proof of a compatible license.
+  active. Local/private names and address literals, credential-bearing URLs,
+  non-HTTP(S) URLs, DNS failures, and hostnames with any private DNS answer are
+  rejected. The source URL is still provenance evidence, not proof of ownership
+  or a compatible license.
   Verify access terms and redistribution rights before submission.
 - Keep candidate datasets isolated. Never join or append outcome rows across
   candidates before the final dataset is selected.
@@ -62,21 +65,25 @@ this profile is active.
 
 ## Resource management
 
-- Every team-owned artifact keeps the configured namespace (`MJY_` in the
-  current project). Visible aliases must add business meaning rather than only
+- Every team-owned artifact keeps the configured namespace (`TEAM_` in public
+  examples). Visible aliases must add business meaning rather than only
   `FINAL`, `MODEL`, `DASH`, `CONTEXT`, or similar technical status words.
 - Namespaced source/materialized tables in the authenticated personal acquisition
   folder may receive business aliases through `resource-rename`; their physical
   names and table IDs remain stable for ETL dependencies.
-- Use `catalog-audit`, `folder-create`, `resource-rename`, `resource-move`,
-  `resource-copy`, and `resource-delete`. Routine resource management MUST NOT
-  be performed through manual Playwright clicks.
+- Use `catalog-audit`, `folder-create`, `resource-rename`, and
+  `resource-delete`; `resource-move` and `resource-copy` are general-profile
+  commands only. Routine resource management MUST NOT use manual Playwright.
+- Competition mode rejects generic `resource-move` and `resource-copy`; build
+  artifacts in their final candidate folder instead of relocating or cloning
+  them across lineage boundaries.
 - Each mutation checks direct parent-child ownership, exact-name confirmation,
-  target collisions, permissions, and postconditions. Folder copy is recursive
-  and attempts rollback if a child copy fails.
-- Never mutate another participant's resource. Physical internal names may stay
-  stable when a visible alias is updated; IDs and dependency links must not be
-  recreated merely to change display text.
+  target collisions, permissions, and postconditions. Every deletion,
+  materialized overwrite, analysis/dashboard repair, Agent deployment, and
+  legacy-folder migration requires the exact selected name. Folder copy is
+  available only on general tenants and attempts rollback if a child copy fails.
+- Keep physical names stable when a visible alias is updated; IDs and dependency
+  links must not be recreated merely to change display text.
 
 ## Completion evidence
 

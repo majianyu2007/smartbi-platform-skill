@@ -19,9 +19,9 @@ test('resource-delete parser accepts one exact-name confirmation', () => {
     parseResourceDeleteArgs(['parent', 'resource', '--confirm-name', 'Legacy Table']),
     { parentId: 'parent', resourceId: 'resource', confirmName: 'Legacy Table' },
   );
-  assert.deepEqual(
-    parseResourceDeleteArgs(['parent', 'resource']),
-    { parentId: 'parent', resourceId: 'resource', confirmName: null },
+  assert.throws(
+    () => parseResourceDeleteArgs(['parent', 'resource']),
+    /requires --confirm-name/,
   );
 });
 
@@ -43,11 +43,20 @@ test('resource-delete parser rejects malformed confirmation options', () => {
   );
 });
 
-test('namespaced resources remain deletable from approved parents', () => {
+test('namespaced resource deletion requires an exact confirmed name', () => {
   for (const parentKind of Object.values(DELETION_PARENT_KINDS)) {
+    assert.throws(
+      () => authorizeResourceDeletion({ resource: table, isNamespaced: true, parentKind }),
+      /requires --confirm-name/,
+    );
     assert.deepEqual(
-      authorizeResourceDeletion({ resource: table, isNamespaced: true, parentKind }),
-      { legacy: false, confirmedName: null },
+      authorizeResourceDeletion({
+        resource: table,
+        isNamespaced: true,
+        parentKind,
+        confirmName: 'Legacy Table',
+      }),
+      { legacy: false, confirmedName: 'Legacy Table' },
     );
   }
 });

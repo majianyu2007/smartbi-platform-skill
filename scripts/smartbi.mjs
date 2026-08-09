@@ -19,7 +19,13 @@
 import { homedir } from 'node:os';
 import { randomBytes } from 'node:crypto';
 import { join, dirname } from 'node:path';
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { inspectEnvironment, loadPlaywright } from './install.mjs';
 import { createTransportCodec } from './transport-codec.mjs';
@@ -28,6 +34,11 @@ import {
   authorizeResourceDeletion,
   parseResourceDeleteArgs,
 } from './deletion-guard.mjs';
+import {
+  agentOutputResourceId,
+  assertAgentRunSucceeded,
+  isAgentTerminalState,
+} from './agent-state.mjs';
 import { normalizeCatalogElements } from './catalog-elements.mjs';
 import {
   auditAnalysisPresentation,
@@ -38,10 +49,14 @@ import { parseAichatStream } from './aichat-stream.mjs';
 import { dashboardGrid } from './dashboard-multi.mjs';
 import { auditDashboardPresentation } from './dashboard-presentation.mjs';
 import { summarizeDimensionKeys } from './dimension-profile.mjs';
-import { isEtlSuccessful, isEtlTerminalState } from './etl-state.mjs';
+import { assertEtlRunSucceeded, isEtlTerminalState } from './etl-state.mjs';
 import { layoutLinearEtlGraph } from './etl-layout.mjs';
 import {
+  assertCompetitionCatalogDestination,
+  assertCompetitionEtlGraph,
+  assertCompetitionSameCandidateParent,
   assertCompetitionTrainingCount,
+  assertCompetitionUnionAllowed,
   assertCompetitionUploadSource,
   assertProfileAllowsAgent,
   isCompetitionFolder,
@@ -88,15 +103,13 @@ function normalizeBaseUrl(value) {
 }
 
 const BASE_URL = normalizeBaseUrl(process.env.SMARTBI_BASE_URL || CONFIG.baseUrl || DEFAULT_BASE_URL);
-const PLATFORM_PROFILE = normalizePlatformProfile(
-  process.env.SMARTBI_PLATFORM_PROFILE
-    ? {
-        id: process.env.SMARTBI_PLATFORM_PROFILE,
-        schoolName: process.env.SMARTBI_SCHOOL_NAME || CONFIG.platformProfile?.schoolName,
-      }
-    : CONFIG.platformProfile,
-  BASE_URL,
-);
+const PROFILE_ENV_OVERRIDE = process.env.SMARTBI_PLATFORM_PROFILE || process.env.SMARTBI_SCHOOL_NAME
+  ? {
+      id: process.env.SMARTBI_PLATFORM_PROFILE || CONFIG.platformProfile?.id,
+      schoolName: process.env.SMARTBI_SCHOOL_NAME || CONFIG.platformProfile?.schoolName,
+    }
+  : CONFIG.platformProfile;
+const PLATFORM_PROFILE = normalizePlatformProfile(PROFILE_ENV_OVERRIDE, BASE_URL);
 const LOGIN_URL = `${BASE_URL}/index.jsp`;
 const CRED_FILE = process.env.SMARTBI_CRED_FILE
   || CONFIG.credFile
@@ -429,24 +442,69 @@ function assertReadOnlyRmi(className, methodName) {
   }
 }
 
-function assertSafeGenericPath(path, { post = false } = {}) {
-  let normalized;
-  try {
-    normalized = decodeURIComponent(String(path)).toLowerCase();
-  } catch {
-    throw new Error('API path contains invalid percent encoding');
+function assertSafeGenericPath(path, { post = false, base = 'smartbix' } = {}) {
+  const raw = String(path || '').trim();
+  if (
+    !raw
+    || /^[a-z][a-z\d+.-]*:/i.test(raw)
+    || raw.startsWith('//')
+    || /[\\#\u0000-\u001f\u007f]/.test(raw)
+  ) {
+    throw new Error('generic API replay requires a plain relative path');
   }
-  if (/(^|\/)(create|delete|remove|update|save|insert|deploy|publish|offline|train|build|run|stop|force|clear|copy|move|upload|import|login|logout)([/_.?=-]|$)/i.test(normalized)) {
-    throw new Error(`generic API replay refuses a mutating path: ${path}`);
+  let decoded = raw;
+  try {
+    for (let depth = 0; depth < 5; depth += 1) {
+      const next = decodeURIComponent(decoded);
+      if (next === decoded) break;
+      decoded = next;
+      if (depth === 4 && decodeURIComponent(decoded) !== decoded) {
+        throw new Error('excessive percent encoding');
+      }
+    }
+  } catch {
+    throw new Error('API path contains invalid or excessive percent encoding');
   }
   if (
-    post
-    && normalized !== 'datasets/table'
-    && !normalized.startsWith('adhocanalysis/data/')
-    && !/(^|\/)(get|list|search|query|preview|status|check|validate|inspect|resolve|lookup|field)([/_.?=-]|$)/i.test(normalized)
+    /^[a-z][a-z\d+.-]*:/i.test(decoded)
+    || decoded.startsWith('//')
+    || /[\\#\u0000-\u001f\u007f]/.test(decoded)
+    || /(^|\/)\.{1,2}(?:[;/]|$)/.test(decoded)
+    || decoded.split('?')[0].split('/').some((segment) => segment.includes(';'))
   ) {
-    throw new Error(`generic POST only permits read-only discovery/query paths: ${path}`);
+    throw new Error(`generic API replay refuses a non-canonical path: ${path}`);
   }
+  const parsed = new URL(decoded, 'https://smartbi.invalid/');
+  if (
+    parsed.origin !== 'https://smartbi.invalid'
+    || parsed.username
+    || parsed.password
+    || [...parsed.searchParams.keys()].some((key) => (
+      /^(?:_?method|httpmethod|x-http-method-override)$/i.test(key)
+    ))
+  ) {
+    throw new Error(`generic API replay refuses routing or method overrides: ${path}`);
+  }
+  const canonical = `${parsed.pathname.replace(/^\/+/, '')}${parsed.search}`;
+  const normalized = canonical.toLowerCase();
+  const explicitlySafePost = post && (
+    base === 'smartbix'
+      ? (
+        normalized === 'datasets/table'
+        || /^adhocanalysis\/data\/[^/?]+(?:\?.*)?$/.test(normalized)
+      )
+      : /^cgi\/aichat-train\/validate_field_data_count\/[^/?]+(?:\?.*)?$/.test(normalized)
+  );
+  if (
+    !explicitlySafePost
+    && /(^|\/)(create|delete|remove|update|save|insert|deploy|publish|offline|train|build|run|stop|force|clear|copy|move|upload|import|login|logout|put|patch|write|set|edit|modify)([/_.?=-]|$)/i.test(normalized)
+  ) {
+    throw new Error(`generic API replay refuses a mutating path: ${path}`);
+  }
+  if (post && !explicitlySafePost) {
+    throw new Error(`generic POST only permits explicitly allowlisted read-only endpoints: ${path}`);
+  }
+  return canonical;
 }
 
 async function cmdInvoke(className, methodName, paramsJson) {
@@ -459,39 +517,27 @@ async function cmdInvoke(className, methodName, paramsJson) {
 }
 
 async function cmdApiGet(path) {
-  if (!path || /^https?:/i.test(path) || String(path).includes('..')) {
-    throw new Error('api-get requires a relative Smartbix API path');
-  }
-  assertSafeGenericPath(path);
+  const canonical = assertSafeGenericPath(path);
   await ensureSession();
-  safeOutput(await smartbixApi(path));
+  safeOutput(await smartbixApi(canonical));
 }
 
 async function cmdApiPost(path, bodyJson = '{}') {
-  if (!path || /^https?:/i.test(path) || String(path).includes('..')) {
-    throw new Error('api-post requires a relative Smartbix API path');
-  }
-  assertSafeGenericPath(path, { post: true });
+  const canonical = assertSafeGenericPath(path, { post: true, base: 'smartbix' });
   await ensureSession();
-  safeOutput(await smartbixApi(path, { method: 'POST', body: JSON.parse(bodyJson) }));
+  safeOutput(await smartbixApi(canonical, { method: 'POST', body: JSON.parse(bodyJson) }));
 }
 
 async function cmdPlainGet(path) {
-  if (!path || /^https?:/i.test(path) || String(path).includes('..')) {
-    throw new Error('plain-get requires a relative Smartbi root API path');
-  }
-  assertSafeGenericPath(path);
+  const canonical = assertSafeGenericPath(path, { base: 'plain' });
   await ensureSession();
-  safeOutput(await plainJsonRequest(path, { method: 'GET' }));
+  safeOutput(await plainJsonRequest(canonical, { method: 'GET' }));
 }
 
 async function cmdPlainPost(path, bodyJson = '{}') {
-  if (!path || /^https?:/i.test(path) || String(path).includes('..')) {
-    throw new Error('plain-post requires a relative Smartbi root API path');
-  }
-  assertSafeGenericPath(path, { post: true });
+  const canonical = assertSafeGenericPath(path, { post: true, base: 'plain' });
   await ensureSession();
-  safeOutput(await plainJsonRequest(path, { body: JSON.parse(bodyJson) }));
+  safeOutput(await plainJsonRequest(canonical, { body: JSON.parse(bodyJson) }));
 }
 
 function replaceExactStrings(value, replacements) {
@@ -798,11 +844,32 @@ async function cmdModelGet(modelId) {
   safeOutput(requireNamespacedResource(await loadModel(modelId), 'model'));
 }
 
-async function cmdModelCreate(parentId, dataSourceId, tableId, tableName, requestedName, description = '') {
+async function cmdModelCreate(
+  parentId,
+  dataSourceId,
+  tableId,
+  tableName,
+  requestedName,
+  description = '',
+  sourceFlowId = null,
+) {
   if (![parentId, dataSourceId, tableId, tableName, requestedName].every(Boolean)) {
-    throw new Error('model-create requires <parentId> <dataSourceId> <tableId> <tableName> <name> [description]');
+    throw new Error(
+      'model-create requires <parentId> <dataSourceId> <tableId> <tableName> <name> '
+      + '[description] [--etl-flow <flowId>]',
+    );
+  }
+  if (PLATFORM_PROFILE && !sourceFlowId) {
+    throw new Error('competition model-create requires --etl-flow <ownedFlowId>');
   }
   await assertOwnedCatalogParent(parentId);
+  const lineage = await assertCompetitionModelLineage({
+    parentId,
+    dataSourceId,
+    tableId,
+    tableName,
+    sourceFlowId,
+  });
   await ensureSession();
   const table = await smartbixApi('datasets/table', {
     method: 'POST',
@@ -826,12 +893,38 @@ async function cmdModelCreate(parentId, dataSourceId, tableId, tableName, reques
     fieldCount: saved.fields?.length || 0,
     measureCount: saved.measures?.length || 0,
     viewCount: saved.views?.length || 0,
+    lineage,
   });
+}
+
+async function cmdModelCreateArgs(argsList) {
+  const positional = [];
+  let sourceFlowId = null;
+  for (let index = 0; index < argsList.length; index += 1) {
+    const argument = argsList[index];
+    if (argument === '--etl-flow') {
+      sourceFlowId = argsList[index + 1];
+      if (!sourceFlowId || sourceFlowId.startsWith('--')) {
+        throw new Error('--etl-flow requires an owned ETL flow id');
+      }
+      index += 1;
+      continue;
+    }
+    if (argument.startsWith('--')) throw new Error(`unknown model-create option: ${argument}`);
+    positional.push(argument);
+  }
+  if (positional.length > 6) {
+    throw new Error('model-create accepts at most six positional arguments');
+  }
+  await cmdModelCreate(...positional, sourceFlowId);
 }
 
 async function cmdModelClone(parentId, sourceModelId, requestedName, description = '') {
   if (![parentId, sourceModelId, requestedName].every(Boolean)) {
     throw new Error('model-clone requires <parentId> <sourceModelId> <name> [description]');
+  }
+  if (PLATFORM_PROFILE) {
+    throw new Error('competition model-clone is prohibited; use model-create --etl-flow <ownedFlowId>');
   }
   await assertOwnedCatalogParent(parentId);
   const source = await loadModel(sourceModelId);
@@ -1056,6 +1149,7 @@ async function cmdAnalysisCreate(
     throw new Error('analysis-create requires <parentId> <modelId> <rowField> <measure> <name> [description]');
   }
   await assertOwnedCatalogParent(parentId);
+  await assertCompetitionResourceDirectChild(parentId, modelId, 'model');
   const model = await loadModel(modelId);
   requireNamespacedResource(model, 'model');
   const report = buildAnalysisReport(
@@ -1091,6 +1185,29 @@ async function cmdAnalysisCreate(
   });
 }
 
+async function cmdAnalysisRepairArgs(argsList) {
+  const { positional, confirmation } = parseExactConfirmationArgs(
+    argsList,
+    'analysis-repair',
+    '--confirm-name',
+  );
+  if (positional.length < 5) {
+    throw new Error(
+      'analysis-repair requires <analysisId> <rowField> <measure> <rowLabel> '
+      + '<measureLabel> [description] --confirm-name <exactAnalysisName>',
+    );
+  }
+  await cmdAnalysisRepair(
+    positional[0],
+    positional[1],
+    positional[2],
+    positional[3],
+    positional[4],
+    positional.slice(5).join(' '),
+    confirmation,
+  );
+}
+
 async function cmdAnalysisRepair(
   analysisId,
   rowFieldName,
@@ -1098,17 +1215,24 @@ async function cmdAnalysisRepair(
   rowLabel,
   measureLabel,
   description = '',
+  confirmName = null,
 ) {
   if (![analysisId, rowFieldName, measureFieldName, rowLabel, measureLabel].every(Boolean)) {
     throw new Error(
-      'analysis-repair requires <analysisId> <rowField> <measure> <rowLabel> <measureLabel> [description]',
+      'analysis-repair requires <analysisId> <rowField> <measure> <rowLabel> '
+      + '<measureLabel> [description] --confirm-name <exactAnalysisName>',
     );
   }
   const { report: current } = await loadAnalysis(analysisId);
   requireNamespacedResource(current, 'analysis');
+  assertExactResourceConfirmation(current, confirmName);
   const currentTable = current.define?.portlets?.find((portlet) => portlet.type === 'CROSS_TABLE');
   const modelId = currentTable?.extended?.dataSource?.id;
   if (!modelId) throw new Error('analysis has no model-backed CROSS_TABLE');
+  if (PLATFORM_PROFILE) {
+    const analysisParentId = await locateCompetitionResourceParent(analysisId, 'analysis');
+    await assertCompetitionResourceDirectChild(analysisParentId, modelId, 'model');
+  }
   const model = await loadModel(modelId);
   requireNamespacedResource(model, 'model');
 
@@ -1227,6 +1351,7 @@ async function cmdAnalysisClone(parentId, sourceAnalysisId, requestedName, descr
     throw new Error('analysis-clone requires <parentId> <sourceAnalysisId> <name> [description]');
   }
   await assertOwnedCatalogParent(parentId);
+  await assertCompetitionResourceDirectChild(parentId, sourceAnalysisId, 'source analysis');
   const { report: source } = await loadAnalysis(sourceAnalysisId);
   requireNamespacedResource(source, 'source analysis');
   const report = structuredClone(source);
@@ -1515,6 +1640,7 @@ async function cmdDashboardCreateMulti(parentId, modelId, requestedName, chartsJ
     );
   }
   await assertOwnedCatalogParent(parentId);
+  await assertCompetitionResourceDirectChild(parentId, modelId, 'model');
   const model = await loadModel(modelId);
   requireNamespacedResource(model, 'model');
   const { dashboard, charts } = buildMultiBarDashboard(
@@ -1543,21 +1669,49 @@ async function cmdDashboardCreateMulti(parentId, modelId, requestedName, chartsJ
   });
 }
 
+async function cmdDashboardRepairMultiArgs(argsList) {
+  const { positional, confirmation } = parseExactConfirmationArgs(
+    argsList,
+    'dashboard-repair-multi',
+    '--confirm-name',
+  );
+  if (positional.length < 3) {
+    throw new Error(
+      'dashboard-repair-multi requires <dashboardId> <modelId> <chartsJson> '
+      + '[description] --confirm-name <exactDashboardName>',
+    );
+  }
+  await cmdDashboardRepairMulti(
+    positional[0],
+    positional[1],
+    positional[2],
+    positional.slice(3).join(' '),
+    confirmation,
+  );
+}
+
 async function cmdDashboardRepairMulti(
   dashboardId,
   modelId,
   chartsJson,
   description = '',
+  confirmName = null,
 ) {
   if (![dashboardId, modelId, chartsJson].every(Boolean)) {
     throw new Error(
-      'dashboard-repair-multi requires <dashboardId> <modelId> <chartsJson> [description]',
+      'dashboard-repair-multi requires <dashboardId> <modelId> <chartsJson> '
+      + '[description] --confirm-name <exactDashboardName>',
     );
   }
   const current = requireNamespacedResource(
     await loadDashboard(dashboardId),
     'dashboard',
   );
+  assertExactResourceConfirmation(current, confirmName);
+  if (PLATFORM_PROFILE) {
+    const dashboardParentId = await locateCompetitionResourceParent(dashboardId, 'dashboard');
+    await assertCompetitionResourceDirectChild(dashboardParentId, modelId, 'model');
+  }
   const model = await loadModel(modelId);
   requireNamespacedResource(model, 'model');
   const { dashboard: rebuilt, charts } = buildMultiBarDashboard(
@@ -1607,6 +1761,7 @@ async function cmdDashboardCreate(
     throw new Error('dashboard-create requires <parentId> <modelId> <dimension> <measure> <name> [chartTitle]');
   }
   await assertOwnedCatalogParent(parentId);
+  await assertCompetitionResourceDirectChild(parentId, modelId, 'model');
   const model = await loadModel(modelId);
   requireNamespacedResource(model, 'model');
   const dashboard = buildBarDashboard(
@@ -1649,6 +1804,7 @@ async function cmdDashboardClone(parentId, sourceDashboardId, requestedName, des
     throw new Error('dashboard-clone requires <parentId> <sourceDashboardId> <name> [description]');
   }
   await assertOwnedCatalogParent(parentId);
+  await assertCompetitionResourceDirectChild(parentId, sourceDashboardId, 'source dashboard');
   const source = await loadDashboard(sourceDashboardId);
   requireNamespacedResource(source, 'source dashboard');
   const replacements = new Map([[source.id, resourceId()]]);
@@ -1919,6 +2075,23 @@ async function cmdAichatGraphBuild(modelId, fieldSelectorsCsv) {
   const { model, fields } = await loadAichatGraphFields(modelId);
   const selected = resolveGraphFields(fields, selectors);
   const fieldIds = selected.map((field) => field.id);
+  let validation = null;
+  const validateFields = async () => {
+    const result = graphResult(
+      await plainJsonRequest(
+        `cgi/aichat-train/validate_field_data_count/${encodeURIComponent(model.id)}`,
+        { body: { fieldIds } },
+      ),
+      'validate model graph fields',
+    );
+    assertCompetitionTrainingCount(PLATFORM_PROFILE, result);
+    if (!result?.valid) {
+      throw new Error(`model graph field validation failed: ${result?.message || 'unknown reason'}`);
+    }
+    return result;
+  };
+  if (PLATFORM_PROFILE) validation = await validateFields();
+
   const existing = (await listAichatGraphNodes(model.name)).find((item) => item.id === model.id);
   const existingExtended = parseGraphExtended(existing);
   const existingFields = existingExtended.trainOption?.fields || [];
@@ -1934,20 +2107,11 @@ async function cmdAichatGraphBuild(modelId, fieldSelectorsCsv) {
       status: 'SUCCESS',
       reused: true,
       fields: selected,
+      validationCount: validation ? assertCompetitionTrainingCount(PLATFORM_PROFILE, validation) : null,
     });
     return;
   }
-  const validation = graphResult(
-    await plainJsonRequest(
-      `cgi/aichat-train/validate_field_data_count/${encodeURIComponent(model.id)}`,
-      { body: { fieldIds } },
-    ),
-    'validate model graph fields',
-  );
-  assertCompetitionTrainingCount(PLATFORM_PROFILE, validation);
-  if (!validation?.valid) {
-    throw new Error(`model graph field validation failed: ${validation?.message || 'unknown reason'}`);
-  }
+  if (!validation) validation = await validateFields();
   const trainResult = graphResult(
     await plainJsonRequest(
       `cgi/aichat-train/train-resource/${encodeURIComponent(model.id)}`,
@@ -2173,42 +2337,69 @@ async function cmdAgentRun(agentId, question) {
   for (let attempt = 0; attempt < 180; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 1000));
     state = await smartbixApi(`dataagent/flow/nodestate/${encodeURIComponent(instanceId)}`);
-    if (['FINISH', 'ERROR', 'FAILED', 'KILLED', 'STOP'].includes(state?.state)) break;
+    if (isAgentTerminalState(state?.state)) break;
   }
-  if (!state || !['FINISH', 'ERROR', 'FAILED', 'KILLED', 'STOP'].includes(state.state)) {
+  if (!state || !isAgentTerminalState(state.state)) {
     throw new Error(`Agent run timed out: ${instanceId}`);
   }
+  if (state.state !== 'FINISH') {
+    throw new Error(`Agent run failed with state ${state.state}: ${instanceId}`);
+  }
 
+  const failedNodes = (state.nodeStates || []).filter((node) => node.state !== 'FINISH');
+  if (!Array.isArray(state.nodeStates) || state.nodeStates.length === 0 || failedNodes.length > 0) {
+    throw new Error(
+      `Agent run did not finish every node: ${failedNodes.map((node) => (
+        `${node.alias || node.name || node.id}:${node.state || 'UNKNOWN'}`
+      )).join(',') || 'node states unavailable'}`,
+    );
+  }
   const outputs = [];
-  for (const node of state.nodeStates || []) {
+  for (const node of state.nodeStates) {
     if (node.name !== 'LLM') continue;
-    const values = await smartbixApi(`dataagent/output/${encodeURIComponent(node.id)}`);
+    const outputId = agentOutputResourceId(node.id, instanceId);
+    const values = await smartbixApi(`dataagent/output/${encodeURIComponent(outputId)}`);
     for (const item of Array.isArray(values) ? values : []) {
-      if (item?.value?.result_content) {
+      const content = String(item?.value?.result_content || '').trim();
+      if (content) {
         outputs.push({
           nodeId: node.id,
           node: node.alias || node.name,
-          content: item.value.result_content,
+          content,
           inputTokens: item.value.input_tokens ?? null,
           outputTokens: item.value.output_tokens ?? null,
         });
       }
     }
   }
+  const answer = assertAgentRunSucceeded(state, outputs);
   safeOutput({
-    ok: state.state === 'FINISH',
+    ok: true,
     id: instanceId,
     agent: { id: agent.id, name: agent.name },
     state: state.state,
-    answer: outputs.at(-1)?.content || null,
+    answer,
     outputs,
     nodeStates: state.nodeStates,
   });
 }
 
-async function cmdAgentDeploy(agentId) {
+async function cmdAgentDeployArgs(argsList) {
+  const { positional, confirmation } = parseExactConfirmationArgs(
+    argsList,
+    'agent-deploy',
+    '--confirm-name',
+  );
+  if (positional.length !== 1) {
+    throw new Error('agent-deploy requires <agentId> --confirm-name <exactAgentName>');
+  }
+  await cmdAgentDeploy(positional[0], confirmation);
+}
+
+async function cmdAgentDeploy(agentId, confirmName) {
   assertProfileAllowsAgent(PLATFORM_PROFILE);
   const agent = await loadAgent(agentId, true);
+  assertExactResourceConfirmation(agent, confirmName);
   let deployment = await smartbixApi(`dataagent/deploy/agent/${encodeURIComponent(agent.id)}`);
   if (!Array.isArray(deployment) || deployment.length === 0) {
     await smartbixApi('dataagent/relation/create', {
@@ -2303,13 +2494,12 @@ async function assertOwnedCatalogParent(
   {
     allowSelfRoot = false,
     allowAgentRoot = false,
-    allowProfileDestination = false,
   } = {},
 ) {
   const selfRoot = await loadSelfRoot();
   const agentRootId = `SELF_AGENT_GRAPHS_${String(selfRoot.id).replace(/^SELF_/, '')}`;
-  if (allowSelfRoot && parentId === selfRoot.id) return selfRoot;
-  if (allowAgentRoot && parentId === agentRootId) {
+  if (!PLATFORM_PROFILE && allowSelfRoot && parentId === selfRoot.id) return selfRoot;
+  if (!PLATFORM_PROFILE && allowAgentRoot && parentId === agentRootId) {
     return loadCatalogElement(agentRootId, 'agent workspace root');
   }
   const parent = await loadCatalogElement(parentId, 'catalog parent');
@@ -2320,20 +2510,28 @@ async function assertOwnedCatalogParent(
   const ownedRoots = new Set([selfRoot.id]);
   if (allowAgentRoot) ownedRoots.add(agentRootId);
   const path = pathResponse.result || [];
+  const allowedExactRoot = (allowSelfRoot && parentId === selfRoot.id)
+    || (allowAgentRoot && parentId === agentRootId);
   if (
     pathResponse.retCode !== 0
-    || !path.some((node) => ownedRoots.has(node.id))
+    || (!allowedExactRoot && !path.some((node) => ownedRoots.has(node.id)))
   ) {
     throw new Error(`catalog parent is outside the current personal workspace: ${parentId}`);
+  }
+  let competitionDestination = false;
+  if (PLATFORM_PROFILE) {
+    const personalChildren = await listCatalogChildren(selfRoot.id, 'personal workspace root');
+    const competitionRoot = assertCompetitionCatalogDestination(PLATFORM_PROFILE, {
+      personalRootId: selfRoot.id,
+      parent,
+      path,
+      personalChildren,
+    });
+    competitionDestination = parent.id === competitionRoot.id;
   }
   const namespaced = hasNamespace(parent.name) || hasNamespace(parent.alias);
   const ownedModelFolder = parent.type === 'AUGMENTED_DATASET_FOLDER'
     && path.some((node) => hasNamespace(node.name) || hasNamespace(node.alias));
-  let competitionDestination = false;
-  if (allowProfileDestination && isCompetitionFolder(PLATFORM_PROFILE, parent)) {
-    const selfChildren = await listCatalogChildren(selfRoot.id, 'personal workspace root');
-    competitionDestination = selfChildren.some((node) => node.id === parent.id);
-  }
   if (!namespaced && !ownedModelFolder && !competitionDestination) {
     throw new Error(`refusing a non-owned catalog parent: ${parentId}`);
   }
@@ -2348,7 +2546,6 @@ async function cmdFolderCreate(parentId, requestedName, description = '') {
   await assertOwnedCatalogParent(parentId, {
     allowSelfRoot: true,
     allowAgentRoot: true,
-    allowProfileDestination: true,
   });
   const name = applyNamespace(requestedName);
   const existingResult = await rmi('CatalogService', 'getChildElements', [parentId]);
@@ -2413,6 +2610,31 @@ function assertExactResourceConfirmation(resource, confirmName) {
   }
 }
 
+function parseExactConfirmationArgs(
+  argsList,
+  command,
+  flag = '--confirm-target',
+  { required = true } = {},
+) {
+  const positional = [];
+  let confirmation = null;
+  for (let index = 0; index < argsList.length; index += 1) {
+    const argument = argsList[index];
+    if (argument === flag) {
+      confirmation = argsList[index + 1];
+      if (!confirmation || confirmation.startsWith('--')) {
+        throw new Error(`${flag} requires an exact resource name`);
+      }
+      index += 1;
+      continue;
+    }
+    if (argument.startsWith('--')) throw new Error(`unknown ${command} option: ${argument}`);
+    positional.push(argument);
+  }
+  if (required && !confirmation) throw new Error(`${command} requires ${flag} <exactName>`);
+  return { positional, confirmation };
+}
+
 function assertNamespacedResource(resource) {
   if (!hasNamespace(resource.name) && !hasNamespace(resource.alias)) {
     throw new Error(`refusing a non-namespaced resource: ${resource.id}`);
@@ -2441,7 +2663,6 @@ async function loadOwnedDirectResource(
     await assertOwnedCatalogParent(parentId, {
       allowSelfRoot: true,
       allowAgentRoot: true,
-      allowProfileDestination: true,
     });
   }
   const children = await listCatalogChildren(parentId, 'resource parent');
@@ -2463,10 +2684,80 @@ function findCatalogConflict(children, name, ignoredId = null) {
   ));
 }
 
-async function cmdCompetitionHome(argsList) {
-  if (argsList.some((argument) => !['--create', '--migrate-legacy'].includes(argument))) {
-    throw new Error('competition-home accepts only [--create] [--migrate-legacy]');
+async function assertCompetitionResourceDirectChild(parentId, resourceId, label) {
+  if (!PLATFORM_PROFILE) return;
+  const children = await listCatalogChildren(parentId, 'candidate folder');
+  assertCompetitionSameCandidateParent(PLATFORM_PROFILE, {
+    parentId,
+    resourceId,
+    children,
+    label,
+  });
+}
+
+async function locateCompetitionResourceParent(resourceId, label) {
+  if (!PLATFORM_PROFILE) return null;
+  const selfRoot = await loadSelfRoot();
+  const personalChildren = await listCatalogChildren(selfRoot.id, 'personal workspace root');
+  const competitionRoot = personalChildren.find((node) => (
+    isCompetitionFolder(PLATFORM_PROFILE, node)
+  ));
+  if (!competitionRoot?.id) {
+    throw new Error(`competition resource folder is missing: ${PLATFORM_PROFILE.resourceFolderName}`);
   }
+  const queue = [competitionRoot.id];
+  const visited = new Set();
+  while (queue.length > 0 && visited.size < 10000) {
+    const parentId = queue.shift();
+    if (visited.has(parentId)) continue;
+    visited.add(parentId);
+    const children = await listCatalogChildren(parentId, `competition ${label} search`);
+    if (children.some((child) => child.id === resourceId)) return parentId;
+    for (const child of children) {
+      if (
+        child.hasChild
+        || ['DEFAULT_TREENODE', 'SELF_TREENODE', 'AUGMENTED_DATASET_FOLDER'].includes(child.type)
+      ) {
+        queue.push(child.id);
+      }
+    }
+  }
+  throw new Error(`competition ${label} is outside the competition folder: ${resourceId}`);
+}
+
+function parseCompetitionHomeArgs(argsList) {
+  const options = { create: false, migrateLegacy: false, confirmName: null };
+  for (let index = 0; index < argsList.length; index += 1) {
+    const argument = argsList[index];
+    if (argument === '--create') {
+      options.create = true;
+      continue;
+    }
+    if (argument === '--migrate-legacy') {
+      options.migrateLegacy = true;
+      continue;
+    }
+    if (argument === '--confirm-name') {
+      options.confirmName = argsList[index + 1];
+      if (!options.confirmName || options.confirmName.startsWith('--')) {
+        throw new Error('--confirm-name requires the exact legacy folder name');
+      }
+      index += 1;
+      continue;
+    }
+    throw new Error(`unknown competition-home option: ${argument}`);
+  }
+  if (options.migrateLegacy && !options.confirmName) {
+    throw new Error('competition-home --migrate-legacy requires --confirm-name <exactLegacyFolderName>');
+  }
+  if (options.confirmName && !options.migrateLegacy) {
+    throw new Error('competition-home --confirm-name is valid only with --migrate-legacy');
+  }
+  return options;
+}
+
+async function cmdCompetitionHome(argsList) {
+  const options = parseCompetitionHomeArgs(argsList);
   if (!PLATFORM_PROFILE) {
     throw new Error('competition-home requires platform profile competition-2026');
   }
@@ -2479,7 +2770,7 @@ async function cmdCompetitionHome(argsList) {
   let folder = matches[0];
   let created = false;
   let migratedLegacy = false;
-  if (!folder && argsList.includes('--migrate-legacy')) {
+  if (!folder && options.migrateLegacy) {
     const legacyMatches = children.filter((node) => (
       node.name === PLATFORM_PROFILE.schoolName || node.alias === PLATFORM_PROFILE.schoolName
     ));
@@ -2491,6 +2782,7 @@ async function cmdCompetitionHome(argsList) {
       if (!['DEFAULT_TREENODE', 'SELF_TREENODE'].includes(legacy.type)) {
         throw new Error(`legacy competition destination is not a folder: ${legacy.id}`);
       }
+      assertExactResourceConfirmation(legacy, options.confirmName);
       await assertCatalogPermission(legacy.id, 'WRITE', 'competition folder migration');
       const detail = await loadCatalogElement(legacy.id);
       const renamed = await rmi('CatalogService', 'updateCatalogNode', [
@@ -2512,7 +2804,7 @@ async function cmdCompetitionHome(argsList) {
       migratedLegacy = true;
     }
   }
-  if (!folder && argsList.includes('--create')) {
+  if (!folder && options.create) {
     const createdResult = await rmi('CatalogService', 'createFolderElement', [
       selfRoot.id,
       PLATFORM_PROFILE.resourceFolderName,
@@ -2626,18 +2918,19 @@ async function cmdResourceMove(argsList) {
     ['sourceParentId', 'resourceId', 'targetParentId'],
     'resource-move',
   );
+  if (PLATFORM_PROFILE) {
+    throw new Error('competition resource-move is prohibited; create artifacts in their final candidate folder');
+  }
   if (sourceParentId === targetParentId) {
     throw new Error('resource-move source and target parents must differ');
   }
   await assertOwnedCatalogParent(sourceParentId, {
     allowSelfRoot: true,
     allowAgentRoot: true,
-    allowProfileDestination: true,
   });
   await assertOwnedCatalogParent(targetParentId, {
     allowSelfRoot: true,
     allowAgentRoot: true,
-    allowProfileDestination: true,
   });
   const [sourceChildren, targetChildren] = await Promise.all([
     listCatalogChildren(sourceParentId, 'source parent'),
@@ -2790,12 +3083,14 @@ async function cmdResourceCopy(argsList) {
     ['sourceParentId', 'resourceId', 'targetParentId', 'requestedName'],
     'resource-copy',
   );
+  if (PLATFORM_PROFILE) {
+    throw new Error('competition resource-copy is prohibited; rebuild from verified same-candidate lineage');
+  }
   const { resource } = await loadOwnedDirectResource(sourceParentId, resourceId);
   assertExactResourceConfirmation(resource, confirmName);
   await assertOwnedCatalogParent(targetParentId, {
     allowSelfRoot: true,
     allowAgentRoot: true,
-    allowProfileDestination: true,
   });
   const name = applyNamespace(requestedName);
   await assertCatalogPermission(targetParentId, 'WRITE', 'copy target parent');
@@ -2826,7 +3121,6 @@ async function resolveDeletionParentKind(parentId) {
     await assertOwnedCatalogParent(parentId, {
       allowSelfRoot: true,
       allowAgentRoot: true,
-      allowProfileDestination: true,
     });
     return DELETION_PARENT_KINDS.OWNED_CATALOG;
   } catch (error) {
@@ -2912,9 +3206,18 @@ async function locatePersonalFolder() {
 async function cmdUpload(
   filePath,
   tableName,
-  { previewRows = 30, sheetIndex = 0, replace = false } = {},
+  {
+    previewRows = 30,
+    sheetIndex = 0,
+    replace = false,
+    sourceUrl = null,
+    confirmTargetName = null,
+  } = {},
 ) {
   if (!filePath) throw new Error('upload requires <file> [tableName] [--replace]');
+  if (replace && !confirmTargetName) {
+    throw new Error('upload --replace requires --confirm-target <exactExistingTableName>');
+  }
   const stats = (await import('node:fs')).statSync(filePath);
   if (!stats.isFile()) throw new Error(`not a file: ${filePath}`);
   if (!/\.(csv|txt|xlsx|xls)$/i.test(filePath)) {
@@ -2945,6 +3248,7 @@ async function cmdUpload(
   if (existing && !hasNamespace(existing.alias || existing.name)) {
     throw new Error(`refusing to replace non-namespaced table: ${existing.alias || existing.name}`);
   }
+  if (existing && replace) assertExactResourceConfirmation(existing, confirmTargetName);
 
   const form = new FormData();
   form.append('action', 'UPLOAD_FILE');
@@ -3003,7 +3307,7 @@ async function cmdUpload(
       });
       assertReplacementSchemaCompatible(
         existingTable?.fields,
-        resolvedFieldNames,
+        resolvedFieldNames.map((name, index) => ({ name, dataType: fieldTypeList[index] })),
         table,
       );
     }
@@ -3050,6 +3354,7 @@ async function cmdUpload(
           rows: Math.max(0, Number(status.result.rowCount ?? rowCount ?? 1) - 1),
           fields: resolvedFieldNames,
           replaced: Boolean(existing),
+          sourceUrl,
         });
         return;
       }
@@ -3077,6 +3382,7 @@ async function cmdUpload(
 async function cmdUploadArgs(argsList) {
   let replace = false;
   let sourceUrl = null;
+  let confirmTargetName = null;
   const positional = [];
   for (let index = 0; index < argsList.length; index += 1) {
     const argument = argsList[index];
@@ -3092,14 +3398,31 @@ async function cmdUploadArgs(argsList) {
       index += 1;
       continue;
     }
+    if (argument === '--confirm-target') {
+      confirmTargetName = argsList[index + 1];
+      if (!confirmTargetName || confirmTargetName.startsWith('--')) {
+        throw new Error('--confirm-target requires the exact existing table name');
+      }
+      index += 1;
+      continue;
+    }
     if (argument.startsWith('--')) throw new Error(`unknown upload option: ${argument}`);
     positional.push(argument);
   }
   if (positional.length > 2) {
-    throw new Error('upload accepts only <file> [tableName] [--replace] [--source-url <url>]');
+    throw new Error(
+      'upload accepts only <file> [tableName] [--replace] '
+      + '[--confirm-target <exactName>] [--source-url <url>]',
+    );
   }
-  assertCompetitionUploadSource(PLATFORM_PROFILE, sourceUrl);
-  await cmdUpload(positional[0], positional[1], { replace });
+  const verifiedSourceUrl = PLATFORM_PROFILE
+    ? await assertCompetitionUploadSource(PLATFORM_PROFILE, sourceUrl)
+    : sourceUrl;
+  await cmdUpload(positional[0], positional[1], {
+    replace,
+    sourceUrl: verifiedSourceUrl,
+    confirmTargetName,
+  });
 }
 
 function parseImportedTableId(tableId) {
@@ -3112,6 +3435,76 @@ function parseImportedTableId(tableId) {
     dataSourceId: `DS.${catalog}`,
     schemaId: `SCHEMA.${catalog}.${schema}.${nullMarker}`,
     tableName: tableNameParts.join('.'),
+  };
+}
+
+function parseEtlTargetReference(graph) {
+  const targets = (graph?.nodes || []).filter((node) => (
+    node?.type === 'JDBC_DATATARGER_OVERWRITE'
+    || node?.name === 'JDBC_DATATARGER_OVERWRITE'
+  ));
+  if (targets.length !== 1) {
+    throw new Error(`ETL must contain exactly one materialized target; found ${targets.length}`);
+  }
+  const target = targets[0];
+  const config = (target.configs || []).find((item) => item.name === 'jdbcTarget');
+  if (!config?.value) throw new Error('ETL materialized target has no jdbcTarget configuration');
+  let value;
+  try {
+    value = typeof config.value === 'string' ? JSON.parse(config.value) : config.value;
+  } catch {
+    throw new Error('ETL materialized target configuration is not valid JSON');
+  }
+  const physicalTableName = String(value?.tableId || '').trim();
+  const schemaSuffix = String(value?.schemaId || '').replace(/^SCHEMA\./, '');
+  const importedTableId = target.smartbiCliTargetTableId
+    || (physicalTableName && schemaSuffix ? `TAB.${schemaSuffix}.${physicalTableName}` : null);
+  if (!value?.datasourceId || !physicalTableName || !importedTableId) {
+    throw new Error('ETL materialized target configuration is incomplete');
+  }
+  return {
+    nodeId: target.id,
+    dataSourceId: value.datasourceId,
+    schemaId: value.schemaId,
+    physicalTableName,
+    tableId: importedTableId,
+  };
+}
+
+async function assertCompetitionModelLineage({
+  parentId,
+  dataSourceId,
+  tableId,
+  tableName,
+  sourceFlowId,
+}) {
+  if (!PLATFORM_PROFILE) return null;
+  if (!sourceFlowId) {
+    throw new Error('competition model-create requires --etl-flow <ownedFlowId>');
+  }
+  const { processDag, graph } = await loadEtlFlow(sourceFlowId, { requireOwned: true });
+  assertCompetitionEtlGraph(PLATFORM_PROFILE, graph);
+  if (processDag.pid !== parentId) {
+    throw new Error('competition model and source ETL must use the same candidate folder');
+  }
+  const target = parseEtlTargetReference(graph);
+  const requestedTable = parseImportedTableId(tableId);
+  const expectedNames = new Set(
+    [tableId, tableName, requestedTable.tableName].map((value) => String(value).toLocaleLowerCase()),
+  );
+  if (
+    target.dataSourceId !== dataSourceId
+    || ![target.tableId, target.physicalTableName]
+      .some((value) => expectedNames.has(String(value).toLocaleLowerCase()))
+  ) {
+    throw new Error(
+      `competition model source does not match ETL materialized target: ${sourceFlowId}`,
+    );
+  }
+  return {
+    flowId: processDag.id,
+    flowName: processDag.name,
+    targetTableId: target.tableId,
   };
 }
 
@@ -3140,6 +3533,25 @@ function connectEtlNodes(left, right) {
   };
 }
 
+async function cmdEtlCreateArgs(argsList) {
+  const { positional, confirmation } = parseExactConfirmationArgs(argsList, 'etl-create');
+  if (positional.length < 4 || positional.length > 6) {
+    throw new Error(
+      'etl-create requires <parentId> <sourceTableId> <targetTableId> <name> '
+      + '[rowNumber|-] [description] --confirm-target <exactTargetName>',
+    );
+  }
+  await cmdEtlCreate(
+    positional[0],
+    positional[1],
+    positional[2],
+    positional[3],
+    positional[4],
+    positional[5],
+    confirmation,
+  );
+}
+
 async function cmdEtlCreate(
   parentId,
   sourceTableId,
@@ -3147,10 +3559,12 @@ async function cmdEtlCreate(
   requestedName,
   rowNumber = '-',
   description = '',
+  confirmTargetName = null,
 ) {
   if (![parentId, sourceTableId, targetTableId, requestedName].every(Boolean)) {
     throw new Error(
-      'etl-create requires <parentId> <sourceTableId> <targetTableId> <name> [rowNumber|-] [description]',
+      'etl-create requires <parentId> <sourceTableId> <targetTableId> <name> '
+      + '[rowNumber|-] [description] --confirm-target <exactTargetName>',
     );
   }
   const addRowNumber = rowNumber !== '-';
@@ -3171,6 +3585,7 @@ async function cmdEtlCreate(
   if (!hasNamespace(targetMeta?.alias || targetMeta?.name)) {
     throw new Error(`refusing to overwrite non-namespaced target table: ${targetMeta?.alias || targetTableId}`);
   }
+  assertExactResourceConfirmation(targetMeta, confirmTargetName);
 
   const templates = nodeCatalog.defaultOptions || [];
   const sourceTemplate = templates.find((node) => node.name === 'JDBC_DATASOURCE');
@@ -3223,6 +3638,7 @@ async function cmdEtlCreate(
   const target = targetGraph.nodes?.find((node) => node.type === 'JDBC_DATATARGER_OVERWRITE');
   if (!target) throw new Error('target-node template contains no overwrite node');
   target.state = 'INITED';
+  target.smartbiCliTargetTableId = targetTableId;
 
   const nodes = [source];
   if (addRowNumber) {
@@ -3284,18 +3700,38 @@ async function cmdEtlCreate(
   });
 }
 
+async function cmdEtlUnionCreateArgs(argsList) {
+  const { positional, confirmation } = parseExactConfirmationArgs(argsList, 'etl-union-create');
+  if (positional.length < 4) {
+    throw new Error(
+      'etl-union-create requires <parentId> <targetTableId> <name> '
+      + '<sourceTableIdsJson> [description] --confirm-target <exactTargetName>',
+    );
+  }
+  await cmdEtlUnionCreate(
+    positional[0],
+    positional[1],
+    positional[2],
+    positional[3],
+    positional.slice(4).join(' '),
+    confirmation,
+  );
+}
 async function cmdEtlUnionCreate(
   parentId,
   targetTableId,
   requestedName,
   sourceTableIdsJson,
   description = '',
+  confirmTargetName = null,
 ) {
   if (![parentId, targetTableId, requestedName, sourceTableIdsJson].every(Boolean)) {
     throw new Error(
-      'etl-union-create requires <parentId> <targetTableId> <name> <sourceTableIdsJson> [description]',
+      'etl-union-create requires <parentId> <targetTableId> <name> '
+      + '<sourceTableIdsJson> [description] --confirm-target <exactTargetName>',
     );
   }
+  assertCompetitionUnionAllowed(PLATFORM_PROFILE);
   const sourceTableIds = JSON.parse(sourceTableIdsJson);
   if (!Array.isArray(sourceTableIds) || sourceTableIds.length < 2 || sourceTableIds.length > 6) {
     throw new Error('etl-union-create requires an array of 2 to 6 source table ids');
@@ -3329,6 +3765,7 @@ async function cmdEtlUnionCreate(
   if (!hasNamespace(targetMeta?.alias || targetMeta?.name)) {
     throw new Error(`refusing to overwrite non-namespaced target table: ${targetTableId}`);
   }
+  assertExactResourceConfirmation(targetMeta, confirmTargetName);
   const templates = nodeCatalog.defaultOptions || [];
   const sourceTemplate = templates.find((node) => node.name === 'JDBC_DATASOURCE');
   const unionTemplate = templates.find((node) => node.name === 'UNION_ALL');
@@ -3430,6 +3867,7 @@ async function cmdEtlUnionCreate(
   const target = targetGraph.nodes?.find((node) => node.type === 'JDBC_DATATARGER_OVERWRITE');
   if (!target) throw new Error('target-node template contains no overwrite node');
   target.state = 'INITED';
+  target.smartbiCliTargetTableId = targetTableId;
   target.x = 730;
   target.y = union.y;
   const nodes = [...sources, union, target];
@@ -3614,9 +4052,16 @@ async function cmdEtlInsert(flowId, nodeName, configJson = '{}', instanceKey = n
     if (node.name !== nodeName) {
       throw new Error(`ETL instance key ${instanceKey} already belongs to ${node.name}`);
     }
-    const before = JSON.stringify(node.configs || []);
+    const before = JSON.stringify({
+      configs: node.configs || [],
+      configuredKeys: node.smartbiCliConfiguredKeys || [],
+    });
     applyEtlNodeConfigs(node, configValues);
-    changed = before !== JSON.stringify(node.configs || []);
+    node.smartbiCliConfiguredKeys = Object.keys(configValues).sort();
+    changed = before !== JSON.stringify({
+      configs: node.configs || [],
+      configuredKeys: node.smartbiCliConfiguredKeys,
+    });
     if (changed) node.state = 'INITED';
   } else {
     const targets = graph.nodes.filter((item) => (
@@ -3640,6 +4085,7 @@ async function cmdEtlInsert(flowId, nodeName, configJson = '{}', instanceKey = n
     );
     node.smartbiCliKey = instanceKey;
     applyEtlNodeConfigs(node, configValues);
+    node.smartbiCliConfiguredKeys = Object.keys(configValues).sort();
     target.x = Number(target.x || 0) + 120;
     target.state = 'INITED';
     graph.nodes.push(node);
@@ -3773,8 +4219,37 @@ function summarizePortResult(result) {
   };
 }
 
-async function cmdEtlRun(flowId) {
+async function cmdEtlRunArgs(argsList) {
+  const { positional, confirmation } = parseExactConfirmationArgs(
+    argsList,
+    'etl-run',
+    '--confirm-target',
+    { required: false },
+  );
+  if (positional.length !== 1) {
+    throw new Error('etl-run requires <flowId> [--confirm-target <exactTargetName>]');
+  }
+  await cmdEtlRun(positional[0], confirmation);
+}
+
+async function cmdEtlRun(flowId, confirmTargetName = null) {
   const { processDag, graph } = await loadEtlFlow(flowId, { requireOwned: true });
+  assertCompetitionEtlGraph(PLATFORM_PROFILE, graph);
+  const materialTargetNode = (graph.nodes || []).find((node) => (
+    node.type === 'JDBC_DATATARGER_OVERWRITE'
+    || node.name === 'JDBC_DATATARGER_OVERWRITE'
+  ));
+  if (materialTargetNode) {
+    if (!confirmTargetName) {
+      throw new Error('etl-run requires --confirm-target <exactTargetName> for materialized overwrite');
+    }
+    const targetRef = parseEtlTargetReference(graph);
+    const targetMeta = await smartbixApi(
+      `miningdatasource/table?tableId=${encodeURIComponent(targetRef.tableId)}`,
+    );
+    requireNamespacedResource(targetMeta, 'materialized ETL target table');
+    assertExactResourceConfirmation(targetMeta, confirmTargetName);
+  }
   const runDag = {
     id: processDag.id,
     name: processDag.name,
@@ -3817,29 +4292,92 @@ async function cmdEtlRun(flowId) {
   if (!state || !isEtlTerminalState(state.state)) {
     throw new Error(`ETL run timed out: ${instanceId}`);
   }
+  const nodeStates = assertEtlRunSucceeded(
+    state,
+    (graph.nodes || []).map((node) => node.id).filter(Boolean),
+  );
 
-  const fromIds = new Set((graph.links || []).map((link) => link.from));
-  const terminalNodes = (graph.nodes || []).filter((node) => !fromIds.has(node.id));
-  let preview = null;
-  if (isEtlSuccessful(state.state) && terminalNodes.length === 1 && terminalNodes[0].outputs?.[0]?.id) {
-    const node = terminalNodes[0];
-    try {
-      const result = await smartbixApi(
-        `miningnode/portresult/${encodeURIComponent(`${node.id}-${instanceId}`)}/${encodeURIComponent(node.outputs[0].id)}/csv`,
-      );
-      preview = summarizePortResult(result);
-    } catch {
-      preview = { available: false };
+  let previewNode = null;
+  let previewPortId = null;
+  if (materialTargetNode) {
+    const inbound = (graph.links || []).filter((link) => link.to === materialTargetNode.id);
+    if (inbound.length !== 1) {
+      throw new Error(`materialized ETL target must have one inbound link; found ${inbound.length}`);
+    }
+    previewNode = (graph.nodes || []).find((node) => node.id === inbound[0].from);
+    previewPortId = inbound[0].inputPortId || previewNode?.outputs?.[0]?.id;
+  } else {
+    const fromIds = new Set((graph.links || []).map((link) => link.from));
+    const terminalNodes = (graph.nodes || []).filter((node) => !fromIds.has(node.id));
+    if (terminalNodes.length === 1) {
+      [previewNode] = terminalNodes;
+      previewPortId = previewNode.outputs?.[0]?.id;
     }
   }
 
+  let preview = null;
+  if (previewNode?.id && previewPortId) {
+    try {
+      const result = await smartbixApi(
+        `miningnode/portresult/${encodeURIComponent(`${previewNode.id}-${instanceId}`)}/${encodeURIComponent(previewPortId)}/csv`,
+      );
+      preview = summarizePortResult(result);
+    } catch {
+      preview = { available: false, featureCount: 0, fields: [], rowCount: null };
+    }
+  }
+  if (PLATFORM_PROFILE && (!preview?.available || !Number.isInteger(preview.rowCount))) {
+    throw new Error('competition ETL completed without a verifiable terminal row/field preview');
+  }
+
+  let materializedTarget = null;
+  if (materialTargetNode) {
+    const targetRef = parseEtlTargetReference(graph);
+    const parsedTarget = parseImportedTableId(targetRef.tableId);
+    const [metadata, table] = await Promise.all([
+      smartbixApi(`miningdatasource/table?tableId=${encodeURIComponent(targetRef.tableId)}`),
+      smartbixApi('datasets/table', {
+        method: 'POST',
+        body: {
+          dataSourceId: targetRef.dataSourceId,
+          tableId: targetRef.tableId,
+          tableName: parsedTarget.tableName,
+        },
+      }),
+    ]);
+    requireNamespacedResource(metadata, 'materialized ETL target table');
+    const fields = (table?.fields || []).map((field) => ({
+      name: field.name,
+      alias: field.alias,
+      dataType: field.dataType,
+    }));
+    if (fields.length === 0) {
+      throw new Error(`materialized ETL target has no readable fields: ${targetRef.tableId}`);
+    }
+    if (preview?.featureCount && preview.featureCount !== fields.length) {
+      throw new Error(
+        `materialized ETL field reconciliation failed: preview=${preview.featureCount}, target=${fields.length}`,
+      );
+    }
+    materializedTarget = {
+      id: targetRef.tableId,
+      name: metadata.alias || metadata.name,
+      fieldCount: fields.length,
+      fields,
+      rowCount: preview?.rowCount ?? null,
+      reconciled: Boolean(preview?.available && preview.featureCount === fields.length),
+    };
+  } else if (PLATFORM_PROFILE) {
+    throw new Error('competition ETL must persist a materialized target table');
+  }
+
   safeOutput({
-    ok: isEtlSuccessful(state.state),
+    ok: true,
     flowId: processDag.id,
     flowName: processDag.name,
     instanceId,
     state: state.state,
-    nodes: (state.nodeStates || []).map((node) => ({
+    nodes: nodeStates.map((node) => ({
       id: node.id,
       name: node.name,
       alias: node.alias,
@@ -3847,6 +4385,7 @@ async function cmdEtlRun(flowId) {
       tip: node.tip,
     })),
     preview,
+    materializedTarget,
   });
 }
 
@@ -4036,13 +4575,23 @@ async function cmdNav(moduleName) {
 //   smartbi.mjs setup --profile competition-2026 --school-name <name>
 function parseSetupArgs(argsList) {
   const options = {};
+  const valuedOptions = new Set([
+    '--base-url',
+    '--cred-file',
+    '--namespace',
+    '--naming',
+    '--profile',
+    '--school-name',
+  ]);
   for (let index = 0; index < argsList.length; index += 1) {
     const argument = argsList[index];
     if (argument === '--interactive') {
       options.interactive = true;
       continue;
     }
-    if (!argument.startsWith('--')) throw new Error(`unexpected setup argument: ${argument}`);
+    if (!valuedOptions.has(argument)) {
+      throw new Error(`unknown setup option: ${argument}`);
+    }
     const value = argsList[index + 1];
     if (!value || value.startsWith('--')) throw new Error(`missing value for ${argument}`);
     options[argument.slice(2)] = value;
@@ -4066,13 +4615,18 @@ function validateCredentialsFile(path) {
   if (!account || !password) {
     throw new Error(`credentials file must contain account on line 1 and password on line 2: ${path}`);
   }
+  const { mode } = statSync(path);
+  if ((mode & 0o777) !== 0o600) {
+    throw new Error(`credentials file must use mode 0600: ${path}`);
+  }
 }
 
 async function persistSetup(saved) {
   validateCredentialsFile(saved.credFile);
-  const { writeFileSync, mkdirSync } = await import('node:fs');
+  const { mkdirSync } = await import('node:fs');
   mkdirSync(dirname(CONFIG_FILE), { recursive: true });
   writeFileSync(CONFIG_FILE, `${JSON.stringify(saved, null, 2)}\n`, { mode: 0o600 });
+  chmodSync(CONFIG_FILE, 0o600);
   safeOutput({
     action: 'setup_done',
     message: 'Credentials and naming preference configured. Secrets were not emitted.',
@@ -4165,12 +4719,30 @@ async function runInteractiveSetup() {
   const mode = await promptLine('Artifact naming mode (prefix or suffix)', NAMING_MODE);
   const suggested = mode === 'suffix' ? '_TEAM' : 'TEAM_';
   const naming = normalizeNaming(mode, await promptLine('Namespace marker', suggested));
+  const profileId = await promptLine(
+    'Platform profile (general or competition-2026)',
+    PLATFORM_PROFILE?.id || 'general',
+  );
+  const schoolName = profileId === 'competition-2026'
+    ? await promptLine('School name', PLATFORM_PROFILE?.schoolName || '')
+    : null;
+  const platformProfile = normalizePlatformProfile(
+    profileId === 'general' ? null : { id: profileId, schoolName },
+    baseUrl,
+  );
   const credentialsPath = join(homedir(), '.config', 'smartbi-platform', 'credentials.txt');
-  const { writeFileSync, mkdirSync, chmodSync } = await import('node:fs');
+  const { mkdirSync } = await import('node:fs');
   mkdirSync(dirname(credentialsPath), { recursive: true });
   writeFileSync(credentialsPath, `${account}\n${password}\n`, { mode: 0o600 });
   chmodSync(credentialsPath, 0o600);
-  await persistSetup({ baseUrl, credFile: credentialsPath, naming });
+  await persistSetup({
+    baseUrl,
+    credFile: credentialsPath,
+    naming,
+    platformProfile: platformProfile
+      ? { id: platformProfile.id, schoolName: platformProfile.schoolName }
+      : null,
+  });
 }
 
 async function cmdSetup(argsList) {
@@ -4205,7 +4777,7 @@ async function cmdSetup(argsList) {
         'node scripts/smartbi.mjs setup --interactive',
         'node scripts/smartbi.mjs setup --base-url https://host/smartbi/vision --cred-file /path/to/credentials.txt --namespace TEAM_ --naming prefix',
         'node scripts/smartbi.mjs setup --base-url https://host/smartbi/vision --cred-file /path/to/credentials.txt --namespace _TEAM --naming suffix',
-        'node scripts/smartbi.mjs setup --profile competition-2026 --school-name 西北农林科技大学',
+        'node scripts/smartbi.mjs setup --profile competition-2026 --school-name <school>',
       ],
     });
     return;
@@ -4296,29 +4868,17 @@ try {
     case 'plain-get': await cmdPlainGet(args[0]); break;
     case 'plain-post': await cmdPlainPost(args[0], args[1]); break;
     case 'model-get': await cmdModelGet(args[0]); break;
-    case 'model-create': await cmdModelCreate(args[0], args[1], args[2], args[3], args[4], args[5]); break;
+    case 'model-create': await cmdModelCreateArgs(args); break;
     case 'model-clone': await cmdModelClone(args[0], args[1], args[2], args[3]); break;
     case 'analysis-get': await cmdAnalysisGet(args[0]); break;
     case 'analysis-create': await cmdAnalysisCreate(args[0], args[1], args[2], args[3], args[4], args[5]); break;
-    case 'analysis-repair': await cmdAnalysisRepair(
-      args[0],
-      args[1],
-      args[2],
-      args[3],
-      args[4],
-      args.slice(5).join(' '),
-    ); break;
+    case 'analysis-repair': await cmdAnalysisRepairArgs(args); break;
     case 'analysis-run': await cmdAnalysisRun(args[0]); break;
     case 'analysis-profile': await cmdAnalysisProfile(args[0], args[1]); break;
     case 'analysis-clone': await cmdAnalysisClone(args[0], args[1], args[2], args[3]); break;
     case 'dashboard-get': await cmdDashboardGet(args[0]); break;
     case 'dashboard-create-multi': await cmdDashboardCreateMulti(args[0], args[1], args[2], args[3], args.slice(4).join(' ')); break;
-    case 'dashboard-repair-multi': await cmdDashboardRepairMulti(
-      args[0],
-      args[1],
-      args[2],
-      args.slice(3).join(' '),
-    ); break;
+    case 'dashboard-repair-multi': await cmdDashboardRepairMultiArgs(args); break;
     case 'dashboard-create': await cmdDashboardCreate(args[0], args[1], args[2], args[3], args[4], args[5]); break;
     case 'dashboard-clone': await cmdDashboardClone(args[0], args[1], args[2], args[3]); break;
     case 'aichat-query': await cmdAichat(args[0], args.slice(1).join(' ')); break;
@@ -4332,7 +4892,7 @@ try {
     case 'catalog-audit': await cmdCatalogAudit(args[0]); break;
     case 'agent-create': await cmdAgentCreate(args[0], args[1], args[2], args[3], args[4]); break;
     case 'agent-run': await cmdAgentRun(args[0], args.slice(1).join(' ')); break;
-    case 'agent-deploy': await cmdAgentDeploy(args[0]); break;
+    case 'agent-deploy': await cmdAgentDeployArgs(args); break;
     case 'tree': await cmdTree(args[0]); break;
     case 'competition-home': await cmdCompetitionHome(args); break;
     case 'folder-create': await cmdFolderCreate(args[0], args[1], args.slice(2).join(' ')); break;
@@ -4342,13 +4902,13 @@ try {
     case 'resource-delete': await cmdResourceDelete(parseResourceDeleteArgs(args)); break;
     case 'upload': await cmdUploadArgs(args); break;
     case 'etl-describe': await cmdEtlDescribe(args[0], args.slice(1).join(' ')); break;
-    case 'etl-create': await cmdEtlCreate(args[0], args[1], args[2], args[3], args[4], args[5]); break;
-    case 'etl-union-create': await cmdEtlUnionCreate(args[0], args[1], args[2], args[3], args.slice(4).join(' ')); break;
+    case 'etl-create': await cmdEtlCreateArgs(args); break;
+    case 'etl-union-create': await cmdEtlUnionCreateArgs(args); break;
     case 'etl-node-list': await cmdEtlNodeList(args.join(' ')); break;
     case 'etl-insert': await cmdEtlInsert(args[0], args[1], args[2], args[3]); break;
     case 'etl-output-dataset': await cmdEtlOutputDataset(args[0], args[1]); break;
     case 'etl-get': await cmdEtlGet(args[0]); break;
-    case 'etl-run': await cmdEtlRun(args[0]); break;
+    case 'etl-run': await cmdEtlRunArgs(args); break;
     case 'etl-row-number': await cmdEtlRowNumber(args[0], args[1]); break;
     case 'nav': await cmdNav(args[0]); break;
     case 'ui-open': await cmdUiOpen(args[0]); break;

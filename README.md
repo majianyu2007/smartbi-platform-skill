@@ -240,8 +240,10 @@ host):
 ```bash
 node scripts/smartbi.mjs setup \
   --profile competition-2026 \
-  --school-name 西北农林科技大学
-node scripts/smartbi.mjs competition-home --create --migrate-legacy
+  --school-name "<school>"
+node scripts/smartbi.mjs competition-home --create
+# Legacy rename is destructive and requires the old folder's exact visible name:
+node scripts/smartbi.mjs competition-home --migrate-legacy --confirm-name "<school>"
 ```
 
 This profile requires a public `upload --source-url`, limits AIChat training to
@@ -338,12 +340,17 @@ sh -n scripts/install.sh
 - Routine catalog management uses the guarded API commands, not manual
   Playwright menu clicks. Rename/move/copy require an exact direct-child
   confirmation and verify the saved postcondition.
-- The competition profile is opt-in and host-bound. It rejects Agent, private
-  dataset source URLs, and AIChat training counts above 10,000.
-- `upload --replace` is allowed only when incoming field names and order match
-  the existing table schema; schema changes fail before insertion to prevent
-  silent column loss.
-- Legacy non-namespaced cleanup is limited to a `BASETABLE` directly inside the authenticated personal acquisition folder and requires the user's exact resource name:
+- The competition profile is opt-in and host-bound. It rejects Agent,
+  local/private host names or DNS answers, credential-bearing dataset source
+  URLs, and AIChat training counts above 10,000.
+- `upload --replace` requires the existing table's exact name and is allowed only
+  when incoming field names, order, and types match the existing schema.
+- ETL creation/runs that overwrite a materialized table, analysis/dashboard
+  repair, and Agent publication require the exact target or Agent name.
+- Competition mode rejects generic resource move/copy; create each artifact in
+  its final candidate folder so lineage cannot cross candidate boundaries.
+- Every deletion requires the selected resource's exact current name:
   `resource-delete <parentId> <resourceId> --confirm-name <exactName>`.
-- Exact-name confirmation never authorizes shared-folder or non-table deletion.
+  The only non-namespaced exception remains a `BASETABLE` directly inside the
+  authenticated personal acquisition folder; confirmation never expands that boundary.
 - Keep private project titles, registration codes, delivery addresses, deadlines, and evidence outside this repository.

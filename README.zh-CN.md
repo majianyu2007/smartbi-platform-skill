@@ -165,6 +165,7 @@ Smartbi ETL 节点完成。`关系数据源 → 覆盖到关系表` 的直接复
 2. Skill 本地 `node_modules/playwright`；
 3. `~/.local/share/smartbi-platform/playwright` 专用安装；
 4. `~/.local/share/omp-playwright` 的 OMP 内置运行时。
+5. Node 的常规模块解析。
 
 如果任一路径可用，就不会重复安装。
 
@@ -241,8 +242,10 @@ node scripts/smartbi.mjs setup \
 ```bash
 node scripts/smartbi.mjs setup \
   --profile competition-2026 \
-  --school-name 西北农林科技大学
-node scripts/smartbi.mjs competition-home --create --migrate-legacy
+  --school-name "<学校名称>"
+node scripts/smartbi.mjs competition-home --create
+# 旧目录改名属于破坏性操作，必须提供旧目录的精确可见名称：
+node scripts/smartbi.mjs competition-home --migrate-legacy --confirm-name "<学校名称>"
 ```
 
 该 profile 要求 `upload --source-url` 提供公开数据源地址，AIChat 训练数据
@@ -337,10 +340,16 @@ sh -n scripts/install.sh
 - 所有平台写操作仍受命名空间与个人工作区所有权检查保护。
 - 常规目录管理必须使用受保护的 API 命令，而不是手动点击 Playwright
   菜单；重命名、移动和复制都会校验直接父子关系、精确名称和保存结果。
-- 比赛 profile 必须显式启用且绑定官方域名；Agent、私有数据源地址及
-  超过 10,000 条的 AIChat 训练会被拒绝。
-- `upload --replace` 仅在新文件字段名及顺序与现有表完全一致时执行；
-  字段新增、删除或重排会在写入前失败，防止平台静默丢列。
-- 清理旧版未命名空间化资源时，只允许删除当前登录账号个人数据采集空间中的直接子级 `BASETABLE`，并且必须提供用户确认的精确名称：
+- 比赛 profile 必须显式启用且绑定官方域名；Agent、本地／私网主机名或 DNS
+  解析结果、带凭据的数据源地址及超过 10,000 条的 AIChat 训练都会被拒绝。
+- `upload --replace` 必须提供现有表的精确名称，并且仅在新文件字段名、顺序及类型
+  与现有表完全一致时执行。
+- 创建或运行会覆写物化表的 ETL、修复分析／仪表盘，以及发布 Agent，均须提供
+  目标资源或 Agent 的精确名称。
+- 比赛模式禁用通用资源移动／复制；每个产物必须直接创建在最终候选目录中，
+  防止血缘跨越候选方案边界。
+- 删除任何资源都必须提供当前精确名称：
   `resource-delete <parentId> <resourceId> --confirm-name <exactName>`。
-- 精确名称确认不能授权删除共享目录资源或非表资源。
+  唯一的非命名空间例外仍是当前登录账号个人数据采集空间中的直接子级
+  `BASETABLE`；精确名称确认不会扩大这一边界。
+- 公开仓库不得包含私有项目名称、报名编号、投递地址、截止时间或验收证据。
