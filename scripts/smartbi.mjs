@@ -28,6 +28,7 @@ import {
   authorizeResourceDeletion,
   parseResourceDeleteArgs,
 } from './deletion-guard.mjs';
+import { normalizeCatalogElements } from './catalog-elements.mjs';
 import { assertReplacementSchemaCompatible } from './import-schema.mjs';
 import { parseAichatStream } from './aichat-stream.mjs';
 import { dashboardGrid } from './dashboard-multi.mjs';
@@ -2099,9 +2100,11 @@ async function resolveDeletionParentKind(parentId) {
 
 async function cmdResourceDelete({ parentId, resourceId, confirmName = null }) {
   const parentKind = await resolveDeletionParentKind(parentId);
-  const before = await rmi('CatalogService', 'getChildElements', [parentId]);
-  if (before.retCode !== 0) throw new Error(`cannot list resource parent: ${JSON.stringify(before)}`);
-  const resource = (before.result || []).find((node) => node.id === resourceId);
+  const before = normalizeCatalogElements(
+    await rmi('CatalogService', 'getChildElements', [parentId]),
+    'resource parent',
+  );
+  const resource = before.find((node) => node.id === resourceId);
   if (!resource) throw new Error(`resource is not a direct child of the supplied parent: ${resourceId}`);
   const authorization = authorizeResourceDeletion({
     resource,
@@ -2115,8 +2118,11 @@ async function cmdResourceDelete({ parentId, resourceId, confirmName = null }) {
   }
   const deleted = await rmi('CatalogService', 'deleteCatalogElement', [resourceId]);
   if (deleted.retCode !== 0) throw new Error(`resource deletion failed: ${JSON.stringify(deleted)}`);
-  const after = await rmi('CatalogService', 'getChildElements', [parentId]);
-  if ((after.result || []).some((node) => node.id === resourceId)) {
+  const after = normalizeCatalogElements(
+    await rmi('CatalogService', 'getChildElements', [parentId]),
+    'resource parent after deletion',
+  );
+  if (after.some((node) => node.id === resourceId)) {
     throw new Error(`deleted resource is still visible: ${resourceId}`);
   }
   safeOutput({

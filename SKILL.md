@@ -47,6 +47,22 @@ to display locally prepared results.
   NOT replace the platform pipeline. Record both the Smartbi terminal-node
   preview and input/output row-field reconciliation as completion evidence.
 
+### Dataset-boundary isolation (hard rule)
+
+When a competition or evaluation will select exactly one final dataset, keep
+every candidate dataset as an independent pipeline:
+
+- Give each dataset its own catalog folder, imported source, ETL output, model,
+  analyses, dashboard, and AIChat graph when AIChat is in scope.
+- NEVER union, append, join, or otherwise combine candidate outcome rows in a
+  shared ETL, model, dashboard, or AIChat graph before selection.
+- Compare candidates only through an external evaluation scorecard or
+  non-outcome metadata. Do not create a cross-dataset analytical artifact as a
+  shortcut for selection.
+- Validate each pipeline separately: terminal ETL state, output row count,
+  single-source model lineage, analysis execution, and rendered dashboard
+  charts. One successful candidate never proves another candidate works.
+
 ## Required References
 
 Read what the task needs:

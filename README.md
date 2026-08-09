@@ -120,6 +120,19 @@ Playwright is **not required for the API core**. These operations work without o
 
 Only visual canvas editing and ETL nodes whose port semantics cannot be inferred safely require the Playwright fallback.
 
+### Platform-first processing and candidate isolation
+
+Use Smartbi for substantive filtering, missing-value handling, derivation,
+aggregation, sorting, modeling, and visualization. Local work is limited to
+acquisition, authorization checks, integrity checks, and lossless conversion
+from containers Smartbi cannot import.
+
+When a competition will select one final dataset, keep every candidate in a
+separate catalog folder with its own ETL output, model, analyses, dashboard, and
+AIChat graph when required. Never union, append, or join candidate outcome rows
+before selection. Compare candidates in an external scorecard or metadata-only
+record, and validate every folder independently.
+
 The inspector reuses Playwright in this order:
 
 1. `SMARTBI_PLAYWRIGHT_PATH`;

@@ -46,6 +46,23 @@ For competition delivery, the saved DAG itself is evidence. A direct
 Each flow must expose the transformations that materially produce its submitted
 output, and downstream artifacts must read that ETL output.
 
+## Stage 0A: Isolate candidate datasets before selection
+
+If the competition permits only one final dataset, create one sibling catalog
+folder per candidate before building any ETL. Keep every candidate's source,
+materialized output, model, analyses, dashboard, and AIChat graph inside that
+folder.
+
+Do not union, append, or join candidate outcome rows. Candidate comparison
+belongs in an external scorecard or metadata-only record, not in a shared
+Smartbi analytical model. Acceptance is per folder:
+
+1. ETL reaches `FINISH`, every node reports `FINISH / OK`, and output rows reconcile.
+2. The model contains exactly one source view from that candidate's ETL output.
+3. Saved analyses execute and return non-empty rows.
+4. The dashboard renders every expected chart in the browser.
+5. No candidate resources remain loose in the parent folder.
+
 ## Stage 1: Import files
 
 Official sequence:
