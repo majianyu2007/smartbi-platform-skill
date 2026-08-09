@@ -36,6 +36,8 @@ The platform account is **shared by multiple team members**. You MUST:
 
 - **Never modify, delete, rename, or overwrite any resource not created by this namespace.**
   Foreign resources = anything whose name/alias does not carry the configured namespace in the selected prefix/suffix mode.
+  The sole deletion exception is a legacy `BASETABLE` in the authenticated personal acquisition folder that the user identifies by exact name; use `resource-delete ... --confirm-name <exactName>`.
+  This exception never applies to shared catalog folders or non-table resources.
 - **Namespace every artifact you create** (tables, ETL flows, models, analyses,
   dashboards, folders). Configure a neutral team prefix or suffix through
   `SMARTBI_NAMESPACE` (default example: `TEAM_`). Format:
@@ -179,6 +181,7 @@ TMPDIR=/tmp node scripts/smartbi.mjs health         # workspace
 TMPDIR=/tmp node scripts/smartbi.mjs tree           # catalog root
 TMPDIR=/tmp node scripts/smartbi.mjs tree DS.input  # 可导入数据库
 TMPDIR=/tmp node scripts/smartbi.mjs upload <csv> <name>   # import as new table (auto-namespaced)
+TMPDIR=/tmp node scripts/smartbi.mjs resource-delete <parentId> <resourceId> --confirm-name <exactName>
 TMPDIR=/tmp node scripts/smartbi.mjs etl-get <flowId>       # inspect saved ETL DAG
 TMPDIR=/tmp node scripts/smartbi.mjs etl-row-number <flowId> row_number
 TMPDIR=/tmp node scripts/smartbi.mjs etl-run <flowId>       # run and verify terminal preview
@@ -208,7 +211,7 @@ TMPDIR=/tmp node scripts/smartbi.mjs manuals        # official manual links
 | `plain-get <path>` / `plain-post <path> [json]` | Guarded `/smartbi/` discovery/query replay; mutating paths are refused | JSON/text response |
 | `tree [id]` | List catalog children of node | `{parent, nodes:[...]}` |
 | `folder-create <parentId> <name> [description]` | Idempotently create one namespaced catalog folder | `{created,id,name,alias}` |
-| `resource-delete <parentId> <resourceId>` | Delete one direct, namespaced catalog child after a permission check | deletion receipt |
+| `resource-delete <parentId> <resourceId> [--confirm-name <exactName>]` | Delete one direct owned child after permission and post-delete checks; exact-name confirmation is required for a legacy non-namespaced table and is accepted only in the authenticated personal acquisition folder | deletion receipt |
 | `upload <file> [tableName] [--replace]` | Import CSV/TXT/XLSX as a namespaced table; replacement must be explicit | `{ok, table, rows, clientId}` |
 | `etl-create <parentId> <sourceTableId> <targetTableId> <name> [rowNumber|-] [description]` | Build an owned source→optional row-number→materialized-output ETL | saved DAG |
 | `etl-get <flowId>` / `etl-run <flowId>` | Inspect or execute one owned saved ETL | DAG / terminal node states |

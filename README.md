@@ -269,6 +269,7 @@ Syntax checks:
 ```bash
 node --check scripts/install.mjs
 node --check scripts/transport-codec.mjs
+node --check scripts/deletion-guard.mjs
 node --check scripts/smartbi.mjs
 sh -n scripts/install.sh
 ```
@@ -280,4 +281,7 @@ sh -n scripts/install.sh
 - Installing Playwright requires the explicit `--install-playwright` flag.
 - Passwords are read only from the private credential file and never enter environment reports, logs, transport caches, or Git.
 - Platform mutations remain protected by namespace and personal-workspace ownership checks.
+- Legacy non-namespaced cleanup is limited to a `BASETABLE` directly inside the authenticated personal acquisition folder and requires the user's exact resource name:
+  `resource-delete <parentId> <resourceId> --confirm-name <exactName>`.
+- Exact-name confirmation never authorizes shared-folder or non-table deletion.
 - Keep private project titles, registration codes, delivery addresses, deadlines, and evidence outside this repository.

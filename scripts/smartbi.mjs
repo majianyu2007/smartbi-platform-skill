@@ -14,7 +14,7 @@
 //       INSERT_DATA&clientId&settings=<JSON> -> import
 //       poll: RMI DataPackageModule.getImportStatus(clientId)
 //
-// Resource naming: all mutations require the configured prefix/suffix namespace.
+// Resource naming: mutations require the configured namespace, except exact-confirmed legacy tables in the personal acquisition folder.
 
 import { homedir } from 'node:os';
 import { randomBytes } from 'node:crypto';
@@ -23,6 +23,11 @@ import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { inspectEnvironment, loadPlaywright } from './install.mjs';
 import { createTransportCodec } from './transport-codec.mjs';
+import {
+  DELETION_PARENT_KINDS,
+  authorizeResourceDeletion,
+  parseResourceDeleteArgs,
+} from './deletion-guard.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SKILL_DIR = join(__dirname, '..');
@@ -2052,18 +2057,32 @@ async function cmdFolderCreate(parentId, requestedName, description = '') {
   safeOutput({ ok: true, created: true, id: saved.id, name: saved.name, alias: saved.alias });
 }
 
-async function cmdResourceDelete(parentId, resourceId) {
-  if (!parentId || !resourceId) {
-    throw new Error('resource-delete requires <parentId> <resourceId>');
+async function resolveDeletionParentKind(parentId) {
+  try {
+    await assertOwnedCatalogParent(parentId, { allowSelfRoot: true, allowAgentRoot: true });
+    return DELETION_PARENT_KINDS.OWNED_CATALOG;
+  } catch (error) {
+    if (!/refusing a non-owned catalog parent|outside the current personal workspace/.test(error.message)) {
+      throw error;
+    }
+    const personal = await locatePersonalFolder();
+    if (parentId === personal.folderId) return DELETION_PARENT_KINDS.PERSONAL_ACQUISITION;
+    throw error;
   }
-  await assertOwnedCatalogParent(parentId, { allowSelfRoot: true, allowAgentRoot: true });
+}
+
+async function cmdResourceDelete({ parentId, resourceId, confirmName = null }) {
+  const parentKind = await resolveDeletionParentKind(parentId);
   const before = await rmi('CatalogService', 'getChildElements', [parentId]);
   if (before.retCode !== 0) throw new Error(`cannot list resource parent: ${JSON.stringify(before)}`);
   const resource = (before.result || []).find((node) => node.id === resourceId);
   if (!resource) throw new Error(`resource is not a direct child of the supplied parent: ${resourceId}`);
-  if (!hasNamespace(resource.name || resource.alias)) {
-    throw new Error(`refusing to delete non-namespaced resource: ${resource.alias || resource.name}`);
-  }
+  const authorization = authorizeResourceDeletion({
+    resource,
+    parentKind,
+    confirmName,
+    isNamespaced: hasNamespace(resource.name) || hasNamespace(resource.alias),
+  });
   const purview = await rmi('CatalogService', 'isCatalogElementAccessible', [resourceId, 'DELETE']);
   if (purview.retCode !== 0 || purview.result !== true) {
     throw new Error(`delete permission denied: ${resourceId}`);
@@ -2074,7 +2093,14 @@ async function cmdResourceDelete(parentId, resourceId) {
   if ((after.result || []).some((node) => node.id === resourceId)) {
     throw new Error(`deleted resource is still visible: ${resourceId}`);
   }
-  safeOutput({ ok: true, deleted: true, id: resourceId, name: resource.name, alias: resource.alias });
+  safeOutput({
+    ok: true,
+    deleted: true,
+    legacy: authorization.legacy,
+    id: resourceId,
+    name: resource.name,
+    alias: resource.alias,
+  });
 }
 
 
@@ -3178,7 +3204,7 @@ try {
     case 'agent-deploy': await cmdAgentDeploy(args[0]); break;
     case 'tree': await cmdTree(args[0]); break;
     case 'folder-create': await cmdFolderCreate(args[0], args[1], args.slice(2).join(' ')); break;
-    case 'resource-delete': await cmdResourceDelete(args[0], args[1]); break;
+    case 'resource-delete': await cmdResourceDelete(parseResourceDeleteArgs(args)); break;
     case 'upload': await cmdUploadArgs(args); break;
     case 'etl-create': await cmdEtlCreate(args[0], args[1], args[2], args[3], args[4], args[5]); break;
     case 'etl-node-list': await cmdEtlNodeList(args.join(' ')); break;

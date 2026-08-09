@@ -92,8 +92,12 @@ Folder creation uses `CatalogService.createFolderElement` with
 `[parentId, name, alias, description, null, false, "DEFAULT_TREENODE.png"]`.
 The CLI namespaces the name and verifies the saved child before returning.
 Deletion uses `CatalogService.isCatalogElementAccessible(id, "DELETE")` then
-`deleteCatalogElement(id)`. The CLI also requires an exact parent-child match,
-a configured namespace, and post-delete absence.
+`deleteCatalogElement(id)`. The CLI requires an exact parent-child match,
+an approved parent scope, delete permission, and post-delete absence. Normal
+resources must match the configured namespace by either physical name or alias.
+For pre-namespace cleanup, `--confirm-name <exactName>` authorizes only a
+`BASETABLE` directly inside the authenticated user's personal acquisition
+folder; it never authorizes deletion from shared catalog folders.
 
 ## 4. File import chain (DataPackageServlet)
 

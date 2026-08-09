@@ -192,10 +192,16 @@ test('generic API and ETL commands reject unsafe or incomplete input before auth
     assert.equal(deletion.status, 1);
     assert.match(deletion.stderr, /resource-delete requires <parentId> <resourceId>/);
 
+    const legacyDeletion = runCli([
+      'resource-delete', 'parent', 'resource', '--confirm-name',
+    ], { SMARTBI_CONFIG_FILE: workspace.config });
+    assert.equal(legacyDeletion.status, 1);
+    assert.match(legacyDeletion.stderr, /--confirm-name requires an exact resource name/);
+
     const dashboard = runCli(['ui-dashboard-check'], { SMARTBI_CONFIG_FILE: workspace.config });
     assert.equal(dashboard.status, 1);
     assert.match(dashboard.stderr, /ui-dashboard-check requires <resourceId>/);
-    assert.doesNotMatch(`${plain.stderr}${rawMutation.stderr}${apiMutation.stderr}${etl.stderr}${folder.stderr}${deletion.stderr}${dashboard.stderr}${doctor.stderr}`, /password|cookie/i);
+    assert.doesNotMatch(`${plain.stderr}${rawMutation.stderr}${apiMutation.stderr}${etl.stderr}${folder.stderr}${deletion.stderr}${legacyDeletion.stderr}${dashboard.stderr}${doctor.stderr}`, /password|cookie/i);
   } finally {
     workspace.cleanup();
   }

@@ -8,14 +8,19 @@ hard safety boundary:
 1. Configure a neutral namespace prefix or suffix for every resource created:
    tables, ETL flows, data models, analyses, dashboards, folders, AIChat graphs,
    and Agents. Example: `TEAM_survey_demo`.
-2. Anything without the configured namespace is foreign. It may be inspected
-   only when necessary and must never be modified, renamed, deleted, moved,
+2. Anything without the configured namespace is foreign by default. It may be
+   inspected only when necessary and must never be modified, renamed, moved,
    overwritten, run, or deployed.
-3. Import only into the authenticated user's personal acquisition space
+3. One narrow deletion exception exists for pre-namespace cleanup: a
+   `BASETABLE` that is a direct child of the authenticated user's personal
+   acquisition folder may be deleted only after the user identifies its exact
+   name and the command supplies `--confirm-name <exactName>`. The exception
+   never applies to shared folders or non-table resources.
+4. Import only into the authenticated user's personal acquisition space
    (`可导入数据库 > input > 数据采集空间 > <current account>`).
-4. Deleting, overwriting, replacing, or republishing even an owned resource
+5. Deleting, overwriting, replacing, or republishing even an owned resource
    requires explicit user confirmation.
-5. Smartbi may truncate resource names. Preserve the complete namespace marker
+6. Smartbi may truncate resource names. Preserve the complete namespace marker
    when shortening the descriptive part.
 
 ## Repository Privacy

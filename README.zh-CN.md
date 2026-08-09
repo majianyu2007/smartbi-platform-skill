@@ -266,6 +266,7 @@ node --test tests/*.test.mjs
 ```bash
 node --check scripts/install.mjs
 node --check scripts/transport-codec.mjs
+node --check scripts/deletion-guard.mjs
 node --check scripts/smartbi.mjs
 sh -n scripts/install.sh
 ```
@@ -276,3 +277,6 @@ sh -n scripts/install.sh
 - 安装 Playwright 必须显式传入 `--install-playwright`。
 - 密码只从私有凭据文件读取，不进入环境报告、日志、缓存或 Git。
 - 所有平台写操作仍受命名空间与个人工作区所有权检查保护。
+- 清理旧版未命名空间化资源时，只允许删除当前登录账号个人数据采集空间中的直接子级 `BASETABLE`，并且必须提供用户确认的精确名称：
+  `resource-delete <parentId> <resourceId> --confirm-name <exactName>`。
+- 精确名称确认不能授权删除共享目录资源或非表资源。
