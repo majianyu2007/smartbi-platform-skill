@@ -13,11 +13,15 @@ workflow with two execution engines:
 1. **Direct HTTP API** (preferred): reverse-engineered RMI protocol. Login,
    catalog traversal, and file import run without a browser. See
    `references/api.md` for the full wire format.
-2. **Playwright over CDP** (fallback): UI-only construction (initial ETL
-   source selection, data-model canvas, dashboard canvas, model-graph fields).
-   Saved ETL flows can be inspected and run through the direct Smartbix API.
+2. **Playwright over CDP** (fallback): headed-browser interaction for arbitrary
+   canvas operations whose port or binding semantics cannot be inferred safely,
+   plus final visual verification. Routine ETL, model, analysis, dashboard,
+   AIChat, and catalog operations use the guarded API commands.
 
 Core chain: `login → 数据连接(import) → 自助ETL → 数据模型 → 透视/仪表盘 → AIChat → validation`.
+
+When `competition-2026` is active, the chain ends at AIChat. Agent remains a
+general-tenant capability and every `agent-*` command fails closed.
 
 ### Platform-first data processing (hard rule)
 
@@ -264,7 +268,7 @@ TMPDIR=/tmp node scripts/smartbi.mjs resource-rename <parentId> <resourceId> <ne
 TMPDIR=/tmp node scripts/smartbi.mjs resource-move <sourceParentId> <resourceId> <targetParentId> --confirm-name <exactName>
 TMPDIR=/tmp node scripts/smartbi.mjs resource-copy <sourceParentId> <resourceId> <targetParentId> <newName> --confirm-name <exactName>
 TMPDIR=/tmp node scripts/smartbi.mjs resource-delete <parentId> <resourceId> --confirm-name <exactName>
-TMPDIR=/tmp node scripts/smartbi.mjs upload <csv> <name> --source-url <public-url>
+TMPDIR=/tmp node scripts/smartbi.mjs upload <csv> <name> --source-url <public-url> # source URL required only by competition-2026
 TMPDIR=/tmp node scripts/smartbi.mjs etl-get <flowId>       # inspect saved ETL DAG
 TMPDIR=/tmp node scripts/smartbi.mjs etl-row-number <flowId> row_number
 TMPDIR=/tmp node scripts/smartbi.mjs etl-run <flowId>       # run and verify terminal preview
@@ -276,6 +280,7 @@ TMPDIR=/tmp node scripts/smartbi.mjs dashboard-repair-multi <dashboardId> <model
 TMPDIR=/tmp node scripts/smartbi.mjs aichat-graph-fields <modelId>
 TMPDIR=/tmp node scripts/smartbi.mjs aichat-graph-build <modelId> survey_city,age_code
 TMPDIR=/tmp node scripts/smartbi.mjs aichat-graph-status <modelId>
+# General tenants only; competition-2026 rejects every agent-* command:
 TMPDIR=/tmp node scripts/smartbi.mjs agent-get <agentId>
 TMPDIR=/tmp node scripts/smartbi.mjs agent-run <agentId> "请分析指定问题"
 TMPDIR=/tmp node scripts/smartbi.mjs agent-deploy <agentId>
@@ -318,10 +323,10 @@ TMPDIR=/tmp node scripts/smartbi.mjs manuals        # official manual links
 | `aichat-query <modelId> <prompt>` | Query an exact model and parse streamed artifacts | answer, tables, files |
 | `aichat-report <modelId> <prompt>` | Generate and parse an AIChat report | answer, tables, files |
 | `aichat-export <modelId> <path> <prompt>` | Persist the complete parsed AIChat result | output file summary |
-| `agent-get <agentId>` | Inspect graph, parameters, and deployment state | parsed Agent resource |
-| `agent-create <parentId> <name> [desc] [systemPrompt] [userPrompt]` | Build a Start→LLM→Finish Agent from live node templates | saved Agent summary |
-| `agent-run <agentId> <question>` | Run one owned Agent and poll/read LLM output | answer, tokens, node states |
-| `agent-deploy <agentId>` | Idempotently publish one owned Agent | deployment relation |
+| `agent-get <agentId>` | Inspect graph, parameters, and deployment state; general profile only | parsed Agent resource |
+| `agent-create <parentId> <name> [desc] [systemPrompt] [userPrompt]` | Build a Start→LLM→Finish Agent from live node templates; general profile only | saved Agent summary |
+| `agent-run <agentId> <question>` | Run one owned Agent and poll/read LLM output; general profile only | answer, tokens, node states |
+| `agent-deploy <agentId>` | Idempotently publish one owned Agent; general profile only | deployment relation |
 | `ui-open <resourceId>` | Open one owned catalog resource in the headed CDP browser | page title and URL |
 | `ui-dashboard-check <resourceId>` | Open and assert one owned dashboard renders | title, chart count, visible text |
 | `nav <module>` | Browser module navigation (CDP fallback) | `{state:"module", module, url}` |
@@ -350,7 +355,7 @@ are module launchers; CLI names describe the underlying artifact.
 | `数据准备` | `数据集` for data models; `自助ETL` for transformation flows | `model-*`; `etl-*` | The landing-page card says `数据模型`, while the resource tree says `数据集`. |
 | `分析展现` | `透视分析` first; then `交互式仪表盘` | `analysis-*`; `dashboard-*` | `即席查询` is a separate detail-query tool, not the pivot used for reconciliation. |
 | `AIChat` | Opens a separate `Smartbi AIChat` page; choose `数据洞察` | `aichat-graph-*`; `aichat-query/report/export` | Graph construction remains under `运维设置 → AIChat系统选项`; chat and graph management are different screens. |
-| `Agent` | Agent canvas and execution pages | `agent-*` | Keep Agent graph creation separate from AIChat model-graph construction. |
+| `Agent` | Agent canvas and execution pages | `agent-*` | General tenants only. `competition-2026` prohibits Agent and fails closed. |
 
 The browser may open a new tab for AIChat. Re-enumerate pages, select the tab
 whose title is `Smartbi AIChat`, and verify the exact model before querying.
@@ -362,7 +367,7 @@ whose title is `Smartbi AIChat`, and verify the exact model before querying.
 API path (preferred):
 
 1. `health`/`login`.
-2. `upload <file> TEAM_<name>`.
+2. `upload <file> <name>`.
 3. Verify with `tree` on the personal acquisition folder (walk
    `DS.input → SCHEMA → 数据采集空间 → <账号>`).
 4. Record row count, column types, and the namespaced table name.
@@ -468,6 +473,9 @@ model text before sending. For reports choose 技能 → 分析报告.
 
 ### 6. Agent
 
+> This section applies only to the general profile. `competition-2026` prohibits
+> Agent creation, inspection, execution, and deployment.
+
 1. Create under the owned `SELF_AGENT_GRAPHS_*` folder with `agent-create`, or
    build in the UI as `开始 → 大模型 → 结束`.
 2. Bind the LLM input variable to `会话变量 / 问句`. A Start-node custom field is
@@ -502,8 +510,9 @@ model text before sending. For reports choose 技能 → 分析报告.
   at least two usable categories for every comparison chart; filters/linkage
   exercised when present;
 - AIChat → graph status success, exact model selected, and one reproducible query reconciled.
-- Agent → saved Start→LLM→Finish graph, terminal `FINISH`, non-empty response,
-  and persisted deployment relation when publication was requested.
+- Agent (general profile only) → saved Start→LLM→Finish graph, terminal
+  `FINISH`, non-empty response, and persisted deployment relation when
+  publication was requested.
 
 Report exact artifacts created (all carrying the configured namespace), validation performed, and
 unresolved blockers. Never report credentials, account identifiers, raw

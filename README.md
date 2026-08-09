@@ -20,7 +20,7 @@ The API core has no third-party npm dependency, so `npm install` is not required
 ### Codex / Oh My Pi
 
 ```bash
-git clone https://github.com/your-org/smartbi-platform-skill.git \
+git clone https://github.com/majianyu2007/smartbi-platform-skill.git \
   ~/.codex/skills/smartbi-platform
 cd ~/.codex/skills/smartbi-platform
 ./scripts/install.sh --check
@@ -116,7 +116,7 @@ Playwright is **not required for the API core**. These operations work without o
 - data models;
 - pivot analyses and API-generated dashboards;
 - AIChat graph build, query, report, and export;
-- Agent creation, execution, and deployment.
+- Agent creation, execution, and deployment on general tenants only; `competition-2026` rejects every `agent-*` command.
 
 Only visual canvas editing and ETL nodes whose port semantics cannot be inferred safely require the Playwright fallback.
 

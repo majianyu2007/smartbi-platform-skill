@@ -20,7 +20,7 @@ API 核心路径没有第三方 npm 依赖，因此不需要先运行 `npm insta
 ### Codex / Oh My Pi
 
 ```bash
-git clone https://github.com/your-org/smartbi-platform-skill.git \
+git clone https://github.com/majianyu2007/smartbi-platform-skill.git \
   ~/.codex/skills/smartbi-platform
 cd ~/.codex/skills/smartbi-platform
 ./scripts/install.sh --check
@@ -114,7 +114,7 @@ Playwright **不是 API 核心流程的必需依赖**。以下操作不需要打
 - 数据模型；
 - 透视分析与 API 生成仪表盘；
 - AIChat 图谱、问答、报告和导出；
-- Agent 创建、运行和部署。
+- Agent 创建、运行和部署（仅通用租户；`competition-2026` 会拒绝所有 `agent-*` 命令）。
 
 只有复杂画布编辑、无法安全推断端口的 ETL 节点等备用操作需要 Playwright。
 

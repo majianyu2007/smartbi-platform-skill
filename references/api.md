@@ -121,7 +121,7 @@ Node shape: `{id, name, alias, type, hasChild, ...}`. Key root ids:
 | `DS.input` | 可导入数据库 | DATASOURCE |
 | `SCHEMA.input.input.null` | input | SCHEMA |
 | `I0bb03010c0184001` | 数据采集空间 | DEFAULT_TREENODE |
-| `I0bb03010c0184001_<userNode>` | 手机号 | DEFAULT_TREENODE (personal) |
+| `I0bb03010c0184001_<userNode>` | `<account alias>` | DEFAULT_TREENODE (personal) |
 | `SELF_...` | 我的工作区 | SELF_TREENODE |
 
 Personal acquisition folder under `可导入数据库 > input > 数据采集空间 > <account>`.

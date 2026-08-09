@@ -2,10 +2,12 @@
 
 ## Execution Engines
 
-Prefer the reverse-engineered HTTP API (`references/api.md`) for anything it
-covers: login, catalog traversal, file import. Use Playwright/CDP only for
-UI-only operations (ETL canvas, dashboard, AIChat graph). The import flow
-below has a full API implementation in `scripts/smartbi.mjs upload`.
+Use the guarded HTTP API for login, catalog operations, file import, saved ETL,
+data models, pivot analyses, API-generated dashboards, AIChat, and—on general
+tenants only—Agent. Use Playwright/CDP for arbitrary canvas interactions whose
+ports or bindings cannot be inferred safely and for final visible verification.
+The import flow below has a full API implementation in
+`scripts/smartbi.mjs upload`.
 
 ## Sources
 

@@ -156,7 +156,7 @@ not by visibility.
 - Never click a generic `确定` or `保存` without verifying the dialog title and intended artifact.
 - Treat toast success as a signal, then verify the artifact itself.
 
-## Upload Pattern
+## Upload Pattern (UI fallback)
 
 1. Navigate to the exact file-import page.
 2. Resolve the file input within the import panel.
@@ -182,6 +182,9 @@ For ETL nodes, model tables, fields, and dashboard components:
 6. Never continue after an unverified drag.
 
 ## Verified QTP And State Markers (2026-08-08)
+
+The Agent markers below apply only on general tenants. The
+`competition-2026` profile prohibits every Agent operation.
 
 Prefer these stable semantic attributes after checking page URL and visible
 panel. Generated IDs and resource node IDs are session/resource-specific.
@@ -241,8 +244,8 @@ Live behavior:
 | Model totals inflate | Recheck grain, join fields, cardinality, and many-to-many paths |
 | AIChat has no model | Verify model graph completed and correct resources were selected |
 | AI answer differs from pivot | Recheck selected model, metric aggregation, filters, and graph field semantics |
-| Agent gets an empty question | Rebind the LLM input variable to `会话变量 / 问句`, save, and rerun |
-| Agent publish button disappears | Check for `状态：已发布`, `toolbar-btn-OFFLINE`, and the deployment relation |
+| Agent gets an empty question (general tenant only) | Rebind the LLM input variable to `会话变量 / 问句`, save, and rerun |
+| Agent publish button disappears (general tenant only) | Check for `状态：已发布`, `toolbar-btn-OFFLINE`, and the deployment relation |
 
 ## Sensitive Output Controls
 
