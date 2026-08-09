@@ -3778,6 +3778,11 @@ try {
     case 'codec-status': await cmdCodecStatus(args); break;
     case 'doctor': await cmdDoctor(args); break;
     case 'manuals': safeOutput({
+      javaApi: 'https://wiki.smartbi.com.cn/api/javaapi/index.html',
+      clientConnectorApi: 'https://wiki.smartbi.com.cn/api/javaapi/smartbi/sdk/ClientConnector.html',
+      catalogApi: 'https://wiki.smartbi.com.cn/api/javaapi/smartbi/sdk/service/catalog/CatalogService.html',
+      insightApi: 'https://wiki.smartbi.com.cn/api/javaapi/smartbi/sdk/service/insight/ClientInsightService.html',
+      pageApi: 'https://wiki.smartbi.com.cn/api/javaapi/smartbix/sdk/page/service/PageService.html',
       quickStart: 'https://wiki.smartbi.com.cn/pages/viewpage.action?pageId=111897106',
       competition: 'https://wiki.smartbi.com.cn/pages/viewpage.action?pageId=168628225',
       higherEducation: 'https://wiki.smartbi.com.cn/pages/viewpage.action?pageId=168628227',

@@ -206,3 +206,14 @@ test('generic API and ETL commands reject unsafe or incomplete input before auth
     workspace.cleanup();
   }
 });
+
+test('manuals exposes the official Java SDK alongside workflow guides', () => {
+  const result = runCli(['manuals']);
+  assert.equal(result.status, 0, result.stderr);
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.javaApi, 'https://wiki.smartbi.com.cn/api/javaapi/index.html');
+  assert.match(output.clientConnectorApi, /ClientConnector\.html$/);
+  assert.match(output.catalogApi, /service\/catalog\/CatalogService\.html$/);
+  assert.match(output.insightApi, /service\/insight\/ClientInsightService\.html$/);
+  assert.match(output.pageApi, /page\/service\/PageService\.html$/);
+});

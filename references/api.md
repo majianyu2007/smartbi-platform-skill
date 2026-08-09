@@ -1,7 +1,44 @@
-# Smartbi Insight V11 Reverse-Engineered API Reference
+# Smartbi Insight V11 Official SDK and Live HTTP API Reference
 
 > Status: verified against a Smartbi Insight V11 tenant; host and account details are intentionally omitted.
 > Endpoints span `/smartbi/vision/`, `/smartbi/smartbix/api/`, and `/smartbi/`.
+
+## Source hierarchy and scope
+
+Official Java API index: <https://wiki.smartbi.com.cn/api/javaapi/index.html>
+(Javadoc metadata date: 2026-03-19).
+
+Use that Javadoc as the source of truth for public Java SDK class names, method
+signatures, parameter order, return types, and deprecation markers. It confirms
+the central client contract used by this Skill:
+`ClientConnector.remoteInvoke(classname, method, Object[])`.
+
+The Javadoc is **not** a wire-protocol or complete Vision V11 REST reference.
+It does not specify the `RMIServlet` encoding, `DataPackageServlet` import
+actions, Smartbix `pages/beans` authoring payloads, ETL graph endpoints, or the
+current AIChat training/query routes. Those contracts remain verified against
+the configured live tenant and frontend bundles. Apply this evidence order:
+
+1. official Javadoc for public SDK semantics and signatures;
+2. live tenant request/response evidence for HTTP paths and payloads;
+3. frontend bundle inspection only where the first two sources are silent.
+
+Useful official cross-checks:
+
+| Official class | Confirmed public contract | Skill relevance |
+|---|---|---|
+| `smartbi.sdk.ClientConnector` | `open`, `close`, `remoteInvoke`, `remoteMultipartInvoke`, `newRemoteInvoke`, `upload`, `download`, `setAccessToken` | Validates the session/client abstraction and class-method-parameter invocation shape |
+| `smartbi.sdk.service.catalog.CatalogService` | `getCatalogElementById`, `getChildElements`, `isCatalogElementAccessible`, `createFolder`, `deleteCatalogElement` | Authoritative catalog semantics; live UI-only variants such as `createFolderElement` remain tenant-verified internals |
+| `smartbi.sdk.service.datasource.DataSourceService` | `getFields`, `getSampleTableData`, `getDataByQuerySql`, `execute`, `executeUpdate` | Field, preview, and reconciliation candidates; mutation still requires ownership guards |
+| `smartbi.sdk.service.insight.ClientInsightService` | `createInsightQuery`, `openQuery`, `getInsightQuery`, `getRawReportData`, parameter methods | Official pivot-analysis lifecycle and result/parameter semantics |
+| `smartbix.sdk.page.service.PageService` / `IPageClientService` | dashboard export and parameter definitions/values | Public SDK covers consumption, not dashboard authoring; `pages/beans` create/update remains live-verified |
+| `smartbi.sdk.service.metadata.MetadataService` | `searchByReferenced`, `searchReferringTo` and recursive variants | Official lineage and impact-analysis capability for future guarded inspection |
+| `AccessTokenUtil` + `ClientConnector.setAccessToken` | personal access-token generation and use | Potential passwordless setup when the target tenant exposes and authorizes it |
+
+The current Javadoc exposes no modern AIChat graph/query contract:
+`ClientAIService` contains only deprecated `autoUpdateLearning`. Continue to
+validate AIChat routes from live network behavior and exact model receipts.
+
 
 ## 1. Transport: RMIServlet (all business calls)
 

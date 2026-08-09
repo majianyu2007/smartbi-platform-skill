@@ -67,7 +67,7 @@ every candidate dataset as an independent pipeline:
 
 Read what the task needs:
 
-- `references/api.md` — reverse-engineered HTTP API: RMI encoding, session, catalog, import chain.
+- `references/api.md` — official Java SDK contracts cross-checked against the live HTTP/RMI, import, Smartbix, and AIChat routes.
 - `references/workflows.md` — reusable end-to-end procedures derived from official manuals.
 - `references/playwright-patterns.md` — browser lifecycle, selectors, state detection, new-tab handling.
 - `references/shared-tenant-guardrails.md` — shared-tenant privacy, evidence, naming, and delivery boundaries.
