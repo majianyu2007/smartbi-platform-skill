@@ -1,11 +1,17 @@
 export function normalizeCatalogElements(response, context = 'catalog children') {
-  if (!response || response.retCode !== 0) {
-    throw new Error(`cannot list ${context}: ${JSON.stringify(response)}`);
+  if (!response || typeof response !== 'object') {
+    throw new Error(`cannot list ${context}: response unavailable`);
+  }
+  if (response.retCode !== 0) {
+    throw new Error(`cannot list ${context}: retCode=${String(response.retCode)}`);
   }
 
   const result = response.result;
   if (result == null) return [];
   if (Array.isArray(result)) return result;
+  if (typeof result !== 'object') {
+    throw new Error(`unexpected ${context} result shape: ${typeof result}`);
+  }
   if (Array.isArray(result.items)) return result.items;
   if (Array.isArray(result.nodes)) return result.nodes;
   if (result.id) return [result];
@@ -16,5 +22,5 @@ export function normalizeCatalogElements(response, context = 'catalog children')
     return values;
   }
 
-  throw new Error(`unexpected ${context} result: ${JSON.stringify(result)}`);
+  throw new Error(`unexpected ${context} result shape`);
 }

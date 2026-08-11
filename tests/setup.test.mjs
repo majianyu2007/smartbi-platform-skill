@@ -195,6 +195,18 @@ test('setup persists an explicit competition profile only on its official tenant
     assert.equal(agent.status, 1);
     assert.match(agent.stderr, /Agent is prohibited by platform profile competition-2026/);
 
+    for (const agentCommand of [
+      ['agent-create', 'SELF_AGENT_GRAPHS_test', 'agent'],
+      ['agent-run', 'test-agent', 'question'],
+      ['agent-deploy', 'test-agent'],
+    ]) {
+      const rejected = runCli(agentCommand, {
+        SMARTBI_CONFIG_FILE: workspace.config,
+      });
+      assert.equal(rejected.status, 1);
+      assert.match(rejected.stderr, /Agent is prohibited by platform profile competition-2026/);
+    }
+
     const upload = runCli(['upload', 'dataset.csv'], {
       SMARTBI_CONFIG_FILE: workspace.config,
     });
@@ -317,7 +329,10 @@ test('AIChat graph commands validate required arguments before authentication', 
 
     const build = runCli(['aichat-graph-build'], { SMARTBI_CONFIG_FILE: workspace.config });
     assert.equal(build.status, 1);
-    assert.match(build.stderr, /aichat-graph-build requires <modelId> <fieldNameOrId,\.\.\.>/);
+    assert.match(
+      build.stderr,
+      /aichat-graph-build requires <parentId> <modelId> <fieldNameOrId,\.\.\.> --confirm-name <exactModelName>/,
+    );
     assert.doesNotMatch(`${fields.stderr}${build.stderr}`, /password|cookie/i);
   } finally {
     workspace.cleanup();
@@ -409,6 +424,12 @@ test('generic API and ETL commands reject unsafe or incomplete input before auth
     ], { SMARTBI_CONFIG_FILE: workspace.config });
     assert.equal(etlUnion.status, 1);
     assert.match(etlUnion.stderr, /etl-union-create requires --confirm-target/);
+
+    const agentRun = runCli([
+      'agent-run', 'agent', 'question',
+    ], { SMARTBI_CONFIG_FILE: workspace.config });
+    assert.equal(agentRun.status, 1);
+    assert.match(agentRun.stderr, /agent-run requires --confirm-name/);
 
     const agentDeploy = runCli([
       'agent-deploy', 'agent',

@@ -10,6 +10,7 @@ import {
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { normalizeCdpUrl, redactCdpUrl, sanitizeErrorMessage } from './transport-safety.mjs';
 
 export const MIN_NODE_MAJOR = 20;
 export const RECOMMENDED_PLAYWRIGHT_VERSION = '1.62.1';
@@ -173,6 +174,7 @@ export function browserCandidates({
 async function inspectCdp(cdpUrl) {
   try {
     const response = await fetch(`${String(cdpUrl).replace(/\/$/, '')}/json/version`, {
+      redirect: 'manual',
       signal: AbortSignal.timeout(1500),
     });
     if (!response.ok) return { reachable: false, status: response.status, browser: null };
@@ -195,6 +197,9 @@ export async function inspectEnvironment({
   arch = process.arch,
   cdpUrl = env.SMARTBI_CDP_URL || 'http://127.0.0.1:9222',
 } = {}) {
+  const normalizedCdpUrl = normalizeCdpUrl(cdpUrl, {
+    allowRemote: env.SMARTBI_ALLOW_REMOTE_CDP === '1',
+  });
   const major = parseNodeMajor(process.versions.node);
   const playwright = await resolvePlaywright({ env, homeDir, skillDir });
   let bundledBrowser = null;
@@ -212,7 +217,7 @@ export async function inspectEnvironment({
   const systemBrowserPath = browserCandidates({ env, homeDir, platform }).find(
     (candidate) => candidate && existsSync(candidate),
   ) || null;
-  const cdp = await inspectCdp(cdpUrl);
+  const cdp = await inspectCdp(normalizedCdpUrl);
   const npmVersion = commandVersion('npm');
   const nodeSupported = major !== null && major >= MIN_NODE_MAJOR;
   const browserAvailable = cdp.reachable || Boolean(systemBrowserPath) || Boolean(bundledBrowser?.present);
@@ -261,7 +266,7 @@ export async function inspectEnvironment({
       available: browserAvailable,
       needsInstall: !browserAvailable,
     },
-    cdp: { url: cdpUrl, ...cdp },
+    cdp: { url: redactCdpUrl(normalizedCdpUrl), ...cdp },
     readiness: {
       apiCore: nodeSupported,
       browserFallback: browserFallbackReady,
@@ -391,7 +396,7 @@ const invokedAsScript = process.argv[1]
   && realpathSync(resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url));
 if (invokedAsScript) {
   main().catch((error) => {
-    process.stderr.write(`${JSON.stringify({ error: error.message })}\n`);
+    process.stderr.write(`${JSON.stringify({ error: sanitizeErrorMessage(error) })}\n`);
     process.exitCode = 1;
   });
 }

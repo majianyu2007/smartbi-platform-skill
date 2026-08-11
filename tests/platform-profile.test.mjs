@@ -4,6 +4,8 @@ import assert from 'node:assert/strict';
 import {
   assertCompetitionCatalogDestination,
   assertCompetitionEtlGraph,
+  assertCompetitionEtlOutputMutationAllowed,
+  assertCompetitionEtlTableBindings,
   assertCompetitionSameCandidateParent,
   assertCompetitionTrainingCount,
   assertCompetitionUnionAllowed,
@@ -206,6 +208,10 @@ test('competition ETL rejects unions and non-material transformations', () => {
   }, competitionBaseUrl);
   assert.throws(() => assertCompetitionUnionAllowed(profile), /must not be unioned/);
   assert.throws(
+    () => assertCompetitionEtlOutputMutationAllowed(profile),
+    /must remain an exactly verified JDBC overwrite target/,
+  );
+  assert.throws(
     () => assertCompetitionEtlGraph(profile, {
       nodes: [
         { name: 'JDBC_DATASOURCE' },
@@ -213,7 +219,7 @@ test('competition ETL rejects unions and non-material transformations', () => {
         { type: 'JDBC_DATATARGER_OVERWRITE' },
       ],
     }),
-    /supported, explicitly configured material transformation/,
+    /closed-set, explicitly configured material transformation/,
   );
   assert.doesNotThrow(() => assertCompetitionEtlGraph(profile, {
     nodes: [
@@ -234,7 +240,7 @@ test('competition ETL rejects unions and non-material transformations', () => {
         configs: [{ name: 'fraction', value: '1' }],
       }],
     }),
-    /supported, explicitly configured material transformation/,
+    /closed-set, explicitly configured material transformation/,
   );
   assert.throws(
     () => assertCompetitionEtlGraph(profile, {
@@ -244,6 +250,51 @@ test('competition ETL rejects unions and non-material transformations', () => {
         configs: [{ name: 'value', value: 'anything' }],
       }],
     }),
-    /supported, explicitly configured material transformation/,
+    /closed-set, explicitly configured material transformation/,
+  );
+});
+
+test('competition ETL table bindings require one direct personal source distinct from target', () => {
+  const profile = normalizePlatformProfile({
+    id: COMPETITION_2026_PROFILE_ID,
+    schoolName: '示例大学',
+  }, competitionBaseUrl);
+  const source = {
+    tableId: 'TAB.input.input.null.TEAM_source',
+    dataSourceId: 'DS.input',
+    schemaId: 'SCHEMA.input.input.null',
+  };
+  const target = {
+    tableId: 'TAB.input.input.null.TEAM_target',
+    dataSourceId: 'DS.input',
+    schemaId: 'SCHEMA.input.input.null',
+  };
+  const context = {
+    sources: [source],
+    target,
+    personalFolder: {
+      dsId: 'DS.input',
+      bindingSchemaId: 'SCHEMA.input.input.null',
+    },
+    personalChildren: [{ id: source.tableId }, { id: target.tableId }],
+  };
+  assert.doesNotThrow(() => assertCompetitionEtlTableBindings(profile, context));
+  assert.throws(
+    () => assertCompetitionEtlTableBindings(profile, {
+      ...context,
+      sources: [source, { ...source, tableId: 'TAB.input.input.null.TEAM_other' }],
+      personalChildren: [
+        ...context.personalChildren,
+        { id: 'TAB.input.input.null.TEAM_other' },
+      ],
+    }),
+    /exactly one persisted source/,
+  );
+  assert.throws(
+    () => assertCompetitionEtlTableBindings(profile, {
+      ...context,
+      sources: [{ ...source, tableId: target.tableId }],
+    }),
+    /source and target table ids must differ/,
   );
 });

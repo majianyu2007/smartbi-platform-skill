@@ -100,8 +100,10 @@ The platform account is **shared by multiple team members**. You MUST:
 ### Credentials
 
 - First-run wizard stores a two-line file (account on line 1, password on line
-  2) at `~/.config/smartbi-platform/credentials.txt` with mode `0600`.
-  Existing files are supported through `SMARTBI_CRED_FILE`.
+  2) at `~/.config/smartbi-platform/credentials.txt`. Credential-backed login
+  is HTTPS-only. Each read rechecks that the path is a current-user-owned,
+  non-symlink regular file with exact mode `0600`.
+- Existing private files are supported through `SMARTBI_CRED_FILE`.
 - Persist the password only in that local credentials file. Never print, echo,
   return, commit, screenshot, or copy it into reports or shared notes.
 - Never fill login fields from chat content.
@@ -188,6 +190,7 @@ default). Environment variables override it per invocation:
 | `SMARTBI_CONFIG_FILE` | alternate machine-local config path | `~/.config/smartbi-platform/config.json` |
 | `SMARTBI_BASE_URL` | target Smartbi Vision root | `https://host.example/smartbi/vision` |
 | `SMARTBI_CDP_URL` | headed-browser fallback CDP endpoint | `http://127.0.0.1:9222` |
+| `SMARTBI_ALLOW_REMOTE_CDP` | opt in to a remote CDP endpoint; remote endpoints must use HTTPS/WSS | `1` |
 | `SMARTBI_CRED_FILE` | credentials file path | `~/.config/smartbi-platform/credentials.txt` |
 | `SMARTBI_CODEC_CACHE_FILE` | versioned frontend-coder cache | `~/.cache/smartbi-platform/transport-codec.json` |
 | `SMARTBI_PLAYWRIGHT_PATH` | explicit Playwright package/entry | `/path/to/playwright` |
@@ -214,7 +217,8 @@ capability. The profile:
 - keeps imported source tables in the authenticated personal acquisition
   folder while placing ETL, models, analyses, dashboards, and AIChat resources
   under that competition folder;
-- blocks Agent commands, requires `upload --source-url <public-http(s)-url>`,
+- blocks Agent and generic replay commands, requires `upload --source-url
+  <public-http(s)-url>` as validated provenance only (the URL is never fetched),
   and rejects AIChat training counts above 10,000;
 - permits only the official competition delivery stages documented in
   `references/competition-guardrails.md`.
@@ -269,21 +273,24 @@ TMPDIR=/tmp node scripts/smartbi.mjs resource-rename <parentId> <resourceId> <ne
 TMPDIR=/tmp node scripts/smartbi.mjs resource-move <sourceParentId> <resourceId> <targetParentId> --confirm-name <exactName> # general profile only
 TMPDIR=/tmp node scripts/smartbi.mjs resource-copy <sourceParentId> <resourceId> <targetParentId> <newName> --confirm-name <exactName> # general profile only
 TMPDIR=/tmp node scripts/smartbi.mjs resource-delete <parentId> <resourceId> --confirm-name <exactName>
-TMPDIR=/tmp node scripts/smartbi.mjs upload <csv> <name> --source-url <public-url> # source URL required only by competition-2026
+TMPDIR=/tmp node scripts/smartbi.mjs upload <localFile> <name> [--worksheet <exactWorksheet>] --source-url <publicProvenanceUrl> # source URL is validated provenance only; required by competition-2026
 TMPDIR=/tmp node scripts/smartbi.mjs etl-get <flowId>       # inspect saved ETL DAG
-TMPDIR=/tmp node scripts/smartbi.mjs etl-row-number <flowId> row_number
+TMPDIR=/tmp node scripts/smartbi.mjs etl-row-number <flowId> row_number --confirm-name <exactFlowName>
 TMPDIR=/tmp node scripts/smartbi.mjs etl-run <flowId> --confirm-target <exactTargetName>
 TMPDIR=/tmp node scripts/smartbi.mjs etl-node-list 派生列
-TMPDIR=/tmp node scripts/smartbi.mjs etl-insert <flowId> DATAPREPARE_SAMPLE '{"fraction":"0.8","seed":"10"}' sample_train
+TMPDIR=/tmp node scripts/smartbi.mjs etl-insert <flowId> DATAPREPARE_SAMPLE '{"fraction":"0.8","seed":"10"}' sample_train --confirm-name <exactFlowName>
+TMPDIR=/tmp node scripts/smartbi.mjs model-create <parentId> <dataSourceId> <tableId> <tableName> <name> --measures '[{"field":"sample_weight","aggregator":"SUM","alias":"Weighted population"}]' --etl-flow <flowId>
 TMPDIR=/tmp node scripts/smartbi.mjs analysis-profile <analysisId> metric_name,age_group,sex,metric_domain
 TMPDIR=/tmp node scripts/smartbi.mjs analysis-repair <analysisId> <rowField> <measure> <rowLabel> <measureLabel> [description] --confirm-name <exactAnalysisName>
 TMPDIR=/tmp node scripts/smartbi.mjs dashboard-repair-multi <dashboardId> <modelId> '<chartsJson>' [description] --confirm-name <exactDashboardName>
 TMPDIR=/tmp node scripts/smartbi.mjs aichat-graph-fields <modelId>
-TMPDIR=/tmp node scripts/smartbi.mjs aichat-graph-build <modelId> survey_city,age_code
+TMPDIR=/tmp node scripts/smartbi.mjs aichat-graph-build <parentId> <modelId> survey_city,age_code --confirm-name <exactModelName> --etl-flow <flowId> # --etl-flow is required and valid only in competition-2026
 TMPDIR=/tmp node scripts/smartbi.mjs aichat-graph-status <modelId>
+TMPDIR=/tmp node scripts/smartbi.mjs aichat-query <modelId> [--llm-id <exactId>] -- "请按指定口径汇总"
+TMPDIR=/tmp node scripts/smartbi.mjs aichat-export <modelId> <absolutePrivatePath> --mode report -- "生成分析报告"
 # General tenants only; competition-2026 rejects every agent-* command:
 TMPDIR=/tmp node scripts/smartbi.mjs agent-get <agentId>
-TMPDIR=/tmp node scripts/smartbi.mjs agent-run <agentId> "请分析指定问题"
+TMPDIR=/tmp node scripts/smartbi.mjs agent-run <agentId> "请分析指定问题" --confirm-name <exactAgentName>
 TMPDIR=/tmp node scripts/smartbi.mjs agent-deploy <agentId> --confirm-name <exactAgentName>
 TMPDIR=/tmp node scripts/smartbi.mjs nav 数据准备     # browser fallback
 TMPDIR=/tmp node scripts/smartbi.mjs manuals        # official manual links
@@ -309,26 +316,25 @@ TMPDIR=/tmp node scripts/smartbi.mjs manuals        # official manual links
 | `resource-move <sourceParentId> <resourceId> <targetParentId> --confirm-name <exactName>` | Move one owned resource with descendant/conflict checks and source/target postconditions; competition profile rejects generic moves | move receipt |
 | `resource-copy <sourceParentId> <resourceId> <targetParentId> <newName> --confirm-name <exactName> [--description <text>]` | Copy one owned resource with guarded recursive folder rollback; competition profile rejects generic copies | copy receipt |
 | `resource-delete <parentId> <resourceId> --confirm-name <exactName>` | Delete one exactly confirmed direct owned child after permission and post-delete checks; the sole non-namespaced exception is a legacy table in the authenticated personal acquisition folder | deletion receipt |
-| `upload <file> [tableName] [--replace --confirm-target <exactName>] [--source-url <url>]` | Import CSV/TXT/XLSX as a namespaced table; competition profile requires and returns a public source URL; replacement must be schema-preserving and exactly confirmed | `{ok, table, tableRef, rows, fields, replaced, sourceUrl}` |
+| `upload <localFile> [tableName] [--worksheet <exactName>] [--replace --confirm-target <exactName>] [--source-url <publicProvenanceUrl>]` | Import a non-empty local CSV/TXT/XLS/XLSX after exact worksheet/preview/schema checks. Competition requires a validated public provenance URL but never fetches or persists it. Replacement proves a distinct staging import and exact schema/content before target mutation. | terminal import, schema, row-count provenance, placement, and cleanup receipt |
 | `etl-create <parentId> <sourceTableId> <targetTableId> <name> [rowNumber|-] [description] --confirm-target <exactName>` | Build an intermediate owned source→optional row-number→materialized-output ETL; target overwrite is exactly confirmed and competition runs remain blocked until a meaningful transform exists | saved DAG |
 | `etl-union-create ... --confirm-target <exactName>` | Build a confirmed multi-source union on general tenants only; competition profile always rejects it | saved DAG |
-| `etl-get <flowId>` / `etl-run <flowId> [--confirm-target <exactName>]` | Inspect or execute one owned saved ETL; materialized overwrite requires exact target confirmation, every node success, and reconciliation with the reopened target | DAG / run and materialized-target receipt |
-| `etl-node-list [keyword]` | List live ETL node templates, ports, and config contracts | node summaries |
-| `etl-insert <flowId> <nodeName> [configJson] [instanceKey]` | Idempotently insert/update one unary transform before the target and record the explicitly configured keys; competition accepts only supported transforms with substantive settings | saved node/config summary |
-| `etl-row-number <flowId> [column]` | Idempotently add/update `增加序列号` | `{changed,nodeId,column}` |
-| `model-get <id>` / `model-create <parentId> <dataSourceId> <tableId> <tableName> <name> [description] [--etl-flow <flowId>]` / `model-clone ...` | Inspect/build/clone a model; competition creation requires same-folder ETL lineage and rejects cloning | model metadata and lineage |
-| `analysis-get <id>` / `analysis-create ...` / `analysis-run <id>` / `analysis-profile <id> <field,...>` / `analysis-repair ... --confirm-name <exactName>` / `analysis-clone ...` | Operate pivot analyses; repair is exactly confirmed, and competition create/clone/repair sources must stay in the same candidate folder | definition / category profile / reconciled result |
-| `dashboard-get <id>` / `dashboard-create ...` / `dashboard-create-multi ...` / `dashboard-repair-multi ... --confirm-name <exactName>` / `dashboard-clone ...` | Operate dashboards; repair is exactly confirmed, and competition create/clone/repair sources must stay in the same candidate folder | definition / presentation audit / saved dashboard |
-| `aichat-graph-list [keyword]` / `aichat-graph-status <modelId>` | List or inspect model-graph build state | graph status and selected fields |
+| `etl-describe <flowId> <description> --confirm-name <exactFlowName>` / `etl-insert ... --confirm-name ...` / `etl-output-dataset ... --confirm-name ...` / `etl-row-number ... --confirm-name ...` | Mutate one exactly confirmed owned flow, preserving unknown definition metadata, reloading the save, and clearing stale run identity | persisted DAG/change receipt |
+| `etl-get <flowId>` / `etl-run <flowId> --confirm-target <exactName>` | Inspect or execute one owned saved ETL. A run requires the exact current instance, every graph node successful, the exact materialized target, a typed terminal preview, and ordered schema identity after reopening. The platform exposes no authoritative reopened target-row-count endpoint, so the receipt explicitly reports `reconciled:false`. | DAG / terminal run, preview, and materialized-target evidence |
+| `etl-node-list [keyword]` | List live ETL node templates with normalized ports and config contracts | node summaries |
+| `model-get <id>` / `model-create <parentId> <dataSourceId> <tableId> <tableName> <name> [description] --measures <jsonArray> [--etl-flow <flowId>]` | Inspect or build a single-table model. Every measure is explicit `{field,aggregator,alias?,format?,businessDefinition?}`; `[]` means no measures. Competition requires same-folder successful ETL lineage. | deep model definition, source identity, and lineage receipt |
+| `model-create-relational <parentId> <name> <specJson> [description]` / `model-hierarchy-add ... --confirm-name ...` / `model-calc-measure-add ... --confirm-name ...` / `model-clone ...` | Build or mutate general-tenant models with explicit table measures and explicit relation keys/cardinality/grain; guarded full-model updates reject stale baselines and semantic drift. Competition rejects relational creation and cloning. | deep saved-model equivalence receipt |
+| `analysis-get <id>` / `analysis-create ...` / `analysis-create-hierarchy ...` / `analysis-run <id>` / `analysis-profile <id> <field,...>` / `analysis-repair ... --confirm-name <exactName>` / `analysis-clone ...` | Operate exact owned pivot analyses. Results are labeled `executionPreview`, not reconciliation; repair is surgical and refuses definitions whose semantics it cannot preserve. | definition, presentation audit, profile, and execution preview |
+| `dashboard-get <id>` / `dashboard-create[-multi] ...` / `dashboard-create-interactive ...` / `dashboard-jump-add ... --confirm-name ...` / `dashboard-repair-multi ... --confirm-name ...` / `dashboard-clone ...` | Build, link, jump, audit, repair, or clone owned dashboards using exact model/portlet/field identities. Repair is transactional and restores the captured original if verification fails. | deep saved-definition, presentation, interaction, and rollback receipt |
+| `aichat-graph-list [keyword]` / `aichat-graph-status <modelId>` | List or inspect model-graph build state | exact graph status and selected fields |
 | `aichat-graph-fields <modelId>` | Resolve selectable field names to fully qualified IDs | model field list |
-| `aichat-graph-build <modelId> <field,...>` | Validate and idempotently build one owned model graph | terminal build result |
-| `aichat-query <modelId> <prompt>` | Query an exact model and parse streamed artifacts | answer, tables, files |
-| `aichat-report <modelId> <prompt>` | Generate and parse an AIChat report | answer, tables, files |
-| `aichat-export <modelId> <path> <prompt>` | Persist the complete parsed AIChat result | output file summary |
-| `agent-get <agentId>` | Inspect graph, parameters, and deployment state; general profile only | parsed Agent resource |
-| `agent-create <parentId> <name> [desc] [systemPrompt] [userPrompt]` | Build a Start→LLM→Finish Agent from live node templates; general profile only | saved Agent summary |
-| `agent-run <agentId> <question>` | Run one owned Agent and poll/read LLM output; general profile only | answer, tokens, node states |
-| `agent-deploy <agentId> --confirm-name <exactAgentName>` | Idempotently publish one exactly confirmed owned Agent; general profile only | deployment relation |
+| `aichat-graph-build <parentId> <modelId> <field,...> --confirm-name <exactModelName> [--etl-flow <flowId>] [--rebuild]` | Authorize the exact direct-child model, validate unique fields/count provenance, and build to a new terminal success. Competition requires current same-folder ETL lineage. | terminal build and freshness receipt |
+| `aichat-query <modelId> [--llm-id <exactId>] [--] <prompt>` / `aichat-report ...` | Query exactly one ready owned model with cross-dataset, personal-knowledge, web, file, report, and project context disabled. Stdout is a bounded artifact summary, not raw rows and not a reconciliation claim. | bounded generated-artifact summary |
+| `aichat-export <modelId> <absolutePrivateEnvelopePath> --mode <query|report> [--llm-id <exactId>] [--overwrite --confirm-path <exactPath>] [--] <prompt>` | Persist the complete generated envelope atomically to a new current-user private file; exact path confirmation is mandatory for overwrite. | path, mode, permissions, digest, and artifact counts |
+| `agent-get <agentId>` | Inspect one exactly owned Start→LLM→Finish graph and deployment state; general profile only | redacted graph/deployment receipt |
+| `agent-create <parentId> <name> [desc] [systemPrompt] [userPrompt]` | Build an exact Start→LLM→Finish Agent from live node templates; general profile only | saved and reopened Agent summary |
+| `agent-run <agentId> <question> --confirm-name <exactAgentName>` | Run one exactly confirmed owned Agent and require every node plus a non-empty mapped Finish output; general profile only | redacted answer/tokens/node-state receipt |
+| `agent-deploy <agentId> --confirm-name <exactAgentName>` | Idempotently publish one exactly confirmed owned Agent and verify a unique persisted relation; general profile only | deployment relation |
 | `ui-open <resourceId>` | Open one owned catalog resource in the headed CDP browser | page title and URL |
 | `ui-dashboard-check <resourceId>` | Open and assert one owned dashboard renders | title, chart count, visible text |
 | `nav <module>` | Browser module navigation (CDP fallback) | `{state:"module", module, url}` |
@@ -345,6 +351,13 @@ personal acquisition folder, validates preview fields, and polls until import
 completes. Do not pass an existing table name unless you intend a schema-preserving
 REPLACE import. Added, removed, or reordered fields fail closed; delete the owned
 table with exact-name confirmation and import it anew when the schema changes.
+For XLS/XLSX, a multi-sheet workbook requires `--worksheet <exactName>`;
+missing, duplicate, or ambiguous worksheets fail before import. The importer
+validates ordered non-blank headers, row shape, complete field types, terminal
+status, exact personal-folder placement, and reopened physical-table identity.
+`--source-url` never changes the bytes uploaded: it is competition-only public
+provenance metadata and is not fetched.
+
 
 ## Beginner UI Map (verified live 2026-08-09)
 
@@ -402,19 +415,24 @@ API-first path, verified live:
    `etl-create <parentId> <sourceTableId> <targetTableId> <name> [rowNumber|-] [description] --confirm-target <exactName>`.
 3. Inspect with `etl-get`; discover live node contracts with `etl-node-list`.
 4. Add or update a supported unary transform with substantive `configJson` via
-   `etl-insert`. The command records the explicitly configured keys. A default,
-   empty, unknown, or no-op transform (including sample fraction `1`) does not
-   satisfy the competition ETL contract; `etl-row-number` never counts.
+   `etl-insert ... --confirm-name <exactFlowName>`. The command records the
+   explicitly configured keys. A default, empty, unknown, or no-op transform
+   (including sample fraction `1`) does not satisfy the competition ETL
+   contract; `etl-row-number` never counts.
 5. Run with `etl-run <flowId> --confirm-target <exactName>` for a materialized target.
-   The command reads the last transform's output, reopens the materialized
-   target, and rejects a field-count mismatch. Competition runs also reject
-   source-only or row-number-only DAGs and missing row/field previews.
+   The command requires the new run to be the flow's exact current instance,
+   every saved graph node to succeed, and the last transform to expose a typed
+   row preview. It reopens the materialized table and requires exact ordered
+   name/type schema identity. Smartbi exposes no authoritative reopened
+   target-row-count endpoint here, so the receipt keeps `reconciled:false`;
+   reconcile row counts independently before claiming completion.
 6. Use Playwright only for multi-input/output wiring or uncommon transforms
    whose port semantics are not safely inferable from the live node template.
 
 Rules:
 - API mutation/run is refused unless the flow name has the configured namespace.
-- `etl-row-number` is idempotent and requires exactly one connectable sink.
+- `etl-row-number` is idempotent, requires the exact current flow name, and
+  requires exactly one connectable sink.
 - Derived columns and custom filters use Spark SQL syntax; verify null/type behavior.
 - Never open or edit flows owned by other members.
 
@@ -425,6 +443,10 @@ Rules:
 2. On `competition-2026`, pass `--etl-flow <flowId>`. The command verifies that
    the flow is meaningful, belongs to the same candidate folder, and materializes
    the exact selected table before creating the model.
+   `model-create` also requires `--measures <jsonArray>`; each element names one
+   source field and an explicit supported aggregator. Use `[]` only when the
+   model intentionally has no measures. Numeric fields are never auto-promoted
+   to `SUM`.
 3. Flat survey files may use a one-table model; do not invent joins. For
    multi-table models, treat detected joins as proposals and verify keys,
    cardinality, and grain.
@@ -462,15 +484,21 @@ API path (preferred):
 
 1. `aichat-graph-fields <modelId>` and select meaningful low-cardinality
    dimensions only (for example, city); never vectorize record IDs.
-2. `aichat-graph-build <modelId> survey_city,age_code`. The command resolves
-   fully qualified field IDs, validates data counts, refuses non-namespaced
-   models, polls the build to terminal `SUCCESS`, and skips an identical
-   successful rebuild.
+2. Run `aichat-graph-build <parentId> <modelId> survey_city,age_code
+   --confirm-name <exactModelName>`. Competition additionally requires
+   `--etl-flow <flowId>`. The command proves exact direct-child ownership,
+   resolves unique fully qualified field IDs, validates count provenance, and
+   requires a new terminal success. A prior success with the same fields is not
+   treated as fresh evidence; pass `--rebuild` to start another build.
 3. Confirm with `aichat-graph-status <modelId>`, then use `aichat-query`,
-   `aichat-report`, or `aichat-export` against that exact model.
+   `aichat-report`, or `aichat-export` against that exact model. Query/report
+   stdout contains only a bounded artifact summary. Use `aichat-export` with an
+   absolute private path and explicit `--mode` when complete rows/files are
+   required.
 4. Ask narrow questions naming the measure, aggregation, grouping, filters, and
-   output precision. Reconcile every returned table/claim against the
-   pivot or an independent calculation.
+   output precision. Reconcile every returned table/claim against the pivot or
+   an independent calculation; generated output is not validation evidence by
+   itself.
 
 UI fallback: 运维设置 → AIChat系统选项 → 新建 → 全部资源 → 数据集 →
 team folder → target model → `构建模型图谱`. Select the same field set, click
@@ -492,8 +520,9 @@ model text before sending. For reports choose 技能 → 分析报告.
    dialog's question.
 3. Set system/user prompts and map `大模型 / 返回内容` to the Finish node's
    Markdown output.
-4. Save, then run `agent-run <agentId> <question>`. Accept only terminal
-   `FINISH` plus a non-empty LLM `result_content`.
+4. Save, then run `agent-run <agentId> <question> --confirm-name
+   <exactAgentName>`. Accept only the exact saved node set at terminal `FINISH`
+   plus a non-empty mapped Finish output.
 5. Publish with `agent-deploy <agentId> --confirm-name <exactAgentName>`; verify
    `dataagent/deploy/agent/{id}` returns a persisted relation. Deployment is idempotent.
 6. Only run or deploy namespaced Agents; do not modify shared or built-in ones.
@@ -511,17 +540,22 @@ model text before sending. For reports choose 技能 → 分析报告.
 
 ## Completion Evidence
 
-- import → `upload` ok + table visible in personal acquisition tree + row/field check;
-- ETL → terminal node success + expected field/row preview (and output table if materialized);
-- model → grain and total reconciliation, plus join checks when joins exist;
-- pivot/dashboard → business labels + no empty standalone filter portlet +
-  reconciled values; dashboard definition audit + headed-browser screenshot +
-  at least two usable categories for every comparison chart; filters/linkage
-  exercised when present;
-- AIChat → graph status success, exact model selected, and one reproducible query reconciled.
-- Agent (general profile only) → saved Start→LLM→Finish graph, terminal
-  `FINISH`, non-empty response, and persisted deployment relation when
-  publication was requested.
+- import → terminal success + exact personal-folder table identity + ordered
+  field names/types + provenance-labeled preview/terminal row counts;
+- ETL → exact current instance + every saved node successful + typed terminal
+  preview + reopened exact target schema; independently reconcile target rows
+  because the command intentionally reports `reconciled:false`;
+- model → exact source identity + deep saved semantic equivalence + explicit
+  measures, grain and total reconciliation, plus join checks when joins exist;
+- pivot/dashboard → successful execution preview + business labels + no empty
+  standalone filter portlet + independently reconciled values; dashboard
+  definition audit + headed-browser screenshot + at least two usable categories
+  for every comparison chart; filters/linkage/jumps exercised when present;
+- AIChat → exact graph status success + exact one-model request boundary +
+  substantive correlated artifact + one independently reconciled query;
+- Agent (general profile only) → exact saved Start→LLM→Finish graph, every node
+  terminal `FINISH`, non-empty mapped Finish output, and one unique persisted
+  deployment relation when publication was requested.
 
 Report exact artifacts created (all carrying the configured namespace), validation performed, and
 unresolved blockers. Never report credentials, account identifiers, raw

@@ -55,6 +55,9 @@ export function authorizeResourceDeletion({
   if (!displayNames.has(confirmName)) {
     throw new Error(`confirmation name does not match the selected resource: ${confirmName}`);
   }
+  if (parentKind === PERSONAL_ACQUISITION && resource.type !== 'BASETABLE') {
+    throw new Error(`personal acquisition deletion accepts only BASETABLE resources: ${resource.id}`);
+  }
   if (isNamespaced) return { legacy: false, confirmedName: confirmName };
   if (parentKind !== PERSONAL_ACQUISITION || resource.type !== 'BASETABLE') {
     throw new Error(`refusing to delete non-namespaced resource: ${resource.alias || resource.name}`);

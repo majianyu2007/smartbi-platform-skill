@@ -36,3 +36,14 @@ export function layoutLinearEtlGraph(graph, { startX = 350, startY = 50, gapX = 
   });
   return changed;
 }
+
+export function positionEtlNodeBeforeTarget(node, target, { gapX = 140 } = {}) {
+  if (!node || !target) throw new Error('ETL insertion requires both a node and terminal target');
+  const targetX = Number(target.x);
+  const targetY = Number(target.y);
+  node.x = Number.isFinite(targetX) ? targetX : 0;
+  node.y = Number.isFinite(targetY) ? targetY : 0;
+  target.x = node.x + gapX;
+  target.y = node.y;
+  return { node, target };
+}

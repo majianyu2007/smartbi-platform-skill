@@ -50,20 +50,25 @@ output, and downstream artifacts must read that ETL output.
 
 ## Stage 0A: Isolate candidate datasets before selection
 
-If the competition permits only one final dataset, create one sibling catalog
-folder per candidate before building any ETL. Keep every candidate's source,
-materialized output, model, analyses, dashboard, and AIChat graph inside that
-folder.
+If the competition permits only one final dataset, create one sibling candidate
+folder before building each ETL. Imported tables remain in the authenticated
+personal acquisition folder because Smartbi cannot persist them in a workspace
+folder; namespace each one and bind it to exactly one candidate. Keep that
+candidate's ETL, materialized model, analyses, dashboard, and AIChat graph as
+direct children of its candidate folder.
 
 Do not union, append, or join candidate outcome rows. Candidate comparison
 belongs in an external scorecard or metadata-only record, not in a shared
-Smartbi analytical model. Acceptance is per folder:
+Smartbi analytical model. Acceptance is per candidate:
 
-1. ETL reaches `FINISH`, every node reports `FINISH / OK`, and output rows reconcile.
+1. ETL reaches `FINISH`, every saved node succeeds for the exact current
+   instance, the terminal typed schema matches the reopened target, and row
+   counts are independently reconciled.
 2. The model contains exactly one source view from that candidate's ETL output.
-3. Saved analyses execute and return non-empty rows.
-4. The dashboard renders every expected chart in the browser.
-5. No candidate resources remain loose in the parent folder.
+3. Saved analyses execute and return a non-empty `executionPreview`.
+4. The dashboard renders every expected chart and interaction in the browser.
+5. No candidate workspace resources remain loose in the parent folder and no
+   imported source is consumed by more than one candidate.
 
 ## Stage 1: Import files
 
@@ -78,10 +83,19 @@ Official sequence:
 
 AI translation:
 
-- Input contract: approved file path, expected sheets/tables, target folder/database, expected columns.
-- Before upload: check authorization, file type, table naming, duplicates, and whether the source contains identifiers or sensitive fields.
-- After upload: compare discovered table/sheet names to the expected set; preview samples without printing sensitive values; record row counts and inferred field types.
-- Stop on unexpected worksheets, missing columns, type coercion, or failed import.
+- Input contract: one approved non-empty local CSV/TXT/XLS/XLSX path, an exact
+  worksheet when a workbook has more than one sheet, target logical name, and
+  expected ordered columns/types. `--source-url` is competition-only validated
+  public provenance and is never fetched as the import source.
+- Before upload: check authorization, regular-file type, table naming,
+  duplicates, identifiers/sensitive fields, and workbook-sheet uniqueness.
+- After upload: require terminal success, exact personal-folder placement,
+  ordered non-blank headers, row shape/types, reopened physical identity, and
+  provenance-labeled preview versus terminal row counts.
+- Stop on unsupported/empty input, ambiguous worksheets, missing or duplicate
+  columns, incomplete types, unexpected row shape, or failed import. Replacement
+  additionally requires exact target confirmation, a distinct proven staging
+  table, the same source digest, and exact ordered schema identity.
 
 ## Stage 2: Self-service ETL
 
@@ -135,8 +149,11 @@ Competition acceptance gate:
   aggregation, pivot, and ranking operation is represented by a configured
   Smartbi node whose business purpose is documented.
 - Decorative no-op nodes do not count.
-- A run is accepted only when every node succeeds, the materialized output is
-  reopened, and the reconciled row/field counts match the documented rules.
+- A run is accepted only when every saved node succeeds for the exact current
+  instance, the materialized output is reopened, and its ordered name/type
+  schema matches the typed terminal preview. Reconcile target row counts
+  independently; the current API has no authoritative reopened target-count
+  endpoint and the CLI deliberately reports `reconciled:false`.
 - The data model, analyses, dashboard, and AIChat graph use the materialized ETL
   output rather than a separately prepared local mart.
 
@@ -149,16 +166,20 @@ Verified API-first pattern for a flat survey table:
 3. Inspect the saved DAG with `etl-get` and the live node catalog with
    `etl-node-list`.
 4. Add a supported unary transform with substantive `configJson` through
-   `etl-insert`. The CLI records the configured keys; default/empty/unknown
-   transforms and no-op sample fraction `1` do not satisfy competition evidence.
+   `etl-insert ... --confirm-name <exactFlowName>`. The CLI records the
+   configured keys; default/empty/unknown transforms and no-op sample fraction
+   `1` do not satisfy competition evidence. `etl-describe`,
+   `etl-output-dataset`, and `etl-row-number` use the same exact flow-name guard.
 5. Run materialized output with
-   `etl-run <flowId> --confirm-target <exactName>`; require the flow and every
+   `etl-run <flowId> --confirm-target <exactName>`; require the returned
+   instance to be the saved flow's exact current instance and every saved graph
    node to reach a successful terminal state. Competition mode rejects
    source-only and row-number-only DAGs.
-6. The command reads the output port immediately before the materialized sink,
-   reopens the target table, and reconciles the preview field count and rows
-   reported by the platform. Treat an unavailable preview as failure in
-   competition mode.
+6. The command reads a typed output-port preview immediately before the
+   materialized sink, reopens the exact target table, and requires exact ordered
+   field-name/type identity. The preview row count is labeled by source and may
+   not be a complete target count; treat `materializedTarget.reconciled:false`
+   as an explicit requirement for independent reconciliation.
 7. Fall back to the headed UI only for multi-port wiring or transformations
    whose live port contracts cannot be inferred safely.
 
@@ -176,12 +197,21 @@ Official sequence:
 7. Add calculated columns and calculated measures.
 8. Save.
 
+For every `model-create`, pass an explicit `--measures <jsonArray>`. Each entry
+is `{field,aggregator,alias?,format?,businessDefinition?}` and must resolve one
+source field exactly; `[]` means intentionally no measures. Numeric fields are
+never auto-promoted to `SUM`.
+
 For `competition-2026`, create a single-table model with
-`model-create ... --etl-flow <flowId>`. The flow and model must share the same
-candidate folder, the DAG must contain a supported, explicitly configured
-transformation, and its materialized target must be the selected model table.
-Model cloning is rejected. Analyses and dashboards may consume or clone only
-resources that are direct children of their own candidate folder.
+`model-create ... --measures '<jsonArray>' --etl-flow <flowId>`. The flow and
+model must share the same candidate folder, the saved current DAG must contain a
+supported substantive transform, every node must have succeeded for that exact
+instance, and the materialized target must be the selected model table.
+Relational creation and model cloning are rejected. General-tenant
+`model-create-relational` requires explicit measures on every table and explicit
+confirmed relation fields, grain, link type, cardinality, filter direction, and
+referential-integrity choice. Analyses and dashboards may consume or clone only
+resources that satisfy their placement contract.
 
 AI model checklist:
 
@@ -283,6 +313,22 @@ headed-browser screenshot showing the expected category bars. Use
 `dashboard-repair-multi` for owned legacy dashboards whose bindings, labels, or
 layout metadata are stale.
 
+API-first interaction commands:
+
+- `dashboard-create-interactive <parentId> <modelId> <name> <specJson>
+  [description]` requires at least two charts, one typed filter with exact chart
+  targets, and at least one non-duplicated linkage source.
+- `dashboard-jump-add <sourceDashboardId> <targetDashboardId> <specJson>
+  --confirm-name <exactSourceDashboardName>` selects source and target portlets
+  by stable ID or one unambiguous index, checks field-type compatibility, and
+  proves that the target filter affects an existing visualization.
+- `dashboard-repair-multi` deep-compares the reopened definition. If save or
+  verification fails, it restores and verifies the captured original instead
+  of leaving a partial repair.
+
+Saved interaction metadata is necessary but not sufficient. Exercise each
+filter, linkage, and jump in the headed browser, then restore the initial state.
+
 ## Stage 5: AIChat
 
 ### Build a model graph
@@ -322,6 +368,30 @@ Verified graph/query acceptance:
 - Reconcile every returned value against the validated pivot or local weighted
   aggregate before using the prose conclusion.
 
+CLI graph/query contract:
+
+```bash
+node scripts/smartbi.mjs aichat-graph-build <parentId> <modelId> <fieldId,...> \
+  --confirm-name <exactModelName> [--etl-flow <flowId>] [--rebuild]
+node scripts/smartbi.mjs aichat-query <modelId> [--llm-id <exactId>] -- "<prompt>"
+node scripts/smartbi.mjs aichat-report <modelId> [--llm-id <exactId>] -- "<prompt>"
+node scripts/smartbi.mjs aichat-export <modelId> <absolutePrivateEnvelopePath> \
+  --mode <query|report> [--llm-id <exactId>] \
+  [--overwrite --confirm-path <exactPath>] -- "<prompt>"
+```
+
+Graph mutation requires exact direct-child ownership, the model's exact current
+name, a unique field set, and a newly observed terminal success. Competition
+also requires current same-folder ETL provenance. Query/report binds exactly one
+ready model and disables cross-dataset, personal-knowledge, web, file, report,
+and project context. Stdout is only a bounded artifact summary; complete
+generated artifacts require the private atomic export envelope. Neither form is
+a reconciliation result.
+
+Recommended questions, model background, dynamic columns, and condition-format
+mutation remain explicitly unsupported until their live persistence schemas
+and postconditions are captured.
+
 ### Analysis report
 
 1. In AIChat choose `技能`.
@@ -354,8 +424,8 @@ CLI:
 
 ```bash
 node scripts/smartbi.mjs agent-create <parentId> <name> "<desc>" "<systemPrompt>" "<userPrompt>"
-node scripts/smartbi.mjs agent-run <agentId> "question"
-node scripts/smartbi.mjs agent-deploy <agentId>
+node scripts/smartbi.mjs agent-run <agentId> "question" --confirm-name <exactAgentName>
+node scripts/smartbi.mjs agent-deploy <agentId> --confirm-name <exactAgentName>
 node scripts/smartbi.mjs agent-get <agentId>
 ```
 
@@ -373,7 +443,8 @@ Routine resource-tree operations use API commands, not manual browser menus:
 3. Apply visible business aliases with `resource-rename`; keep stable IDs and
    physical names when renaming them would require destructive recreation.
 4. Consolidate owned resources with `resource-move`. The command rejects target
-   collisions and moves into a descendant.
+   collisions, incompatible catalog domains, and moving a folder into itself or
+   any descendant.
 5. Use `resource-copy` only when an actual duplicate is required. Non-folder
    resources use the live `copyAndPaste` contract; folders copy recursively.
 6. Re-run `catalog-audit`. Require zero namespaced resources outside the intended

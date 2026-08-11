@@ -21,14 +21,33 @@ import { randomBytes } from 'node:crypto';
 import { join, dirname } from 'node:path';
 import {
   chmodSync,
+  closeSync,
+  constants as fsConstants,
   existsSync,
+  fstatSync,
+  lstatSync,
+  openSync,
   readFileSync,
-  statSync,
   writeFileSync,
 } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { inspectEnvironment, loadPlaywright } from './install.mjs';
 import { createTransportCodec } from './transport-codec.mjs';
+import {
+  assertCompetitionGenericAccess,
+  assertCredentialFileMetadata,
+  assertCredentialTransport,
+  assertLoginSucceeded,
+  assertSessionProbeSucceeded,
+  nextSmartbixResendState,
+  normalizeCdpUrl,
+  normalizeVisionBaseUrl as normalizeBaseUrl,
+  parseConfigJson,
+  redactCdpUrl,
+  readBoundedResponseText,
+  safeHttpError as safeHttpFailure,
+  sanitizeErrorMessage,
+} from './transport-safety.mjs';
 import {
   DELETION_PARENT_KINDS,
   authorizeResourceDeletion,
@@ -36,24 +55,166 @@ import {
 } from './deletion-guard.mjs';
 import {
   agentOutputResourceId,
+  assertAgentNodeStatesSucceeded,
   assertAgentRunSucceeded,
+  createAgentOutputReceipt,
+  extractAgentFinishOutput,
   isAgentTerminalState,
+  summarizeAgentNodeStates,
 } from './agent-state.mjs';
+import {
+  agentRootIdForSelf,
+  assertAgentDeploymentRelations,
+  assertExactAgentNameConfirmation,
+  assertOwnedAgentGraphIdentity,
+  assertSameAgentGraphContract,
+  assertSupportedAgentGraph,
+  findDirectOwnedAgentChild,
+  summarizeAgentDeploymentRelation,
+  summarizeAgentResource,
+  validateSupportedAgentResource,
+} from './agent-graph.mjs';
 import { normalizeCatalogElements } from './catalog-elements.mjs';
+import {
+  applyNamespaceMarker,
+  assertCatalogPlacementCompatible,
+  assertCopyTargetOutsideSource,
+  assertContiguousOwnedFolderChain,
+  assertDirectResourceSnapshot,
+  createImmutableCatalogCopyManifest,
+  findCatalogCollision,
+  isCopyableCatalogFolder,
+  isKnownCatalogFolder,
+  normalizeNamingConfig,
+  shouldTraverseCatalogNode,
+} from './catalog-safety.mjs';
 import {
   auditAnalysisPresentation,
   improveAnalysisPresentation,
 } from './analysis-presentation.mjs';
-import { assertReplacementSchemaCompatible } from './import-schema.mjs';
-import { parseAichatStream } from './aichat-stream.mjs';
-import { dashboardGrid } from './dashboard-multi.mjs';
+import {
+  analysisBindingSnapshot,
+  analysisCrossTables,
+  analysisModelIds,
+  assertAnalysisBindings,
+  assertAnalysisQueryResult,
+  assertSavedAnalysisEquivalent,
+  assertSimpleAnalysisRepairable,
+  buildAnalysisQuery as buildVerifiedAnalysisQuery,
+  patchSimpleAnalysisDefinition,
+  remapAnalysisPortlets,
+  resolveAnalysisResource,
+} from './analysis-definition.mjs';
+import {
+  MODEL_AGGREGATORS,
+  assertModelBaselineUnchanged,
+  assertModelReferenceGraph,
+  assertNoModelCloneResidue,
+  assertOnlyModelCollectionsChanged,
+  assertSavedModelEquivalent,
+  buildExplicitMeasures,
+  normalizeMeasureSpecifications,
+  normalizeModelSourceReference,
+  normalizeModelSourceTable,
+  modelSemanticDefinition,
+  qualifyModelResource,
+  remapModelClone,
+  synchronizeModelMeasureNode,
+} from './model-semantics.mjs';
+import {
+  assertCompleteImportSchema,
+  assertImportedSchemaMatches,
+  assertReplacementSchemaCompatible,
+} from './import-schema.mjs';
+import {
+  classifyLocalImportSource,
+  importRowCountReceipt,
+  planImportMutation,
+  planLocalImportSource,
+  resolveWorksheetSelection,
+  validateImportPreview,
+} from './import-contract.mjs';
+import {
+  DEFAULT_AICHAT_STREAM_LIMITS,
+  parseAichatStream,
+} from './aichat-stream.mjs';
+import {
+  buildAichatRequest,
+  createAichatEnvelope,
+  parseAichatExportArgs,
+  parseAichatRunArgs,
+  selectAichatLlm,
+  selectAichatSkills,
+  summarizeAichatEnvelope,
+} from './aichat-query.mjs';
+import { writePrivateAichatEnvelope } from './aichat-export.mjs';
+import {
+  assertAichatGraphReady,
+  assertExactPersistedGraphFieldIds,
+  authorizeAichatGraphMutationTarget,
+  extractAichatValidationCount,
+  inspectAichatGraphNode,
+  inspectAichatGraphStatus,
+  aichatGraphBuildCompletionEvidence,
+  parseAichatGraphBuildArgs,
+  planAichatGraphBuild,
+  resolveUniqueGraphFields,
+  verifyAichatTrainingCountProvenance,
+} from './aichat-graph.mjs';
+import {
+  chartTypeContract,
+  dashboardGrid,
+  normalizeDashboardCharts,
+} from './dashboard-multi.mjs';
 import { auditDashboardPresentation } from './dashboard-presentation.mjs';
+import { serializeDashboardResource } from './dashboard-model.mjs';
+import {
+  assertCompatibleDashboardDataTypes,
+  assertFilterImpactsVisualization,
+  assertInteractiveDashboardPersisted,
+  assertJumpRulePersisted,
+  locateDashboardPortletField,
+  parseDashboardJumpSpec,
+  parseInteractiveDashboardSpec,
+  resolveDashboardPortletReference,
+  validateDashboardPortletIndexes,
+} from './dashboard-interactions.mjs';
+import {
+  assertDashboardRepairable,
+  assertSavedDashboardMatchesDefinition,
+} from './dashboard-verification.mjs';
 import { summarizeDimensionKeys } from './dimension-profile.mjs';
-import { assertEtlRunSucceeded, isEtlTerminalState } from './etl-state.mjs';
-import { layoutLinearEtlGraph } from './etl-layout.mjs';
+import {
+  assertCurrentEtlRunEvidence,
+  assertEtlRunSucceeded,
+  isEtlTerminalState,
+  summarizeEtlPortResult,
+} from './etl-state.mjs';
+import { positionEtlNodeBeforeTarget } from './etl-layout.mjs';
+import {
+  assertDistinctEtlTableIds,
+  assertExecutableEtlGraph,
+  assertEtlGraphPersisted,
+  assertEtlProcessDagMetadataPreserved,
+  assertEtlSchemasIdentical,
+  assertVerifiedEtlTemplate,
+  configureEtlNode,
+  createEtlLink,
+  describeEtlNodeTemplate,
+  extractEtlTableBindings,
+  normalizeEtlGraph,
+  normalizeEtlNodeCatalog,
+  normalizeEtlSchema,
+  parseImportedTableReference,
+  prepareEtlProcessDag,
+  sanitizeEtlContractValue,
+  spliceUnaryBeforeTerminal,
+} from './etl-contracts.mjs';
 import {
   assertCompetitionCatalogDestination,
   assertCompetitionEtlGraph,
+  assertCompetitionEtlOutputMutationAllowed,
+  assertCompetitionEtlTableBindings,
   assertCompetitionSameCandidateParent,
   assertCompetitionTrainingCount,
   assertCompetitionUnionAllowed,
@@ -71,45 +232,58 @@ const CONFIG_FILE = process.env.SMARTBI_CONFIG_FILE || join(SKILL_DIR, 'config.j
 // Config file (config.json in skill dir, gitignored) is written by `setup`.
 // Environment variables always take precedence over the config file.
 function loadConfig() {
+  let source;
   try {
-    if (!existsSync(CONFIG_FILE)) return {};
-    return JSON.parse(readFileSync(CONFIG_FILE, 'utf8'));
-  } catch (e) {
-    return { __error: String(e.message || e) };
+    source = readFileSync(CONFIG_FILE, 'utf8');
+  } catch (error) {
+    if (error?.code === 'ENOENT') return { config: {}, error: null };
+    return { config: {}, error: new Error('unable to read Smartbi config file') };
+  }
+  try {
+    return { config: parseConfigJson(source), error: null };
+  } catch (error) {
+    return {
+      config: {},
+      error: new Error(`invalid Smartbi config file: ${sanitizeErrorMessage(error)}`),
+    };
   }
 }
-const CONFIG = loadConfig();
+const { config: CONFIG, error: CONFIG_ERROR } = loadConfig();
+let STARTUP_ERROR = CONFIG_ERROR;
 
-const CDP_URL = process.env.SMARTBI_CDP_URL || CONFIG.cdpUrl || 'http://127.0.0.1:9222';
+function startupValue(factory, fallback) {
+  try {
+    return factory();
+  } catch (error) {
+    STARTUP_ERROR ||= new Error(sanitizeErrorMessage(error));
+    return fallback;
+  }
+}
+
+const CDP_URL = startupValue(
+  () => normalizeCdpUrl(
+    process.env.SMARTBI_CDP_URL || CONFIG.cdpUrl || 'http://127.0.0.1:9222',
+    { allowRemote: process.env.SMARTBI_ALLOW_REMOTE_CDP === '1' },
+  ),
+  'http://127.0.0.1:9222/',
+);
+const CDP_DISPLAY_URL = redactCdpUrl(CDP_URL);
 const DEFAULT_BASE_URL = 'https://smartbi.example.com/smartbi/vision';
 
-function normalizeBaseUrl(value) {
-  let parsed;
-  try {
-    parsed = new URL(String(value || ''));
-  } catch {
-    throw new Error(`invalid Smartbi Vision base URL: ${value || '(empty)'}`);
-  }
-  if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) {
-    throw new Error('Smartbi Vision base URL must use HTTP(S) without embedded credentials');
-  }
-  parsed.hash = '';
-  parsed.search = '';
-  parsed.pathname = parsed.pathname.replace(/\/+$/, '');
-  if (!parsed.pathname.endsWith('/vision')) {
-    throw new Error('Smartbi Vision base URL must end with /vision');
-  }
-  return parsed.toString().replace(/\/$/, '');
-}
-
-const BASE_URL = normalizeBaseUrl(process.env.SMARTBI_BASE_URL || CONFIG.baseUrl || DEFAULT_BASE_URL);
+const BASE_URL = startupValue(
+  () => normalizeBaseUrl(process.env.SMARTBI_BASE_URL || CONFIG.baseUrl || DEFAULT_BASE_URL),
+  DEFAULT_BASE_URL,
+);
 const PROFILE_ENV_OVERRIDE = process.env.SMARTBI_PLATFORM_PROFILE || process.env.SMARTBI_SCHOOL_NAME
   ? {
       id: process.env.SMARTBI_PLATFORM_PROFILE || CONFIG.platformProfile?.id,
       schoolName: process.env.SMARTBI_SCHOOL_NAME || CONFIG.platformProfile?.schoolName,
     }
   : CONFIG.platformProfile;
-const PLATFORM_PROFILE = normalizePlatformProfile(PROFILE_ENV_OVERRIDE, BASE_URL);
+const PLATFORM_PROFILE = startupValue(
+  () => normalizePlatformProfile(PROFILE_ENV_OVERRIDE, BASE_URL),
+  null,
+);
 const LOGIN_URL = `${BASE_URL}/index.jsp`;
 const CRED_FILE = process.env.SMARTBI_CRED_FILE
   || CONFIG.credFile
@@ -120,25 +294,23 @@ const CODEC_CACHE_FILE = process.env.SMARTBI_CODEC_CACHE_FILE
 
 // Naming preference: prefix (default) or suffix, value configurable.
 // e.g. prefix "TEAM_" -> TEAM_survey_demo ; suffix "_TEAM" -> survey_demo_TEAM
-const NAMING_MODE = process.env.SMARTBI_NAMING || CONFIG.naming?.mode || 'prefix';
-const NAMESPACE = process.env.SMARTBI_NAMESPACE || CONFIG.naming?.value || 'TEAM_';
-const MAX_TABLE_NAME = 30; // server truncates longer names
+const MAX_TABLE_NAME = 30; // server truncates longer table names
+const EFFECTIVE_NAMING = startupValue(
+  () => normalizeNamingConfig(
+    process.env.SMARTBI_NAMING || CONFIG.naming?.mode || 'prefix',
+    process.env.SMARTBI_NAMESPACE || CONFIG.naming?.value || 'TEAM_',
+    { maxLength: MAX_TABLE_NAME },
+  ),
+  { mode: 'prefix', value: 'TEAM_' },
+);
+const { mode: NAMING_MODE, value: NAMESPACE } = EFFECTIVE_NAMING;
 
 function applyNamespace(base) {
-  const value = String(NAMESPACE || '');
-  const source = String(base || '');
-  const alreadyNamespaced = NAMING_MODE === 'suffix'
-    ? source.endsWith(value)
-    : source.startsWith(value);
-  if (alreadyNamespaced) return source.slice(0, MAX_TABLE_NAME);
+  return applyNamespaceMarker(base, EFFECTIVE_NAMING);
+}
 
-  const name = NAMING_MODE === 'suffix' ? `${source}${value}` : `${value}${source}`;
-  if (name.length > MAX_TABLE_NAME) {
-    // Prefer keeping the namespace marker; trim only the resource name.
-    if (NAMING_MODE === 'suffix') return `${source.slice(0, MAX_TABLE_NAME - value.length)}${value}`;
-    return `${value}${source.slice(0, MAX_TABLE_NAME - value.length)}`;
-  }
-  return name;
+function applyTableNamespace(base) {
+  return applyNamespaceMarker(base, EFFECTIVE_NAMING, { maxLength: MAX_TABLE_NAME });
 }
 
 function hasNamespace(name) {
@@ -218,6 +390,7 @@ async function ensureTransportCodec({ refresh = false } = {}) {
     codecNegotiationPromise = transportCodec.negotiate(async (adapter) => {
       const response = await fetch(`${BASE_URL}/RMIServlet`, {
         method: 'POST',
+        redirect: 'manual',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
           'If-Modified-Since': '0',
@@ -247,11 +420,18 @@ async function ensureTransportCodec({ refresh = false } = {}) {
   return codecNegotiationPromise;
 }
 
-async function rmi(className, methodName, params = [], timeoutMs = 60000) {
+async function rmi(
+  className,
+  methodName,
+  params = [],
+  timeoutMs = 60000,
+  { allowUnauthenticated = false } = {},
+) {
   await ensureTransportCodec();
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const res = await fetch(`${BASE_URL}/RMIServlet`, {
+    const response = await fetch(`${BASE_URL}/RMIServlet`, {
       method: 'POST',
+      redirect: 'manual',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
         'If-Modified-Since': '0',
@@ -260,17 +440,27 @@ async function rmi(className, methodName, params = [], timeoutMs = 60000) {
       body: encodeRmi(className, methodName, params),
       signal: AbortSignal.timeout(timeoutMs),
     });
-    grabCookies(res);
-    const text = await res.text();
+    grabCookies(response);
+    const text = await response.text();
+    let decoded;
     try {
-      return { status: res.status, ...parseTransportJson(text) };
+      decoded = parseTransportJson(text);
     } catch {
+      if (!response.ok) {
+        throw safeHttpFailure('RMI', response, 'response could not be decoded');
+      }
       if (attempt === 0) {
         await ensureTransportCodec({ refresh: true });
         continue;
       }
-      return { status: res.status, retCode: 'PARSE_ERROR', result: text.slice(0, 400) };
+      throw safeHttpFailure('RMI', response, 'response could not be decoded');
     }
+    if (!response.ok) throw safeHttpFailure('RMI', response);
+    const result = { status: response.status, ...decoded };
+    if (result.retCode === 'CLIENT_USER_NOT_LOGIN' && !allowUnauthenticated) {
+      throw new Error('Smartbi authentication is required');
+    }
+    return result;
   }
   throw new Error('unreachable RMI transport state');
 }
@@ -278,7 +468,7 @@ async function rmi(className, methodName, params = [], timeoutMs = 60000) {
 const SMARTBIX_API = `${BASE_URL.replace(/\/vision\/?$/, '')}/smartbix/api`;
 
 function isAuthenticationFailure(status, responseUrl, text, parsed = null) {
-  if ([401, 403, 406].includes(status)) return true;
+  if ([401, 403].includes(status)) return true;
   if (String(responseUrl || '').includes('/login.jsp')) return true;
   if (parsed?.code === 'REDIRECT_TO_SMARTBI') return true;
   const sample = String(text || '').slice(0, 1000);
@@ -288,50 +478,89 @@ function isAuthenticationFailure(status, responseUrl, text, parsed = null) {
 
 async function smartbixApi(
   path,
-  { method = 'GET', body, timeoutMs = 60000, retryAuth = true } = {},
+  {
+    method = 'GET',
+    body,
+    timeoutMs = 60000,
+  } = {},
 ) {
   if (jar.size === 0) await ensureSession();
-  const headers = {
-    'Accept': 'application/json, text/plain, */*; charset=utf-8',
-    'Cache-Control': 'no-cache',
-    'Pragma': 'no-cache',
-    'If-Modified-Since': '0',
-    'SMX-Encode': 'encode',
-    'Cookie': cookieHeader(),
-  };
-  let payload;
-  if (body !== undefined) {
-    headers['Content-Type'] = 'application/json;charset=UTF-8';
-    const raw = typeof body === 'string' ? body : JSON.stringify(body);
-    payload = replaceEncode(raw);
-  }
-  const res = await fetch(`${SMARTBIX_API}/${String(path).replace(/^\/+/, '')}`, {
-    method,
-    headers,
-    body: payload,
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-  grabCookies(res);
-  const text = await res.text();
-  let parsed;
-  try {
-    parsed = parseTransportJson(text);
-  } catch {
-    if (isAuthenticationFailure(res.status, res.url, text) && retryAuth) {
+  const normalizedMethod = String(method).toUpperCase();
+  const rawBody = body === undefined
+    ? undefined
+    : (typeof body === 'string' ? body : JSON.stringify(body));
+  const expectedTextResponse = (
+    normalizedMethod === 'GET'
+    && /^miningnode\/portresult\/[^/]+\/[^/]+\/csv(?:\?.*)?$/i.test(String(path))
+  );
+  const deadline = Date.now() + timeoutMs;
+  let retryAuth = true;
+  let retryCodec = normalizedMethod === 'GET';
+  let resendState = { resendCount: 0, encodeTransport: true };
+
+  while (true) {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) throw new Error('Smartbix request deadline exceeded');
+    const headers = {
+      Accept: 'application/json, text/plain, */*; charset=utf-8',
+      'Cache-Control': 'no-cache',
+      Pragma: 'no-cache',
+      'If-Modified-Since': '0',
+      ...(resendState.encodeTransport ? { 'SMX-Encode': 'encode' } : {}),
+      Cookie: cookieHeader(),
+    };
+    if (rawBody !== undefined) headers['Content-Type'] = 'application/json;charset=UTF-8';
+    const response = await fetch(`${SMARTBIX_API}/${String(path).replace(/^\/+/, '')}`, {
+      method: normalizedMethod,
+      redirect: 'manual',
+      headers,
+      body: rawBody === undefined
+        ? undefined
+        : (resendState.encodeTransport ? replaceEncode(rawBody) : rawBody),
+      signal: AbortSignal.timeout(Math.max(1, remainingMs)),
+    });
+    grabCookies(response);
+    const text = await response.text();
+    let parsed;
+    try {
+      parsed = parseTransportJson(text);
+    } catch {
+      if (isAuthenticationFailure(response.status, response.url, text)) {
+        if (!retryAuth) throw new Error('Smartbix authentication failed after retry');
+        retryAuth = false;
+        jar.clear();
+        await ensureSession();
+        continue;
+      }
+      if (response.ok && expectedTextResponse) return text;
+      if (response.ok && retryCodec) {
+        retryCodec = false;
+        await ensureTransportCodec({ refresh: true });
+        continue;
+      }
+      throw safeHttpFailure('Smartbix API', response, 'response could not be decoded');
+    }
+
+    if (isAuthenticationFailure(response.status, response.url, text, parsed)) {
+      if (!retryAuth) throw new Error('Smartbix authentication failed after retry');
+      retryAuth = false;
       jar.clear();
       await ensureSession();
-      return smartbixApi(path, { method, body, timeoutMs, retryAuth: false });
+      continue;
     }
-    if (res.ok) return text;
-    throw new Error(`Smartbix API returned non-JSON (${res.status} ${path}): ${text.slice(0, 240)}`);
+    if (parsed?.code === 'RESEND_REQUEST') {
+      resendState = nextSmartbixResendState(resendState);
+      const delayMs = 200 * resendState.resendCount;
+      const remainingAfterResponse = deadline - Date.now();
+      if (remainingAfterResponse <= delayMs) {
+        throw new Error('Smartbix request deadline exceeded during RESEND retry');
+      }
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      continue;
+    }
+    if (!response.ok) throw safeHttpFailure('Smartbix API', response);
+    return parsed;
   }
-  if (isAuthenticationFailure(res.status, res.url, text, parsed) && retryAuth) {
-    jar.clear();
-    await ensureSession();
-    return smartbixApi(path, { method, body, timeoutMs, retryAuth: false });
-  }
-  if (!res.ok) throw new Error(`Smartbix API failed (${res.status} ${path}): ${JSON.stringify(parsed)}`);
-  return parsed;
 }
 
 const SMARTBI_ROOT = BASE_URL.replace(/\/vision\/?$/, '');
@@ -341,6 +570,7 @@ async function plainJsonRequest(path, {
   body,
   accept = 'application/json, text/plain, */*',
   timeoutMs = 120000,
+  maxResponseBytes = 8 * 1024 * 1024,
   retryAuth = true,
 } = {}) {
   if (!path || /^https?:/i.test(path) || String(path).includes('..')) {
@@ -357,25 +587,30 @@ async function plainJsonRequest(path, {
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   const response = await fetch(`${SMARTBI_ROOT}/${String(path).replace(/^\/+/, '')}`, {
     method,
+    redirect: 'manual',
     headers,
     body: body === undefined ? undefined : JSON.stringify(body),
     signal: AbortSignal.timeout(timeoutMs),
   });
   grabCookies(response);
-  const text = await response.text();
+  const text = await readBoundedResponseText(response, {
+    maxBytes: maxResponseBytes,
+    label: 'Smartbi API response',
+  });
   let parsed = null;
   try {
     parsed = JSON.parse(text);
   } catch {}
-  if (isAuthenticationFailure(response.status, response.url, text, parsed) && retryAuth) {
+  if (isAuthenticationFailure(response.status, response.url, text, parsed)) {
+    if (!retryAuth) throw new Error('Smartbi API authentication failed after retry');
     jar.clear();
     await ensureSession();
     return plainJsonRequest(path, {
-      method, body, accept, timeoutMs, retryAuth: false,
+      method, body, accept, timeoutMs, maxResponseBytes, retryAuth: false,
     });
   }
   if (!response.ok) {
-    throw new Error(`Smartbi API failed (${response.status} ${path}): ${text.slice(0, 500)}`);
+    throw safeHttpFailure('Smartbi API', response);
   }
   return parsed ?? text;
 }
@@ -389,44 +624,109 @@ function shortId(bytes = 9) {
 }
 
 // ---- commands ----
-function loadCredentials() {
-  const [user, pass] = readFileSync(CRED_FILE, 'utf8').split(/\r?\n/);
-  if (!user || !pass) throw new Error(`credentials file incomplete: ${CRED_FILE}`);
+function effectiveUserId() {
+  return typeof process.geteuid === 'function' ? process.geteuid() : undefined;
+}
+
+function readPrivateCredentialFile(path) {
+  let before;
+  try {
+    before = lstatSync(path);
+  } catch {
+    throw new Error('credentials file is unavailable');
+  }
+  const effectiveUid = effectiveUserId();
+  assertCredentialFileMetadata(before, { effectiveUid });
+  if (!Number.isInteger(fsConstants.O_NOFOLLOW)) {
+    throw new Error('credentials file symlink protection is unavailable');
+  }
+
+  let descriptor;
+  try {
+    descriptor = openSync(
+      path,
+      fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | (fsConstants.O_CLOEXEC || 0),
+    );
+  } catch {
+    throw new Error('credentials file could not be opened safely');
+  }
+  try {
+    const opened = fstatSync(descriptor);
+    assertCredentialFileMetadata(opened, { effectiveUid });
+    if (before.dev !== opened.dev || before.ino !== opened.ino) {
+      throw new Error('credentials file changed during validation');
+    }
+    return readFileSync(descriptor, 'utf8');
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+function parseCredentials(source) {
+  const [user, pass] = String(source).split(/\r?\n/);
+  if (!user || !pass) throw new Error('credentials file is incomplete');
   return { user, pass };
 }
 
-async function ensureSession() {
-  if (jar.size === 0) {
-    await fetch(LOGIN_URL, { headers: { Cookie: cookieHeader() } }).then(grabCookies);
-  }
-  // probe; re-login if needed
-  const probe = await rmi('AIextRemoteService', 'getCurrentUserName', [], 15000);
-  if (probe.retCode === 0) {
-    return probe;
-  }
+function loadCredentials() {
+  assertCredentialTransport(BASE_URL);
+  return parseCredentials(readPrivateCredentialFile(CRED_FILE));
+}
+
+async function seedSessionCookies() {
+  const response = await fetch(LOGIN_URL, {
+    headers: { Cookie: cookieHeader() },
+    redirect: 'manual',
+    signal: AbortSignal.timeout(15000),
+  });
+  grabCookies(response);
+  await response.body?.cancel();
+  if (!response.ok) throw safeHttpFailure('Smartbi session seed', response);
+}
+
+async function loginWithCredentials() {
   const { user, pass } = loadCredentials();
   const login = await rmi('UserService', 'login', [user, pass]);
-  if (login.retCode !== 0) throw new Error(`login failed: ${JSON.stringify(login)}`);
-  return login;
+  assertLoginSucceeded(login);
+  const probe = await rmi('AIextRemoteService', 'getCurrentUserName', [], 15000);
+  return assertSessionProbeSucceeded(probe);
+}
+
+async function ensureSession() {
+  assertCredentialTransport(BASE_URL);
+  if (jar.size === 0) await seedSessionCookies();
+  const probe = await rmi(
+    'AIextRemoteService',
+    'getCurrentUserName',
+    [],
+    15000,
+    { allowUnauthenticated: true },
+  );
+  if (probe?.retCode === 0) return assertSessionProbeSucceeded(probe);
+  if (probe?.retCode !== 'CLIENT_USER_NOT_LOGIN') {
+    throw new Error('Smartbi session probe failed');
+  }
+  return loginWithCredentials();
 }
 
 async function cmdLogin() {
-  const { user, pass } = loadCredentials();
-  const login = await rmi('UserService', 'login', [user, pass]);
-  safeOutput({ state: login.retCode === 0 ? 'authenticated' : 'failed', retCode: login.retCode });
+  assertCredentialTransport(BASE_URL);
+  if (jar.size === 0) await seedSessionCookies();
+  await loginWithCredentials();
+  safeOutput({ state: 'authenticated', retCode: 0, verified: true });
 }
 
 async function cmdHealth() {
-  const login = await ensureSession();
-  const probe = await rmi('AIextRemoteService', 'getCurrentUserName', [], 15000);
-  safeOutput({
-    state: probe.retCode === 0 ? 'workspace' : 'auth_required',
-    retCode: probe.retCode,
-    login: login.retCode,
-  });
+  await ensureSession();
+  safeOutput({ state: 'workspace', retCode: 0, verified: true });
 }
 
 function assertReadOnlyRmi(className, methodName) {
+  assertCompetitionGenericAccess(PLATFORM_PROFILE, {
+    kind: 'rmi',
+    className,
+    methodName,
+  });
   const key = `${className}.${methodName}`;
   const denied = new Set([
     'AIextRemoteService.getCookie',
@@ -486,6 +786,7 @@ function assertSafeGenericPath(path, { post = false, base = 'smartbix' } = {}) {
     throw new Error(`generic API replay refuses routing or method overrides: ${path}`);
   }
   const canonical = `${parsed.pathname.replace(/^\/+/, '')}${parsed.search}`;
+  assertCompetitionGenericAccess(PLATFORM_PROFILE, { kind: base, path: canonical });
   const normalized = canonical.toLowerCase();
   const explicitlySafePost = post && (
     base === 'smartbix'
@@ -513,6 +814,7 @@ async function cmdInvoke(className, methodName, paramsJson) {
   const params = paramsJson ? JSON.parse(paramsJson) : [];
   await ensureSession();
   const ret = await rmi(className, methodName, params);
+  if (ret.retCode !== 0) throw new Error('generic RMI invocation failed');
   safeOutput(ret);
 }
 
@@ -609,9 +911,18 @@ function makeTreeNode({
   };
 }
 
-function buildSingleTableModel(table, requestedName, description = '') {
+function buildSingleTableModel(
+  table,
+  requestedName,
+  description = '',
+  measureSpecifications,
+) {
   if (!table?.fields?.length || !table?.dataSource?.id || !table?.originId) {
-    throw new Error(`table metadata is incomplete; keys=${Object.keys(table || {}).join(',')} dataSourceKeys=${Object.keys(table?.dataSource || {}).join(',')} originId=${Boolean(table?.originId)} fields=${table?.fields?.length || 0}`);
+    throw new Error(
+      `table metadata is incomplete; keys=${Object.keys(table || {}).join(',')} `
+      + `dataSourceKeys=${Object.keys(table?.dataSource || {}).join(',')} `
+      + `originId=${Boolean(table?.originId)} fields=${table?.fields?.length || 0}`,
+    );
   }
   const id = resourceId();
   const viewId = resourceId();
@@ -635,6 +946,7 @@ function buildSingleTableModel(table, requestedName, description = '') {
   }));
   const modelFields = table.fields.map((field, order) => ({
     ...viewFields[order],
+    id: qualifyModelResource(id, 'FIELD', field.id),
     sqlColumnName: field.name,
     maskingRule: field.maskingRule || '',
     viewId,
@@ -650,7 +962,7 @@ function buildSingleTableModel(table, requestedName, description = '') {
     children: [],
   }));
   const dimensionNodes = table.fields.map((field, order) => makeTreeNode({
-    id: field.id,
+    id: modelFields[order].id,
     name: field.name,
     aliasFromDb: field.alias || field.name,
     descFromDb: field.desc || field.name,
@@ -664,44 +976,13 @@ function buildSingleTableModel(table, requestedName, description = '') {
     alias: field.alias || field.name,
     desc: field.desc || field.name,
   }));
-  const numericTypes = new Set([
-    'BYTE', 'SHORT', 'SMALLINT', 'INTEGER', 'INT', 'LONG', 'BIGINT',
-    'FLOAT', 'DOUBLE', 'DECIMAL', 'BIGDECIMAL', 'NUMBER',
-  ]);
-  const numericFields = table.fields.filter((field) => numericTypes.has(String(field.dataType).toUpperCase()));
-  const measures = numericFields.map((field, order) => {
-    const sourceType = String(field.dataType).toUpperCase();
-    const valueType = ['BYTE', 'SHORT', 'SMALLINT', 'INTEGER', 'INT', 'LONG'].includes(sourceType)
-      ? 'BIGINT'
-      : sourceType;
-    return {
-      id: `${field.id}_${Date.now() + order}`,
-      name: `${field.name}_m`,
-      aliasFromDb: field.alias || field.name,
-      descFromDb: null,
-      useFromDb: false,
-      valueType,
-      dataFormat: field.dataFormat || '',
-      sqlColumnName: null,
-      maskingRule: null,
-      viewId,
-      viewAlias: null,
-      visible: 1,
-      aggregator: 'sum',
-      refDataSetFieldId: field.id,
-      transformRule: null,
-      extended: null,
-      resType: null,
-      desc: null,
-      alias: field.alias || field.name,
-      creatorId: null,
-      type: 'MEASURE',
-      level: 0,
-      order,
-      parentId: 'measure',
-      group: 'MEASURE',
-      children: [],
-    };
+  const measures = buildExplicitMeasures({
+    modelId: id,
+    viewId,
+    sourceFields: table.fields,
+    modelFields,
+    specifications: measureSpecifications,
+    idFactory: resourceId,
   });
   const view = {
     id: viewId,
@@ -805,11 +1086,7 @@ function buildSingleTableModel(table, requestedName, description = '') {
     namedSets: [],
     nodes: [dimensionRoot, viewFolder, ...dimensionNodes, measureRoot, ...measures],
     parameters: [],
-    aggregatorTypes: [
-      'SUM', 'AVG', 'MAX', 'MIN', 'COUNT', 'DISTINCT_COUNT', 'NONE',
-      'FIRST_MEMBER', 'LAST_MEMBER', 'STDDEV_POP', 'STDDEV_SAMP',
-      'VAR_POP', 'VAR_SAMP', 'ATTR',
-    ],
+    aggregatorTypes: [...MODEL_AGGREGATORS],
     preAggregates: [],
     directPartitions: [],
     extractStatus: 'INIT',
@@ -824,11 +1101,226 @@ function buildSingleTableModel(table, requestedName, description = '') {
   };
 }
 
+const MODEL_RELATION_LINK_TYPES = new Set(['LEFTJOIN', 'RIGHTJOIN', 'INNERJOIN', 'FULLJOIN']);
+const MODEL_RELATION_CARDINALITIES = new Set(['MANY2ONE', 'ONE2MANY', 'ONE2ONE', 'MANY2MANY']);
+const MODEL_RELATION_FILTER_DIRECTIONS = new Set(['SINGLE', 'BOTH']);
+
+function buildRelationalModel(
+  tables,
+  relations,
+  requestedName,
+  description = '',
+  measureSpecificationsByTable,
+) {
+  if (!Array.isArray(tables) || tables.length < 2) {
+    throw new Error('relational model requires at least two source tables');
+  }
+  if (!Array.isArray(relations) || relations.length === 0) {
+    throw new Error('relational model requires at least one confirmed relation');
+  }
+  if (
+    !Array.isArray(measureSpecificationsByTable)
+    || measureSpecificationsByTable.length !== tables.length
+  ) {
+    throw new Error('relational model requires one explicit measures array per source table');
+  }
+
+  const rawParts = tables.map((table, index) => buildSingleTableModel(
+    table,
+    requestedName,
+    description,
+    measureSpecificationsByTable[index],
+  ));
+  const model = rawParts[0];
+  const parts = rawParts.map((part) => {
+    if (part.id === model.id) return part;
+    const remapped = replaceExactStrings(part, new Map([[part.id, model.id]]));
+    remapped.id = model.id;
+    return remapped;
+  });
+  const views = [];
+  const fields = [];
+  const measures = [];
+  const nodes = [
+    model.nodes.find((node) => node.id === 'dimension'),
+    model.nodes.find((node) => node.id === 'measure'),
+  ].filter(Boolean);
+  const positions = [];
+  const usedFieldNames = new Set();
+  const usedMeasureNames = new Set();
+  const usedMeasureAliases = new Set();
+  const uniqueResourceName = (used, name, viewName) => {
+    let candidate = name;
+    if (used.has(candidate)) candidate = `${viewName}_${name}`;
+    for (let suffix = 2; used.has(candidate); suffix += 1) {
+      candidate = `${viewName}_${name}_${suffix}`;
+    }
+    used.add(candidate);
+    return candidate;
+  };
+  let measureOrder = 0;
+
+  for (const [index, part] of parts.entries()) {
+    const view = part.views[0];
+    views.push(view);
+    for (const field of part.fields) {
+      field.name = uniqueResourceName(usedFieldNames, field.name, view.name);
+      const node = part.nodes.find((item) => item.id === field.id);
+      if (node) node.name = field.name;
+      fields.push(field);
+    }
+    for (const measure of part.measures) {
+      measure.name = uniqueResourceName(usedMeasureNames, measure.name, view.name);
+      measure.alias = uniqueResourceName(
+        usedMeasureAliases,
+        measure.alias || measure.name,
+        view.alias || view.name,
+      );
+      measure.aliasFromDb = measure.alias;
+      measure.order = measureOrder;
+      measureOrder += 1;
+      const node = part.nodes.find((item) => item.id === measure.id);
+      if (node) synchronizeModelMeasureNode(measure, node);
+      measures.push(measure);
+    }
+    for (const node of part.nodes) {
+      if (node.id === 'dimension' || node.id === 'measure') continue;
+      if (node.id === view.id) node.order = index;
+      nodes.push(node);
+    }
+    positions.push({
+      viewId: view.id,
+      x: 36 + (index % 3) * 220,
+      y: 36 + Math.floor(index / 3) * 100,
+      width: 160,
+      height: 42,
+    });
+  }
+
+  const resolveField = (tableIndex, fieldName, relationIndex, side) => {
+    if (!Number.isInteger(tableIndex) || tableIndex < 0 || tableIndex >= parts.length) {
+      throw new Error(`relation ${relationIndex + 1} ${side} table index is invalid: ${tableIndex}`);
+    }
+    const requested = String(fieldName || '').trim();
+    const matches = parts[tableIndex].fields.filter(
+      (item) => [item.id, item.sqlColumnName, item.name, item.alias].includes(requested),
+    );
+    if (matches.length !== 1) {
+      throw new Error(
+        `relation ${relationIndex + 1} ${side} field must resolve exactly once `
+        + `in table ${tableIndex}: ${requested}`,
+      );
+    }
+    return {
+      viewId: parts[tableIndex].views[0].id,
+      fieldId: matches[0].id,
+      field: matches[0],
+    };
+  };
+
+  const connectedIndexes = new Map(tables.map((_, index) => [index, new Set()]));
+  const relationKeys = new Set();
+  const relationGraph = relations.map((relation, index) => {
+    if (relation?.confirmed !== true || !String(relation?.grain || '').trim()) {
+      throw new Error(`relation ${index + 1} requires confirmed=true and a non-empty grain`);
+    }
+    const fromIndex = Number(relation.from);
+    const toIndex = Number(relation.to);
+    if (fromIndex === toIndex) {
+      throw new Error(`relation ${index + 1} cannot join a table to itself`);
+    }
+    const from = resolveField(fromIndex, relation.fromField, index, 'from');
+    const to = resolveField(toIndex, relation.toField, index, 'to');
+    if (String(from.field.valueType).toUpperCase() !== String(to.field.valueType).toUpperCase()) {
+      throw new Error(`relation ${index + 1} joins fields with different data types`);
+    }
+    const requiredSemantics = [
+      'linkType',
+      'cardinalityType',
+      'filterDirection',
+      'assumeReferentialIntegrity',
+    ];
+    for (const property of requiredSemantics) {
+      if (!String(relation[property] || '').trim()) {
+        throw new Error(`relation ${index + 1} requires explicit ${property}`);
+      }
+    }
+    const linkType = String(relation.linkType).toUpperCase();
+    const cardinalityType = String(relation.cardinalityType).toUpperCase();
+    const filterDirection = String(relation.filterDirection).toUpperCase();
+    const assumeReferentialIntegrity = String(relation.assumeReferentialIntegrity).trim();
+    if (!MODEL_RELATION_LINK_TYPES.has(linkType)) {
+      throw new Error(`relation ${index + 1} has unsupported linkType: ${linkType}`);
+    }
+    if (!MODEL_RELATION_CARDINALITIES.has(cardinalityType)) {
+      throw new Error(`relation ${index + 1} has unsupported cardinalityType: ${cardinalityType}`);
+    }
+    if (!MODEL_RELATION_FILTER_DIRECTIONS.has(filterDirection)) {
+      throw new Error(`relation ${index + 1} has unsupported filterDirection: ${filterDirection}`);
+    }
+    const relationKey = [from.viewId, from.fieldId, to.viewId, to.fieldId].join('|');
+    const reverseKey = [to.viewId, to.fieldId, from.viewId, from.fieldId].join('|');
+    if (relationKeys.has(relationKey) || relationKeys.has(reverseKey)) {
+      throw new Error(`relation ${index + 1} duplicates an existing relation`);
+    }
+    relationKeys.add(relationKey);
+    connectedIndexes.get(fromIndex).add(toIndex);
+    connectedIndexes.get(toIndex).add(fromIndex);
+    return {
+      srcViewId: from.viewId,
+      destViewId: to.viewId,
+      fieldRelations: [{
+        srcFieldId: from.fieldId,
+        destFieldId: to.fieldId,
+        operator: 'EQUALS',
+      }],
+      linkType,
+      cardinalityType,
+      srcViewBO: null,
+      destViewBO: null,
+      assumeReferentialIntegrity,
+      filterDirection,
+    };
+  });
+  const visited = new Set([0]);
+  const pending = [0];
+  while (pending.length > 0) {
+    const current = pending.shift();
+    for (const next of connectedIndexes.get(current)) {
+      if (visited.has(next)) continue;
+      visited.add(next);
+      pending.push(next);
+    }
+  }
+  if (visited.size !== tables.length) {
+    throw new Error('relational model relation graph must connect every source table');
+  }
+
+  model.name = model.alias = applyNamespace(requestedName);
+  model.desc = description;
+  model.views = views;
+  model.fields = fields;
+  model.measures = measures;
+  model.nodes = nodes;
+  model.relationGraph = {
+    relations: relationGraph,
+    positions,
+    layouts: [],
+    activeLayout: '0',
+  };
+  model._extendProps = { ...(model._extendProps || {}), batchId: resourceId() };
+  return model;
+}
+
 async function loadModel(modelId) {
   if (!modelId) throw new Error('model id is required');
   await ensureSession();
   const model = await smartbixApi(`augmentedDataSet/${encodeURIComponent(modelId)}`);
   if (!model?.id || !model?.name) throw new Error(`model not found or incomplete: ${modelId}`);
+  if (model.id !== modelId) {
+    throw new Error(`model identity mismatch while reopening requested resource: ${modelId}`);
+  }
+  assertModelReferenceGraph(model);
   return model;
 }
 
@@ -839,9 +1331,41 @@ function requireNamespacedResource(resource, kind) {
   }
   return resource;
 }
+function assertExactCurrentNameConfirmation(resource, confirmation, label) {
+  if (confirmation !== resource?.name) {
+    throw new Error(`${label} confirmation mismatch: expected current name ${resource?.name || 'unknown'}`);
+  }
+}
+async function assertSavedResourceDirectChild(parentId, resourceId, expectedName, label) {
+  const children = await listCatalogChildren(parentId, `${label} destination`);
+  const matches = children.filter((child) => child.id === resourceId);
+  if (matches.length !== 1) {
+    throw new Error(`${label} is not an exact direct child of its requested destination: ${resourceId}`);
+  }
+  const saved = matches[0];
+  if (saved.name !== expectedName) {
+    throw new Error(`${label} destination entry has an unexpected name: ${resourceId}`);
+  }
+  requireNamespacedResource(saved, label);
+  return saved;
+}
 
 async function cmdModelGet(modelId) {
-  safeOutput(requireNamespacedResource(await loadModel(modelId), 'model'));
+  if (PLATFORM_PROFILE) await locateCompetitionResourceParent(modelId, 'model');
+  const model = requireNamespacedResource(await loadModel(modelId), 'model');
+  const {
+    parameters,
+    calcMembers,
+    namedSets,
+    ...definition
+  } = modelSemanticDefinition(model);
+  safeOutput({
+    ok: true,
+    model: definition,
+    parameterCount: parameters.length,
+    calculatedMemberCount: calcMembers.length,
+    namedSetCount: namedSets.length,
+  });
 }
 
 async function cmdModelCreate(
@@ -852,47 +1376,72 @@ async function cmdModelCreate(
   requestedName,
   description = '',
   sourceFlowId = null,
+  measureSpecifications = null,
 ) {
   if (![parentId, dataSourceId, tableId, tableName, requestedName].every(Boolean)) {
     throw new Error(
       'model-create requires <parentId> <dataSourceId> <tableId> <tableName> <name> '
-      + '[description] [--etl-flow <flowId>]',
+      + '[description] --measures <jsonArray> [--etl-flow <flowId>]',
     );
   }
   if (PLATFORM_PROFILE && !sourceFlowId) {
     throw new Error('competition model-create requires --etl-flow <ownedFlowId>');
   }
-  await assertOwnedCatalogParent(parentId);
-  const lineage = await assertCompetitionModelLineage({
-    parentId,
+  if (!Array.isArray(measureSpecifications)) {
+    throw new Error('model-create requires --measures <jsonArray>; use [] for no measures');
+  }
+  const sourceReference = normalizeModelSourceReference({
     dataSourceId,
     tableId,
     tableName,
+  });
+  await assertOwnedCatalogParent(parentId);
+  const lineage = await assertCompetitionModelLineage({
+    parentId,
+    dataSourceId: sourceReference.dataSource,
+    tableId: sourceReference.tableId,
+    tableName: sourceReference.table,
     sourceFlowId,
   });
   await ensureSession();
-  const table = await smartbixApi('datasets/table', {
+  const returnedTable = await smartbixApi('datasets/table', {
     method: 'POST',
-    body: { dataSourceId, tableId, tableName },
+    body: {
+      dataSourceId: sourceReference.dataSource,
+      tableId: sourceReference.tableId,
+      tableName: sourceReference.table,
+    },
   });
-  requireNamespacedResource(table, 'source table');
-  if (!table.dataSource?.id) {
-    table.dataSource = { id: dataSourceId, type: { name: table.dataType || null } };
-  }
-  const model = buildSingleTableModel(table, requestedName, description);
+  requireNamespacedResource(returnedTable, 'source table');
+  const { table } = normalizeModelSourceTable(returnedTable, {
+    dataSourceId: sourceReference.dataSource,
+    tableId: sourceReference.tableId,
+    tableName: sourceReference.table,
+  });
+  normalizeMeasureSpecifications(table.fields, measureSpecifications);
+  const model = buildSingleTableModel(
+    table,
+    requestedName,
+    description,
+    measureSpecifications,
+  );
   const result = await smartbixApi(`augmentedDataSet/${encodeURIComponent(parentId)}`, {
     method: 'POST',
     body: model,
   });
   const createdId = createdResourceId(result, model.id);
-  const saved = await smartbixApi(`augmentedDataSet/${encodeURIComponent(createdId)}`);
+  if (!createdId) throw new Error('model create returned no resource id');
+  const saved = await loadModel(createdId);
+  assertSavedModelEquivalent(model, saved, 'created model');
+  await assertSavedResourceDirectChild(parentId, saved.id, model.name, 'created model');
   safeOutput({
     ok: true,
     id: saved.id,
     name: saved.name,
-    fieldCount: saved.fields?.length || 0,
-    measureCount: saved.measures?.length || 0,
-    viewCount: saved.views?.length || 0,
+    fieldCount: saved.fields.length,
+    measureCount: saved.measures.length,
+    viewCount: saved.views.length,
+    source: sourceReference,
     lineage,
   });
 }
@@ -900,9 +1449,11 @@ async function cmdModelCreate(
 async function cmdModelCreateArgs(argsList) {
   const positional = [];
   let sourceFlowId = null;
+  let measureSpecifications = null;
   for (let index = 0; index < argsList.length; index += 1) {
     const argument = argsList[index];
     if (argument === '--etl-flow') {
+      if (sourceFlowId !== null) throw new Error('--etl-flow may be provided only once');
       sourceFlowId = argsList[index + 1];
       if (!sourceFlowId || sourceFlowId.startsWith('--')) {
         throw new Error('--etl-flow requires an owned ETL flow id');
@@ -910,13 +1461,701 @@ async function cmdModelCreateArgs(argsList) {
       index += 1;
       continue;
     }
+    if (argument === '--measures') {
+      if (measureSpecifications !== null) {
+        throw new Error('--measures may be provided only once');
+      }
+      const raw = argsList[index + 1];
+      if (!raw || raw.startsWith('--')) {
+        throw new Error('--measures requires a JSON array');
+      }
+      try {
+        measureSpecifications = JSON.parse(raw);
+      } catch {
+        throw new Error('--measures must be valid JSON');
+      }
+      if (!Array.isArray(measureSpecifications)) {
+        throw new Error('--measures must be a JSON array');
+      }
+      index += 1;
+      continue;
+    }
     if (argument.startsWith('--')) throw new Error(`unknown model-create option: ${argument}`);
     positional.push(argument);
   }
-  if (positional.length > 6) {
-    throw new Error('model-create accepts at most six positional arguments');
+  if (positional.length < 5 || positional.length > 6) {
+    throw new Error(
+      'model-create requires five positional arguments plus optional description and '
+      + '--measures <jsonArray>',
+    );
   }
-  await cmdModelCreate(...positional, sourceFlowId);
+  if (PLATFORM_PROFILE && !sourceFlowId) {
+    throw new Error('competition model-create requires --etl-flow <ownedFlowId>');
+  }
+  if (!Array.isArray(measureSpecifications)) {
+    throw new Error('model-create requires --measures <jsonArray>; use [] for no measures');
+  }
+  await cmdModelCreate(
+    positional[0],
+    positional[1],
+    positional[2],
+    positional[3],
+    positional[4],
+    positional[5] || '',
+    sourceFlowId,
+    measureSpecifications,
+  );
+}
+
+async function cmdModelCreateRelational(parentId, requestedName, specJson, description = '') {
+  if (![parentId, requestedName, specJson].every(Boolean)) {
+    throw new Error(
+      'model-create-relational requires <parentId> <name> <specJson> [description]',
+    );
+  }
+  if (PLATFORM_PROFILE) {
+    throw new Error('competition model-create-relational is prohibited; create one single-table candidate model');
+  }
+  let spec;
+  try {
+    spec = JSON.parse(specJson);
+  } catch {
+    throw new Error('model-create-relational specJson must be valid JSON');
+  }
+  if (!spec || typeof spec !== 'object' || Array.isArray(spec)) {
+    throw new Error('model-create-relational specJson must be an object');
+  }
+  const topLevelKeys = new Set(['tables', 'relations']);
+  for (const key of Object.keys(spec)) {
+    if (!topLevelKeys.has(key)) {
+      throw new Error(`model-create-relational spec has unsupported property: ${key}`);
+    }
+  }
+  if (!Array.isArray(spec.tables) || spec.tables.length < 2) {
+    throw new Error('model-create-relational spec requires at least two tables');
+  }
+  if (!Array.isArray(spec.relations) || spec.relations.length === 0) {
+    throw new Error('model-create-relational spec requires at least one relation');
+  }
+  const tableKeys = new Set(['dataSourceId', 'tableId', 'tableName', 'measures']);
+  const relationKeys = new Set([
+    'from',
+    'to',
+    'fromField',
+    'toField',
+    'confirmed',
+    'grain',
+    'linkType',
+    'cardinalityType',
+    'filterDirection',
+    'assumeReferentialIntegrity',
+  ]);
+  for (const [index, source] of spec.tables.entries()) {
+    if (!source || typeof source !== 'object' || Array.isArray(source)) {
+      throw new Error(`model-create-relational table ${index + 1} must be an object`);
+    }
+    for (const key of Object.keys(source)) {
+      if (!tableKeys.has(key)) {
+        throw new Error(`model-create-relational table ${index + 1} has unsupported property: ${key}`);
+      }
+    }
+    if (![source.dataSourceId, source.tableId, source.tableName].every(Boolean)) {
+      throw new Error(`model-create-relational table ${index + 1} is incomplete`);
+    }
+    if (!Array.isArray(source.measures)) {
+      throw new Error(
+        `model-create-relational table ${index + 1} requires an explicit measures array`,
+      );
+    }
+    normalizeModelSourceReference(source);
+  }
+  for (const [index, relation] of spec.relations.entries()) {
+    if (!relation || typeof relation !== 'object' || Array.isArray(relation)) {
+      throw new Error(`model-create-relational relation ${index + 1} must be an object`);
+    }
+    for (const key of Object.keys(relation)) {
+      if (!relationKeys.has(key)) {
+        throw new Error(`model-create-relational relation ${index + 1} has unsupported property: ${key}`);
+      }
+    }
+  }
+  await assertOwnedCatalogParent(parentId);
+  await ensureSession();
+
+  const tables = [];
+  for (const [index, source] of spec.tables.entries()) {
+    const reference = normalizeModelSourceReference(source);
+    const returnedTable = await smartbixApi('datasets/table', {
+      method: 'POST',
+      body: {
+        dataSourceId: reference.dataSource,
+        tableId: reference.tableId,
+        tableName: reference.table,
+      },
+    });
+    requireNamespacedResource(returnedTable, `source table ${index + 1}`);
+    const { table } = normalizeModelSourceTable(returnedTable, {
+      dataSourceId: reference.dataSource,
+      tableId: reference.tableId,
+      tableName: reference.table,
+    });
+    normalizeMeasureSpecifications(table.fields, source.measures);
+    tables.push(table);
+  }
+
+  const model = buildRelationalModel(
+    tables,
+    spec.relations,
+    requestedName,
+    description,
+    spec.tables.map((source) => source.measures),
+  );
+  const result = await smartbixApi(`augmentedDataSet/${encodeURIComponent(parentId)}`, {
+    method: 'POST',
+    body: model,
+  });
+  const createdId = createdResourceId(result, model.id);
+  if (!createdId) throw new Error('relational model create returned no resource id');
+  const saved = await loadModel(createdId);
+  assertSavedModelEquivalent(model, saved, 'created relational model');
+  await assertSavedResourceDirectChild(parentId, saved.id, model.name, 'created relational model');
+  const savedRelations = saved.relationGraph.relations;
+  safeOutput({
+    ok: true,
+    id: saved.id,
+    name: saved.name,
+    fieldCount: saved.fields.length,
+    measureCount: saved.measures.length,
+    viewCount: saved.views.length,
+    relationCount: savedRelations.length,
+    relations: savedRelations.map((relation) => ({
+      srcViewId: relation.srcViewId,
+      destViewId: relation.destViewId,
+      fieldRelations: relation.fieldRelations,
+      linkType: relation.linkType,
+      cardinalityType: relation.cardinalityType,
+      filterDirection: relation.filterDirection,
+      assumeReferentialIntegrity: relation.assumeReferentialIntegrity,
+    })),
+  });
+}
+
+function parseHierarchyLevelSpecs(levelSpecJson) {
+  let parsed;
+  try {
+    parsed = JSON.parse(levelSpecJson);
+  } catch {
+    throw new Error('model-hierarchy-add levelSpecJson must be valid JSON');
+  }
+  if (!Array.isArray(parsed) || parsed.length < 2) {
+    throw new Error('model-hierarchy-add requires at least two ordered level fields');
+  }
+  return parsed.map((entry, index) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry) || !entry.field) {
+      throw new Error(`hierarchy level ${index + 1} requires an object with field and levelType`);
+    }
+    const allowedKeys = new Set(['field', 'alias', 'levelType']);
+    for (const key of Object.keys(entry)) {
+      if (!allowedKeys.has(key)) {
+        throw new Error(`hierarchy level ${index + 1} has unsupported property: ${key}`);
+      }
+    }
+    if (!entry.levelType) throw new Error(`hierarchy level ${index + 1} requires levelType`);
+    const levelType = String(entry.levelType).toUpperCase();
+    if (!['LEVEL', 'LEVEL_GEO'].includes(levelType)) {
+      throw new Error(`hierarchy level ${index + 1} has unsupported type: ${levelType}`);
+    }
+    return {
+      field: String(entry.field),
+      alias: entry.alias ? String(entry.alias) : null,
+      levelType,
+    };
+  });
+}
+
+async function cmdModelHierarchyAdd(
+  modelId,
+  requestedName,
+  levelSpecJson,
+  description = '',
+  confirmName = null,
+) {
+  if (![modelId, requestedName, levelSpecJson].every(Boolean)) {
+    throw new Error(
+      'model-hierarchy-add requires <modelId> <hierarchyName> <levelSpecJson> '
+      + '[description] --confirm-name <exactModelName>',
+    );
+  }
+  const specs = parseHierarchyLevelSpecs(levelSpecJson);
+  const guardedParentId = PLATFORM_PROFILE
+    ? await locateCompetitionResourceParent(modelId, 'model')
+    : null;
+  const baseline = requireNamespacedResource(await loadModel(modelId), 'model');
+  assertExactCurrentNameConfirmation(baseline, confirmName, 'model');
+  if (guardedParentId) {
+    await assertCompetitionResourceDirectChild(guardedParentId, modelId, 'model');
+  }
+  const model = structuredClone(baseline);
+  const hierarchyAlias = applyNamespace(requestedName);
+  if ((model.nodes || []).some(
+    (node) => node.type === 'HIERARCHY'
+      && [node.name, node.alias, node.aliasFromDb].includes(hierarchyAlias),
+  )) {
+    throw new Error(`model hierarchy already exists: ${hierarchyAlias}`);
+  }
+
+  const fields = specs.map((spec, index) => resolveAnalysisResource(
+    model.fields || [],
+    spec.field,
+    { kind: `hierarchy level ${index + 1} field` },
+  ));
+  if (new Set(fields.map((field) => field.id)).size !== fields.length) {
+    throw new Error('model hierarchy level fields must be unique');
+  }
+  const viewIds = new Set(fields.map((field) => field.viewId));
+  if (viewIds.size !== 1) {
+    throw new Error('model hierarchy level fields must belong to one model view');
+  }
+
+  const dimensionRoot = (model.nodes || []).find(
+    (node) => node.type === 'DIMENSION_FOLDER'
+      || String(node.id || '').endsWith('.dimension')
+      || node.id === 'dimension',
+  );
+  if (!dimensionRoot) throw new Error('model dimension root is missing');
+  const existingNames = new Set([
+    ...(model.fields || []).map((item) => item.name),
+    ...(model.measures || []).map((item) => item.name),
+    ...(model.levels || []).map((item) => item.name),
+    ...(model.nodes || []).map((item) => item.name),
+  ].filter(Boolean));
+  const uniqueName = (base) => {
+    let candidate = base;
+    let suffix = 2;
+    while (existingNames.has(candidate)) {
+      candidate = `${base}_${suffix}`;
+      suffix += 1;
+    }
+    existingNames.add(candidate);
+    return candidate;
+  };
+  const hierarchyId = qualifyModelResource(
+    model.id,
+    'FOLDER',
+    `HIERARCHY-${resourceId()}`,
+  );
+  const hierarchyName = uniqueName(`custom_${resourceId()}`);
+  const fieldPrefix = `AUGMENTED_DATASET_FIELD.${model.id}.`;
+  const levelModels = [];
+  const levelNodes = [];
+  for (const [index, field] of fields.entries()) {
+    const spec = specs[index];
+    const fieldTail = String(field.id).startsWith(fieldPrefix)
+      ? String(field.id).slice(fieldPrefix.length)
+      : String(field.id);
+    const levelId = qualifyModelResource(
+      model.id,
+      'LEVEL',
+      `${fieldTail}-LEVEL-${resourceId()}`,
+    );
+    const levelName = uniqueName(`${field.name}_level`);
+    const alias = spec.alias || field.alias || field.name;
+    levelModels.push({
+      id: levelId,
+      name: levelName,
+      aliasFromDb: alias,
+      descFromDb: field.desc || '',
+      useFromDb: false,
+      valueType: field.valueType,
+      dataFormat: field.dataFormat || null,
+      sqlColumnName: null,
+      maskingRule: null,
+      viewId: field.viewId,
+      viewAlias: field.viewAlias || null,
+      hierName: null,
+      expression: null,
+      dimName: null,
+      transformRule: field.transformRule || null,
+      visible: 1,
+      extended: null,
+      levelType: spec.levelType,
+      refDataSetFieldId: qualifyModelResource(model.id, 'FIELD', field.id),
+      reportVisible: true,
+      resType: null,
+      desc: field.desc || '',
+      alias,
+      creatorId: null,
+    });
+    levelNodes.push({
+      id: levelId,
+      name: levelName,
+      aliasFromDb: alias,
+      descFromDb: field.desc || '',
+      useFromDb: false,
+      type: spec.levelType,
+      group: 'LEVEL',
+      level: 2,
+      order: index,
+      visible: 1,
+      parentId: hierarchyId,
+      valueType: null,
+      dataFormat: null,
+      extended: null,
+      refDataSetFieldId: null,
+      referenceFieldId: null,
+      originalDataType: null,
+      aggregator: null,
+      businessCaliber: null,
+      children: [],
+      reportVisible: true,
+      desc: field.desc || '',
+      alias,
+      creatorId: null,
+    });
+  }
+  const rootChildren = Array.isArray(dimensionRoot.children) ? dimensionRoot.children : [];
+  const hierarchyOrder = rootChildren.reduce(
+    (maximum, child) => Math.max(maximum, Number(child.order) || 0),
+    -1,
+  ) + 1;
+  const hierarchyNode = {
+    id: hierarchyId,
+    name: hierarchyName,
+    aliasFromDb: hierarchyAlias,
+    descFromDb: description,
+    useFromDb: false,
+    type: 'HIERARCHY',
+    group: null,
+    level: 0,
+    order: hierarchyOrder,
+    visible: 1,
+    parentId: dimensionRoot.id,
+    valueType: null,
+    dataFormat: null,
+    extended: '{"timeHierarchy":false}',
+    refDataSetFieldId: null,
+    referenceFieldId: null,
+    originalDataType: null,
+    aggregator: null,
+    businessCaliber: null,
+    children: levelNodes,
+    reportVisible: true,
+    desc: description,
+    alias: hierarchyAlias,
+    creatorId: null,
+  };
+  dimensionRoot.children = [...rootChildren, hierarchyNode];
+  model.levels = [...(model.levels || []), ...levelModels];
+  model.nodes = [...(model.nodes || []), hierarchyNode, ...levelNodes];
+  assertOnlyModelCollectionsChanged(baseline, model, ['levels', 'nodes']);
+  const current = requireNamespacedResource(await loadModel(model.id), 'model');
+  assertExactCurrentNameConfirmation(current, confirmName, 'model');
+  assertModelBaselineUnchanged(baseline, current);
+  if (guardedParentId) {
+    const currentParentId = await locateCompetitionResourceParent(model.id, 'model');
+    if (currentParentId !== guardedParentId) {
+      throw new Error('model placement changed after it was loaded; refusing full-model overwrite');
+    }
+    await assertCompetitionResourceDirectChild(currentParentId, model.id, 'model');
+  }
+
+  await smartbixApi('augmentedDataSet', {
+    method: 'PUT',
+    body: model,
+    timeoutMs: 120000,
+  });
+  const saved = await loadModel(model.id);
+  assertSavedModelEquivalent(model, saved, 'hierarchy-mutated model');
+  const savedHierarchy = (saved.nodes || []).find((node) => node.id === hierarchyId);
+  const savedLevels = (saved.levels || []).filter(
+    (level) => levelModels.some((candidate) => candidate.id === level.id),
+  );
+  safeOutput({
+    ok: true,
+    modelId: saved.id,
+    modelName: saved.name,
+    hierarchy: {
+      id: savedHierarchy.id,
+      name: savedHierarchy.name,
+      alias: savedHierarchy.alias,
+      levelCount: savedLevels.length,
+      levels: savedHierarchy.children.map((node) => ({
+        id: node.id,
+        name: node.name,
+        alias: node.alias,
+        type: node.type,
+      })),
+    },
+  });
+}
+
+async function cmdModelHierarchyAddArgs(argsList) {
+  if (argsList.filter((argument) => argument === '--confirm-name').length > 1) {
+    throw new Error('model-hierarchy-add accepts --confirm-name only once');
+  }
+  const { positional, confirmation } = parseExactConfirmationArgs(
+    argsList,
+    'model-hierarchy-add',
+    '--confirm-name',
+  );
+  if (positional.length < 3 || positional.length > 4) {
+    throw new Error(
+      'model-hierarchy-add requires <modelId> <hierarchyName> <levelSpecJson> '
+      + '[description] --confirm-name <exactModelName>',
+    );
+  }
+  await cmdModelHierarchyAdd(
+    positional[0],
+    positional[1],
+    positional[2],
+    positional[3] || '',
+    confirmation,
+  );
+}
+
+function parseCalcMeasureSpec(specJson) {
+  let spec;
+  try {
+    spec = JSON.parse(specJson);
+  } catch {
+    throw new Error('model-calc-measure-add specJson must be valid JSON');
+  }
+  if (!spec || typeof spec !== 'object' || Array.isArray(spec)) {
+    throw new Error('model-calc-measure-add specJson must be an object');
+  }
+  const allowedKeys = new Set(['expression', 'references', 'valueType', 'dataFormat']);
+  for (const key of Object.keys(spec)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(`calculated measure has unsupported property: ${key}`);
+    }
+  }
+  if (!String(spec.expression || '').trim()) {
+    throw new Error('calculated measure requires a non-empty expression');
+  }
+  if (!Array.isArray(spec.references) || spec.references.length === 0) {
+    throw new Error('calculated measure requires at least one referenced measure');
+  }
+  if (!String(spec.valueType || '').trim() || !String(spec.dataFormat || '').trim()) {
+    throw new Error('calculated measure requires explicit valueType and dataFormat');
+  }
+  return {
+    expression: String(spec.expression).trim(),
+    references: spec.references.map((reference, index) => {
+      const normalized = String(reference ?? '').trim();
+      if (!normalized) throw new Error(`calculated measure reference ${index + 1} is required`);
+      return normalized;
+    }),
+    valueType: String(spec.valueType).trim().toUpperCase(),
+    dataFormat: String(spec.dataFormat).trim(),
+  };
+}
+
+async function cmdModelCalcMeasureAdd(
+  modelId,
+  requestedName,
+  specJson,
+  description = '',
+  confirmName = null,
+) {
+  if (![modelId, requestedName, specJson].every(Boolean)) {
+    throw new Error(
+      'model-calc-measure-add requires <modelId> <measureName> <specJson> '
+      + '[description] --confirm-name <exactModelName>',
+    );
+  }
+  const spec = parseCalcMeasureSpec(specJson);
+  const guardedParentId = PLATFORM_PROFILE
+    ? await locateCompetitionResourceParent(modelId, 'model')
+    : null;
+  const baseline = requireNamespacedResource(await loadModel(modelId), 'model');
+  assertExactCurrentNameConfirmation(baseline, confirmName, 'model');
+  if (guardedParentId) {
+    await assertCompetitionResourceDirectChild(guardedParentId, modelId, 'model');
+  }
+  const model = structuredClone(baseline);
+  const alias = applyNamespace(requestedName);
+  const allMeasures = [...(model.measures || []), ...(model.calcMeasures || [])];
+  if (allMeasures.some((measure) => [measure.name, measure.alias].includes(alias))) {
+    throw new Error(`model measure already exists: ${alias}`);
+  }
+  const references = spec.references.map((reference, index) => resolveAnalysisResource(
+    model.measures || [],
+    reference,
+    { kind: `calculated measure reference ${index + 1}` },
+  ));
+  if (new Set(references.map((measure) => measure.id)).size !== references.length) {
+    throw new Error('calculated measure references must be unique');
+  }
+  const expressionNames = [...spec.expression.matchAll(/\[Measures\]\.\[([^\]]+)\]/g)]
+    .map((match) => match[1]);
+  const referenceNames = references.map((measure) => measure.name);
+  if (
+    expressionNames.length === 0
+    || expressionNames.some((name) => !referenceNames.includes(name))
+    || referenceNames.some((name) => !expressionNames.includes(name))
+  ) {
+    throw new Error(
+      'calculated measure expression references must exactly match resolved measure names',
+    );
+  }
+
+  const measureRoot = (model.nodes || []).find(
+    (node) => node.type === 'MEASURE_FOLDER'
+      || String(node.id || '').endsWith('.measure')
+      || node.id === 'measure',
+  );
+  if (!measureRoot) throw new Error('model measure root is missing');
+  const internalName = `custom_${resourceId()}`;
+  const calcId = qualifyModelResource(
+    model.id,
+    'CALC_MEASURE',
+    `${resourceId()}_${internalName}`,
+  );
+  let expressionParamAlias = spec.expression;
+  const measurePrefix = `AUGMENTED_DATASET_MEASURE.${model.id}.`;
+  const editorObjects = references.map((measure) => {
+    const uniqueName = `[Measures].[${measure.name}]`;
+    expressionParamAlias = expressionParamAlias.split(uniqueName).join(`^C_${uniqueName}^`);
+    const editorId = String(measure.id).startsWith(measurePrefix)
+      ? String(measure.id).slice(measurePrefix.length)
+      : String(measure.id);
+    return {
+      id: editorId,
+      alias: measure.alias || measure.name,
+      name: measure.name,
+      type: 'MEASURE',
+      uniqueName,
+      path: `/度量/${measure.alias || measure.name}`,
+      label: `[${measure.alias || measure.name}]`,
+      tooltipKeys: ['name', 'path'],
+    };
+  });
+  const extended = JSON.stringify({
+    calcMeasure: {
+      type: 'CALC_MEASURE',
+      define: {
+        expression: spec.expression,
+        expressionParamAlias,
+        edtiorObjList: JSON.stringify(editorObjects),
+      },
+    },
+  });
+  const calcMeasure = {
+    id: calcId,
+    name: internalName,
+    aliasFromDb: alias,
+    descFromDb: description,
+    useFromDb: false,
+    valueType: spec.valueType,
+    dataFormat: spec.dataFormat,
+    sqlColumnName: null,
+    maskingRule: null,
+    viewId: null,
+    viewAlias: null,
+    hierName: '[Measures]',
+    expression: spec.expression,
+    dimName: '[Measures]',
+    transformRule: null,
+    visible: 1,
+    extended,
+    extendedType: null,
+    reportVisible: true,
+    resType: null,
+    desc: description,
+    alias,
+    creatorId: null,
+  };
+  const rootChildren = Array.isArray(measureRoot.children) ? measureRoot.children : [];
+  const order = rootChildren.reduce(
+    (maximum, child) => Math.max(maximum, Number(child.order) || 0),
+    -1,
+  ) + 1;
+  const calcNode = {
+    id: calcId,
+    name: internalName,
+    aliasFromDb: alias,
+    descFromDb: description,
+    useFromDb: false,
+    type: 'CALC_MEASURE',
+    group: 'CALC_MEASURE',
+    level: 0,
+    order,
+    visible: 1,
+    parentId: measureRoot.id,
+    valueType: null,
+    dataFormat: null,
+    extended,
+    refDataSetFieldId: null,
+    referenceFieldId: null,
+    originalDataType: null,
+    aggregator: null,
+    businessCaliber: null,
+    children: [],
+    reportVisible: true,
+    desc: description,
+    alias,
+    creatorId: null,
+  };
+  measureRoot.children = [...rootChildren, calcNode];
+  model.calcMeasures = [...(model.calcMeasures || []), calcMeasure];
+  model.nodes = [...(model.nodes || []), calcNode];
+  assertOnlyModelCollectionsChanged(baseline, model, ['calcMeasures', 'nodes']);
+  const current = requireNamespacedResource(await loadModel(model.id), 'model');
+  assertExactCurrentNameConfirmation(current, confirmName, 'model');
+  assertModelBaselineUnchanged(baseline, current);
+  if (guardedParentId) {
+    const currentParentId = await locateCompetitionResourceParent(model.id, 'model');
+    if (currentParentId !== guardedParentId) {
+      throw new Error('model placement changed after it was loaded; refusing full-model overwrite');
+    }
+    await assertCompetitionResourceDirectChild(currentParentId, model.id, 'model');
+  }
+  await smartbixApi('augmentedDataSet', {
+    method: 'PUT',
+    body: model,
+    timeoutMs: 120000,
+  });
+  const saved = await loadModel(model.id);
+  assertSavedModelEquivalent(model, saved, 'calculated-measure-mutated model');
+  const persisted = (saved.calcMeasures || []).find((measure) => measure.id === calcId);
+  safeOutput({
+    ok: true,
+    modelId: saved.id,
+    modelName: saved.name,
+    measure: {
+      id: persisted.id,
+      name: persisted.name,
+      alias: persisted.alias,
+      valueType: persisted.valueType,
+      dataFormat: persisted.dataFormat,
+      expression: persisted.expression,
+      references: referenceNames,
+    },
+  });
+}
+
+async function cmdModelCalcMeasureAddArgs(argsList) {
+  if (argsList.filter((argument) => argument === '--confirm-name').length > 1) {
+    throw new Error('model-calc-measure-add accepts --confirm-name only once');
+  }
+  const { positional, confirmation } = parseExactConfirmationArgs(
+    argsList,
+    'model-calc-measure-add',
+    '--confirm-name',
+  );
+  if (positional.length < 3 || positional.length > 4) {
+    throw new Error(
+      'model-calc-measure-add requires <modelId> <measureName> <specJson> '
+      + '[description] --confirm-name <exactModelName>',
+    );
+  }
+  await cmdModelCalcMeasureAdd(
+    positional[0],
+    positional[1],
+    positional[2],
+    positional[3] || '',
+    confirmation,
+  );
 }
 
 async function cmdModelClone(parentId, sourceModelId, requestedName, description = '') {
@@ -927,28 +2166,39 @@ async function cmdModelClone(parentId, sourceModelId, requestedName, description
     throw new Error('competition model-clone is prohibited; use model-create --etl-flow <ownedFlowId>');
   }
   await assertOwnedCatalogParent(parentId);
-  const source = await loadModel(sourceModelId);
-  requireNamespacedResource(source, 'source model');
-  const replacements = new Map([[source.id, resourceId()]]);
-  for (const view of source.views || []) replacements.set(view.id, resourceId());
-  const model = replaceExactStrings(source, replacements);
-  model.id = replacements.get(source.id);
+  const source = requireNamespacedResource(await loadModel(sourceModelId), 'source model');
+  const sourceIds = [source.id, ...(source.views || []).map((view) => view.id)];
+  const targetModelId = resourceId();
+  const viewIds = new Map((source.views || []).map((view) => [view.id, resourceId()]));
+  const model = remapModelClone(source, {
+    modelId: targetModelId,
+    viewIds,
+    batchId: resourceId(),
+  });
   model.name = model.alias = applyNamespace(requestedName);
   model.desc = description || source.desc || '';
-  model._extendProps = { ...(model._extendProps || {}), batchId: resourceId() };
   const result = await smartbixApi(`augmentedDataSet/${encodeURIComponent(parentId)}`, {
     method: 'POST',
     body: model,
   });
   const createdId = createdResourceId(result, model.id);
-  const saved = await smartbixApi(`augmentedDataSet/${encodeURIComponent(createdId)}`);
+  if (!createdId) throw new Error('model clone returned no resource id');
+  const saved = await loadModel(createdId);
+  assertSavedModelEquivalent(model, saved, 'cloned model');
+  assertNoModelCloneResidue(saved, sourceIds);
+  await assertSavedResourceDirectChild(parentId, saved.id, model.name, 'cloned model');
   safeOutput({
     ok: true,
     id: saved.id,
     name: saved.name,
-    fieldCount: saved.fields?.length || 0,
-    measureCount: saved.measures?.length || 0,
-    viewCount: saved.views?.length || 0,
+    fieldCount: saved.fields.length,
+    measureCount: saved.measures.length,
+    viewCount: saved.views.length,
+    relationCount: saved.relationGraph.relations.length,
+    hierarchyCount: saved.nodes.filter((node) => (
+      node.type === 'HIERARCHY' || node.type === 'HIERARCHY_TIME'
+    )).length,
+    calculatedMeasureCount: saved.calcMeasures.length,
   });
 }
 
@@ -957,48 +2207,54 @@ async function loadAnalysis(analysisId) {
   await ensureSession();
   const wrapper = await smartbixApi(`adhocanalysis/getReport/${encodeURIComponent(analysisId)}`);
   if (!wrapper?.report?.id) throw new Error(`analysis not found or incomplete: ${analysisId}`);
+  if (wrapper.report.id !== analysisId) {
+    throw new Error(`analysis identity mismatch while reopening requested resource: ${analysisId}`);
+  }
   return wrapper;
 }
 async function cmdAnalysisGet(analysisId) {
-  const wrapper = await loadAnalysis(analysisId);
-  requireNamespacedResource(wrapper.report, 'analysis');
-  safeOutput(wrapper);
-}
-
-function buildAnalysisQuery(report) {
-  const portlet = report?.define?.portlets?.find((item) => item.type === 'CROSS_TABLE');
-  if (!portlet?.extended?.dataSource || !portlet?.extended?.fields) {
-    throw new Error('analysis has no runnable CROSS_TABLE portlet');
-  }
-  const extended = portlet.extended;
-  return {
-    queryBatchId: resourceId(),
-    queryType: 'PORTLET_CROSS_TABLE',
-    clientId: resourceId(),
-    dataSource: extended.dataSource,
-    pagination: { num: 0, size: 100 },
-    calculateTotalRowCount: false,
-    conditionRelation: { relation: 'AND', childNodes: [] },
-    queryFields: extended.fields,
-    privateDataset: report.define.privateDataset || { folders: [], fields: [] },
-    colSubtotalPosition: 'right',
-    groupOrderByState: extended.viewState?.groupOrderByState || null,
-    useAdvancedSort: true,
-    querySortSetting: {
-      rowSorts: extended.sortSetting?.row?.sorts || [],
-      colSorts: extended.sortSetting?.col?.sorts || [],
+  if (PLATFORM_PROFILE) await locateCompetitionResourceParent(analysisId, 'analysis');
+  const { report } = await loadAnalysis(analysisId);
+  requireNamespacedResource(report, 'analysis');
+  const tables = analysisCrossTables(report);
+  safeOutput({
+    id: report.id,
+    name: report.name,
+    alias: report.alias || null,
+    description: report.desc || '',
+    portlets: (report.define?.portlets || []).map((portlet) => ({
+      id: portlet.id,
+      name: portlet.name || null,
+      type: portlet.type || null,
+    })),
+    crossTables: tables.map((table) => ({
+      id: table.id,
+      modelId: table.extended?.dataSource?.id || null,
+      rowBindings: (table.extended?.fields?.rows || []).map((field) => ({
+        id: field.id,
+        name: field.name,
+        alias: field.alias || null,
+        type: field.type,
+      })),
+      measureBindings: (table.extended?.fields?.measures || []).map((field) => ({
+        id: field.id,
+        name: field.name,
+        alias: field.alias || null,
+        type: field.type,
+        aggregate: field.aggregate ?? null,
+      })),
+    })),
+    privateDefinitionCounts: {
+      folders: report.define?.privateDataset?.folders?.length || 0,
+      fields: report.define?.privateDataset?.fields?.length || 0,
     },
-    tableHeader: report.define.reportSetting?.tableHeader || null,
-    tableFooter: report.define.reportSetting?.tableFooter || null,
-  };
+  });
 }
 
-function qualifyModelResource(modelId, type, id) {
-  const source = String(id || '');
-  return source.startsWith('AUGMENTED_DATASET_')
-    ? source
-    : `AUGMENTED_DATASET_${type}.${modelId}.${source}`;
+function buildAnalysisQuery(report, options = {}) {
+  return buildVerifiedAnalysisQuery(report, { ...options, idFactory: resourceId });
 }
+
 
 function analysisDimension(model, field) {
   return {
@@ -1037,18 +2293,26 @@ function analysisDimension(model, field) {
 }
 
 function analysisMeasure(model, measure) {
-  const aggregate = String(measure.aggregator || 'sum').toUpperCase();
+  const isCalculated = (model.calcMeasures || []).some((candidate) => candidate.id === measure.id);
+  let aggregate = null;
+  if (!isCalculated) {
+    aggregate = String(measure.aggregator || '').trim().toUpperCase();
+    if (!MODEL_AGGREGATORS.includes(aggregate)) {
+      throw new Error(`analysis measure has no supported explicit aggregator: ${measure.id}`);
+    }
+  }
+  const type = isCalculated ? 'CALC_MEASURE' : 'MEASURE';
   return {
-    id: qualifyModelResource(model.id, 'MEASURE', measure.id),
+    id: qualifyModelResource(model.id, type, measure.id),
     name: measure.name,
     alias: measure.alias || measure.name,
     desc: measure.desc || '',
     label: measure.alias || measure.name,
-    type: 'MEASURE',
+    type,
     dataType: measure.valueType,
     fieldType: 'MEASURE',
     hierarchy: 'MEASURE',
-    group: 'MEASURE',
+    group: type,
     children: [],
     dataFormat: measure.dataFormat || '',
     orderByType: null,
@@ -1062,7 +2326,7 @@ function analysisMeasure(model, measure) {
     order: model.nodes?.find((node) => node.id === measure.id)?.order || measure.order || 0,
     visible: true,
     originalDataType: measure.valueType,
-    refDataSetFieldId: measure.refDataSetFieldId
+    refDataSetFieldId: !isCalculated && measure.refDataSetFieldId
       ? qualifyModelResource(model.id, 'FIELD', measure.refDataSetFieldId)
       : null,
     extended: measure.extended || null,
@@ -1076,19 +2340,63 @@ function analysisMeasure(model, measure) {
   };
 }
 
+function analysisLevel(model, hierarchy, level, index) {
+  const node = (model.nodes || []).find((candidate) => candidate.id === level.id);
+  const levelType = level.levelType || node?.type || 'LEVEL';
+  return {
+    id: qualifyModelResource(model.id, 'LEVEL', level.id),
+    name: level.name,
+    alias: level.alias || level.name,
+    desc: level.desc || '',
+    label: level.alias || level.name,
+    type: levelType,
+    dataType: level.valueType,
+    fieldType: 'DIMENSION',
+    hierarchy: levelType,
+    group: 'LEVEL',
+    children: [],
+    dataFormat: level.dataFormat || '',
+    orderByType: null,
+    orderBySettings: null,
+    maskingRule: level.maskingRule || null,
+    originalMaskingRule: null,
+    maskingRuleAlias: null,
+    transformRule: level.transformRule || null,
+    parentId: hierarchy.id,
+    order: node?.order ?? index,
+    visible: true,
+    originalDataType: null,
+    refDataSetFieldId: null,
+    extended: level.extended || null,
+    businessCaliber: null,
+    aggregate: null,
+    aggregatedCalcField: false,
+    creatorId: null,
+    uniqueId: resourceId(),
+    originAggregate: null,
+    subtotal: 'SHOW',
+    showName: level.alias || level.name,
+  };
+}
+
 function defaultBusinessLabel(fieldName) {
   return String(fieldName || '').trim().replaceAll('_', ' ');
 }
 
 function buildAnalysisReport(model, rowFieldName, measureFieldName, requestedName, description = '') {
-  const dimensionField = (model.fields || []).find(
-    (field) => field.name === rowFieldName || field.alias === rowFieldName,
+  const dimensionField = resolveAnalysisResource(
+    model.fields || [],
+    rowFieldName,
+    { kind: 'analysis dimension field' },
   );
-  if (!dimensionField) throw new Error(`dimension field not found: ${rowFieldName}`);
-  const modelMeasure = (model.measures || []).find(
-    (measure) => measure.name === measureFieldName || measure.alias === measureFieldName,
+  const modelMeasure = resolveAnalysisResource(
+    [...(model.measures || []), ...(model.calcMeasures || [])],
+    measureFieldName,
+    {
+      kind: 'analysis measure',
+      namespacedRequested: applyNamespace(measureFieldName),
+    },
   );
-  if (!modelMeasure) throw new Error(`measure not found: ${measureFieldName}`);
   const dimension = analysisDimension(model, dimensionField);
   const measure = analysisMeasure(model, modelMeasure);
   const dataSource = { id: model.id, type: 'AUGMENTED' };
@@ -1137,6 +2445,51 @@ function buildAnalysisReport(model, rowFieldName, measureFieldName, requestedNam
   });
 }
 
+function buildHierarchyAnalysisReport(
+  model,
+  hierarchyName,
+  measureFieldName,
+  requestedName,
+  description = '',
+) {
+  const hierarchy = resolveAnalysisResource(
+    (model.nodes || []).filter((node) => (
+      node.type === 'HIERARCHY' || node.type === 'HIERARCHY_TIME'
+    )),
+    hierarchyName,
+    {
+      kind: 'model hierarchy',
+      namespacedRequested: applyNamespace(hierarchyName),
+    },
+  );
+  const levels = (hierarchy.children || []).map((node, index) => resolveAnalysisResource(
+    model.levels || [],
+    node.id,
+    { kind: `model hierarchy level ${index + 1}` },
+  ));
+  if (levels.length < 2) {
+    throw new Error(`model hierarchy is incomplete: ${hierarchy.alias || hierarchy.name}`);
+  }
+  const firstFields = (model.fields || []).filter(
+    (field) => qualifyModelResource(model.id, 'FIELD', field.id) === levels[0].refDataSetFieldId,
+  );
+  if (firstFields.length !== 1) {
+    throw new Error('model hierarchy first level source field must resolve exactly once');
+  }
+  const firstField = firstFields[0];
+  const report = buildAnalysisReport(
+    model,
+    firstField.name,
+    measureFieldName,
+    requestedName,
+    description,
+  );
+  const rows = levels.map((level, index) => analysisLevel(model, hierarchy, level, index));
+  report.define.portlets[0].extended.fields.rows = rows;
+  report.desc = description || report.desc;
+  return report;
+}
+
 async function cmdAnalysisCreate(
   parentId,
   modelId,
@@ -1150,8 +2503,7 @@ async function cmdAnalysisCreate(
   }
   await assertOwnedCatalogParent(parentId);
   await assertCompetitionResourceDirectChild(parentId, modelId, 'model');
-  const model = await loadModel(modelId);
-  requireNamespacedResource(model, 'model');
+  const model = requireNamespacedResource(await loadModel(modelId), 'model');
   const report = buildAnalysisReport(
     model,
     rowFieldName,
@@ -1159,33 +2511,98 @@ async function cmdAnalysisCreate(
     requestedName,
     description,
   );
+  const requestedBindings = analysisBindingSnapshot(report);
   const result = await smartbixApi(
     `adhocanalysis/createReport?pid=${encodeURIComponent(parentId)}`,
     { method: 'POST', body: report },
   );
   const createdId = createdResourceId(result);
-  if (!createdId) throw new Error(`analysis create returned no id: ${JSON.stringify(result)}`);
-  const saved = await loadAnalysis(createdId);
+  if (!createdId) throw new Error('analysis create returned no resource id');
+  const { report: saved } = await loadAnalysis(createdId);
+  assertSavedAnalysisEquivalent(report, saved, 'created analysis');
+  assertAnalysisBindings(saved, requestedBindings);
+  await assertSavedResourceDirectChild(parentId, saved.id, report.name, 'created analysis');
   const queryResult = await smartbixApi(`adhocanalysis/data/${encodeURIComponent(createdId)}`, {
     method: 'POST',
-    body: buildAnalysisQuery(saved.report),
+    body: buildAnalysisQuery(saved),
     timeoutMs: 120000,
+  });
+  const executionPreview = assertAnalysisQueryResult(queryResult, {
+    label: 'created analysis execution',
   });
   safeOutput({
     ok: true,
-    id: saved.report.id,
-    name: saved.report.name,
-    rowField: rowFieldName,
-    measure: measureFieldName,
-    validation: {
-      total: queryResult.total ?? null,
-      rowKeys: Object.keys(queryResult.rowMap || {}),
-      columns: (queryResult.columns || []).filter(Boolean).map((column) => column.label || column.value),
-    },
+    id: saved.id,
+    name: saved.name,
+    bindings: requestedBindings,
+    executionPreview,
+  });
+}
+
+async function cmdAnalysisCreateHierarchy(
+  parentId,
+  modelId,
+  hierarchyName,
+  measureFieldName,
+  requestedName,
+  description = '',
+) {
+  if (![parentId, modelId, hierarchyName, measureFieldName, requestedName].every(Boolean)) {
+    throw new Error(
+      'analysis-create-hierarchy requires <parentId> <modelId> <hierarchy> <measure> '
+      + '<name> [description]',
+    );
+  }
+  await assertOwnedCatalogParent(parentId);
+  await assertCompetitionResourceDirectChild(parentId, modelId, 'model');
+  const model = requireNamespacedResource(await loadModel(modelId), 'model');
+  const report = buildHierarchyAnalysisReport(
+    model,
+    hierarchyName,
+    measureFieldName,
+    requestedName,
+    description,
+  );
+  const requestedBindings = analysisBindingSnapshot(report);
+  const result = await smartbixApi(
+    `adhocanalysis/createReport?pid=${encodeURIComponent(parentId)}`,
+    { method: 'POST', body: report },
+  );
+  const createdId = createdResourceId(result);
+  if (!createdId) throw new Error('hierarchy analysis create returned no resource id');
+  const { report: saved } = await loadAnalysis(createdId);
+  assertSavedAnalysisEquivalent(report, saved, 'created hierarchy analysis');
+  assertAnalysisBindings(saved, requestedBindings);
+  await assertSavedResourceDirectChild(parentId, saved.id, report.name, 'created hierarchy analysis');
+  const queryResult = await smartbixApi(`adhocanalysis/data/${encodeURIComponent(createdId)}`, {
+    method: 'POST',
+    body: buildAnalysisQuery(saved),
+    timeoutMs: 120000,
+  });
+  const executionPreview = assertAnalysisQueryResult(queryResult, {
+    label: 'created hierarchy analysis execution',
+  });
+  const rows = saved.define.portlets[0].extended.fields.rows;
+  safeOutput({
+    ok: true,
+    id: saved.id,
+    name: saved.name,
+    hierarchy: hierarchyName,
+    levels: rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      alias: row.alias,
+      type: row.type,
+    })),
+    bindings: requestedBindings,
+    executionPreview,
   });
 }
 
 async function cmdAnalysisRepairArgs(argsList) {
+  if (argsList.filter((argument) => argument === '--confirm-name').length > 1) {
+    throw new Error('analysis-repair accepts --confirm-name only once');
+  }
   const { positional, confirmation } = parseExactConfirmationArgs(
     argsList,
     'analysis-repair',
@@ -1223,43 +2640,68 @@ async function cmdAnalysisRepair(
       + '<measureLabel> [description] --confirm-name <exactAnalysisName>',
     );
   }
+  const guardedAnalysisParentId = PLATFORM_PROFILE
+    ? await locateCompetitionResourceParent(analysisId, 'analysis')
+    : null;
   const { report: current } = await loadAnalysis(analysisId);
   requireNamespacedResource(current, 'analysis');
-  assertExactResourceConfirmation(current, confirmName);
-  const currentTable = current.define?.portlets?.find((portlet) => portlet.type === 'CROSS_TABLE');
-  const modelId = currentTable?.extended?.dataSource?.id;
+  assertExactCurrentNameConfirmation(current, confirmName, 'analysis');
+  const currentTable = assertSimpleAnalysisRepairable(current);
+  const modelId = currentTable.extended?.dataSource?.id;
   if (!modelId) throw new Error('analysis has no model-backed CROSS_TABLE');
-  if (PLATFORM_PROFILE) {
-    const analysisParentId = await locateCompetitionResourceParent(analysisId, 'analysis');
-    await assertCompetitionResourceDirectChild(analysisParentId, modelId, 'model');
-  }
-  const model = await loadModel(modelId);
-  requireNamespacedResource(model, 'model');
 
-  const rebuilt = buildAnalysisReport(
+  if (guardedAnalysisParentId) {
+    await assertCompetitionResourceDirectChild(guardedAnalysisParentId, modelId, 'model');
+  }
+  const model = requireNamespacedResource(await loadModel(modelId), 'model');
+  const requestedDefinition = buildAnalysisReport(
     model,
     rowFieldName,
     measureFieldName,
     current.name,
     description || current.desc || '',
   );
-  rebuilt.define.portlets[0].id = currentTable.id;
-  const repaired = improveAnalysisPresentation({
-    ...current,
-    desc: description || current.desc || rebuilt.desc,
-    define: rebuilt.define,
-  }, {
+  const requestedTable = assertSimpleAnalysisRepairable(requestedDefinition);
+  const repaired = patchSimpleAnalysisDefinition(current, {
+    row: requestedTable.extended.fields.rows[0],
+    measure: requestedTable.extended.fields.measures[0],
     rowLabel,
     measureLabel,
-    description: description || current.desc || rebuilt.desc,
+    description: description || current.desc || '',
   });
+  const expectedBindings = analysisBindingSnapshot(repaired);
   const beforeAudit = auditAnalysisPresentation(current);
+
+  const preflightResult = await smartbixApi(
+    `adhocanalysis/data/${encodeURIComponent(analysisId)}`,
+    {
+      method: 'POST',
+      body: buildAnalysisQuery(repaired),
+      timeoutMs: 120000,
+    },
+  );
+  assertAnalysisQueryResult(preflightResult, { label: 'analysis repair preflight' });
+  const { report: latest } = await loadAnalysis(analysisId);
+  requireNamespacedResource(latest, 'analysis');
+  assertExactCurrentNameConfirmation(latest, confirmName, 'analysis');
+  assertSavedAnalysisEquivalent(current, latest, 'analysis repair baseline');
+  assertModelBaselineUnchanged(model, await loadModel(modelId));
+  if (guardedAnalysisParentId) {
+    const latestParentId = await locateCompetitionResourceParent(analysisId, 'analysis');
+    if (latestParentId !== guardedAnalysisParentId) {
+      throw new Error('analysis placement changed after it was loaded; refusing repair');
+    }
+    await assertCompetitionResourceDirectChild(latestParentId, modelId, 'model');
+  }
+
   await smartbixApi('adhocanalysis/updateReport', {
     method: 'POST',
     body: repaired,
     timeoutMs: 120000,
   });
   const { report: saved } = await loadAnalysis(analysisId);
+  assertSavedAnalysisEquivalent(repaired, saved, 'repaired analysis');
+  assertAnalysisBindings(saved, expectedBindings);
   const presentation = auditAnalysisPresentation(saved);
   if (!presentation.ok) {
     throw new Error(`analysis presentation repair failed: ${presentation.issues.join('; ')}`);
@@ -1269,47 +2711,74 @@ async function cmdAnalysisRepair(
     body: buildAnalysisQuery(saved),
     timeoutMs: 120000,
   });
-  const rowKeys = Object.keys(queryResult.rowMap || {});
-  if (rowKeys.length === 0) throw new Error('repaired analysis returned no rows');
+  const executionPreview = assertAnalysisQueryResult(queryResult, {
+    label: 'repaired analysis execution',
+  });
   safeOutput({
     ok: true,
     id: analysisId,
     name: saved.name,
-    rowField: rowFieldName,
-    measure: measureFieldName,
+    bindings: expectedBindings,
     rowLabel,
     measureLabel,
     removedIssues: beforeAudit.issues,
     presentation,
-    validation: {
-      rowCount: rowKeys.length,
-      columns: (queryResult.columns || []).filter(Boolean).map((column) => column.label || column.value),
-    },
+    executionPreview,
   });
 }
 
 async function cmdAnalysisRun(analysisId) {
+  const analysisParentId = PLATFORM_PROFILE
+    ? await locateCompetitionResourceParent(analysisId, 'analysis')
+    : null;
   const { report } = await loadAnalysis(analysisId);
   requireNamespacedResource(report, 'analysis');
-  const result = await smartbixApi(`adhocanalysis/data/${encodeURIComponent(analysisId)}`, {
-    method: 'POST',
-    body: buildAnalysisQuery(report),
-    timeoutMs: 120000,
-  });
-  safeOutput({ ok: true, analysisId, name: report.name, result });
+  const modelIds = analysisModelIds(report);
+  for (const modelId of modelIds) {
+    if (analysisParentId) {
+      await assertCompetitionResourceDirectChild(analysisParentId, modelId, 'analysis source model');
+    }
+    requireNamespacedResource(await loadModel(modelId), 'analysis source model');
+  }
+  const tables = analysisCrossTables(report);
+  if (tables.length === 0) throw new Error('analysis has no runnable CROSS_TABLE portlet');
+  const executionPreview = [];
+  for (const table of tables) {
+    const result = await smartbixApi(`adhocanalysis/data/${encodeURIComponent(analysisId)}`, {
+      method: 'POST',
+      body: buildAnalysisQuery(report, { portletId: table.id }),
+      timeoutMs: 120000,
+    });
+    executionPreview.push({
+      portletId: table.id,
+      ...assertAnalysisQueryResult(result, {
+        label: `analysis portlet ${table.id} execution`,
+      }),
+    });
+  }
+  safeOutput({ ok: true, analysisId, name: report.name, executionPreview });
 }
 
 async function cmdAnalysisProfile(analysisId, fieldNamesCsv) {
   if (![analysisId, fieldNamesCsv].every(Boolean)) {
     throw new Error('analysis-profile requires <analysisId> <field,...>');
   }
+  const analysisParentId = PLATFORM_PROFILE
+    ? await locateCompetitionResourceParent(analysisId, 'analysis')
+    : null;
   const { report } = await loadAnalysis(analysisId);
   requireNamespacedResource(report, 'analysis');
-  const table = report.define?.portlets?.find((portlet) => portlet.type === 'CROSS_TABLE');
-  const modelId = table?.extended?.dataSource?.id;
+  const tables = analysisCrossTables(report);
+  if (tables.length !== 1) {
+    throw new Error(`analysis-profile requires exactly one CROSS_TABLE; found ${tables.length}`);
+  }
+  const table = tables[0];
+  const modelId = table.extended?.dataSource?.id;
   if (!modelId) throw new Error('analysis has no model-backed CROSS_TABLE');
-  const model = await loadModel(modelId);
-  requireNamespacedResource(model, 'model');
+  if (analysisParentId) {
+    await assertCompetitionResourceDirectChild(analysisParentId, modelId, 'model');
+  }
+  const model = requireNamespacedResource(await loadModel(modelId), 'model');
   const fieldNames = [...new Set(
     String(fieldNamesCsv).split(',').map((name) => name.trim()).filter(Boolean),
   )];
@@ -1317,24 +2786,32 @@ async function cmdAnalysisProfile(analysisId, fieldNamesCsv) {
 
   const profiles = [];
   for (const fieldName of fieldNames) {
-    const field = (model.fields || []).find(
-      (candidate) => candidate.name === fieldName || candidate.alias === fieldName,
+    const field = resolveAnalysisResource(
+      model.fields || [],
+      fieldName,
+      { kind: 'analysis profile field' },
     );
-    if (!field) throw new Error(`analysis profile field not found: ${fieldName}`);
-    const query = buildAnalysisQuery(report);
+    const query = buildAnalysisQuery(report, { portletId: table.id });
     query.queryFields = {
       ...query.queryFields,
       rows: [analysisDimension(model, field)],
     };
+    query.querySortSetting = { rowSorts: [], colSorts: [] };
+    query.groupOrderByState = null;
+    query.useAdvancedSort = false;
     const result = await smartbixApi(`adhocanalysis/data/${encodeURIComponent(analysisId)}`, {
       method: 'POST',
       body: query,
       timeoutMs: 120000,
     });
+    const executionPreview = assertAnalysisQueryResult(result, {
+      label: `analysis profile field ${field.id}`,
+    });
     profiles.push({
       field: field.name,
       label: field.alias || field.name,
-      ...summarizeDimensionKeys(Object.keys(result.rowMap || {})),
+      ...summarizeDimensionKeys(executionPreview.rowKeys),
+      executionPreview,
     });
   }
   safeOutput({
@@ -1354,40 +2831,174 @@ async function cmdAnalysisClone(parentId, sourceAnalysisId, requestedName, descr
   await assertCompetitionResourceDirectChild(parentId, sourceAnalysisId, 'source analysis');
   const { report: source } = await loadAnalysis(sourceAnalysisId);
   requireNamespacedResource(source, 'source analysis');
-  const report = structuredClone(source);
-  delete report.id;
-  delete report.creatorId;
+  const modelIds = analysisModelIds(source);
+  for (const modelId of modelIds) {
+    await assertCompetitionResourceDirectChild(parentId, modelId, 'analysis source model');
+    requireNamespacedResource(await loadModel(modelId), 'analysis source model');
+  }
+  for (const table of analysisCrossTables(source)) {
+    const sourceResult = await smartbixApi(
+      `adhocanalysis/data/${encodeURIComponent(sourceAnalysisId)}`,
+      {
+        method: 'POST',
+        body: buildAnalysisQuery(source, { portletId: table.id }),
+        timeoutMs: 120000,
+      },
+    );
+    assertAnalysisQueryResult(sourceResult, {
+      label: `source analysis portlet ${table.id} clone preflight`,
+    });
+  }
+  const seed = structuredClone(source);
+  delete seed.id;
+  delete seed.creatorId;
+  const { report } = remapAnalysisPortlets(seed, resourceId);
   report.name = report.alias = applyNamespace(requestedName);
   report.desc = description || source.desc || '';
-  for (const portlet of report.define?.portlets || []) portlet.id = resourceId();
   const result = await smartbixApi(
     `adhocanalysis/createReport?pid=${encodeURIComponent(parentId)}`,
     { method: 'POST', body: report },
   );
   const createdId = createdResourceId(result);
-  if (!createdId) throw new Error(`analysis create returned no id: ${JSON.stringify(result)}`);
-  const saved = await loadAnalysis(createdId);
+  if (!createdId) throw new Error('analysis clone returned no resource id');
+  report.id = createdId;
+  const { report: saved } = await loadAnalysis(createdId);
+  assertSavedAnalysisEquivalent(report, saved, 'cloned analysis');
+  await assertSavedResourceDirectChild(parentId, saved.id, report.name, 'cloned analysis');
+  const executionPreview = [];
+  for (const table of analysisCrossTables(saved)) {
+    const cloneResult = await smartbixApi(`adhocanalysis/data/${encodeURIComponent(createdId)}`, {
+      method: 'POST',
+      body: buildAnalysisQuery(saved, { portletId: table.id }),
+      timeoutMs: 120000,
+    });
+    executionPreview.push({
+      portletId: table.id,
+      ...assertAnalysisQueryResult(cloneResult, {
+        label: `cloned analysis portlet ${table.id} execution`,
+      }),
+    });
+  }
   safeOutput({
     ok: true,
-    id: saved.report.id,
-    name: saved.report.name,
-    portletCount: saved.report.define?.portlets?.length || 0,
+    id: saved.id,
+    name: saved.name,
+    portletCount: saved.define.portlets.length,
+    modelIds,
+    executionPreview,
   });
 }
 
-function dashboardDimension(model, field, displayLabel = field.alias || field.name) {
-  const parentId = model.nodes?.find((node) => node.id === field.id)?.parentId
-    || `AUGMENTED_DATASET_FOLDER.${model.id}.${field.viewId}`;
-  const label = String(displayLabel || field.alias || field.name).trim();
-  return {
-    id: qualifyModelResource(model.id, 'FIELD', field.id),
-    alias: label,
-    label,
-    label0: label,
-    showName: label,
-    aggregatedCalcField: false,
+function dashboardResource(model, name, kind, displayLabel) {
+  return serializeDashboardResource(model, name, kind, displayLabel, resourceId);
+}
+
+function dashboardChartLabel(chart, name) {
+  if (Object.hasOwn(chart.labels, name)) return chart.labels[name];
+  if (name === chart.dimension && chart.dimensionLabel !== name) return chart.dimensionLabel;
+  if (name === chart.measure && chart.measureLabel !== name) return chart.measureLabel;
+  return null;
+}
+
+function dashboardPortletType(chart) {
+  return chart.type.startsWith('ECHARTS_MAP') ? 'ECHARTS_MAP' : chart.type;
+}
+
+function dashboardChartSlot(model, chart, slot) {
+  const kind = chartTypeContract(chart.type).slots[slot]?.kind || 'any';
+  return (chart.slots[slot] || []).map((name) => {
+    const resource = dashboardResource(
+      model,
+      name,
+      kind,
+      dashboardChartLabel(chart, name),
+    );
+    if (!chart.type.startsWith('ECHARTS_MAP') || !['cols', 'rows'].includes(slot)) {
+      return resource;
+    }
+    return {
+      ...resource,
+      type: chart.type === 'ECHARTS_MAP'
+        ? 'GEO'
+        : (slot === 'cols' ? 'GEO_LON' : 'GEO_LAT'),
+      portletType: chart.type,
+    };
+  });
+}
+
+function dashboardChartDefine(chart) {
+  const { axes } = chartTypeContract(chart.type);
+  const chartDefine = {
+    tooltip: {
+      trigger: ['ECHARTS_PIE', 'ECHARTS_PIE__DONUT', 'ECHARTS_GAUGE'].some(
+        (prefix) => chart.type.startsWith(prefix),
+      ) ? 'item' : 'axis',
+    },
+    seriesConfig: {
+      global: {
+        label: { show: true, position: 'top', fontSize: 11 },
+        stack: false,
+      },
+    },
+  };
+  if (axes === 'cartesian') {
+    chartDefine.grid = {
+      left: 72,
+      right: 24,
+      top: 64,
+      bottom: 96,
+      containLabel: true,
+    };
+    chartDefine.xAxis = {
+      name: chart.xAxisTitle,
+      nameLocation: 'middle',
+      nameGap: 62,
+      axisLabel: { interval: 0, rotate: 24 },
+    };
+    chartDefine.yAxis = {
+      name: chart.yAxisTitle,
+      nameLocation: 'middle',
+      nameGap: 54,
+      axisLabel: {},
+    };
+  } else if (axes === 'polar') {
+    chartDefine.angleAxis = { name: chart.angleAxisTitle };
+    chartDefine.radiusAxis = { name: chart.radiusAxisTitle };
+  }
+  if (['ECHARTS_PIE', 'ECHARTS_PIE__DONUT', 'ECHARTS_SUNBURST'].includes(chart.type)) {
+    chartDefine.legend = {};
+  }
+  if (chart.type.startsWith('ECHARTS_MAP')) {
+    chartDefine.visualMap = { show: true };
+    chartDefine.geo = { roam: true };
+  }
+  if (chart.type.startsWith('ECHARTS_GAUGE')) chartDefine.valueAxis = {};
+  if (chart.type === 'ECHARTS_GRAPH') chartDefine.layout = 'force';
+  return chartDefine;
+}
+
+function buildChartDashboard(model, requestedName, chart) {
+  const pageId = resourceId();
+  const portletId = resourceId();
+  const name = applyNamespace(requestedName);
+  const portletType = dashboardPortletType(chart);
+  const mapChart = portletType === 'ECHARTS_MAP';
+  const columns = dashboardChartSlot(model, chart, 'cols');
+  const rows = dashboardChartSlot(model, chart, 'rows');
+  const tableChart = portletType === 'TABLE_CROSS';
+  const tableMeasures = tableChart
+    ? dashboardChartSlot(model, chart, 'measureGroup')
+    : [];
+  if (tableChart && tableMeasures.length === 0) {
+    throw new Error('TABLE_CROSS requires at least one measure');
+  }
+  const tableMeasureName = tableChart ? {
+    id: 'MEASURE_GROUP_NAME',
+    alias: '度量名称',
+    label: '度量名称',
+    label0: '度量名称',
+    showName: null,
     aggregate: 'NONE',
-    originAggregate: null,
     orderBy: null,
     orderBySettings: null,
     align: null,
@@ -1395,34 +3006,22 @@ function dashboardDimension(model, field, displayLabel = field.alias || field.na
     orderPriority: 0,
     subtotal: null,
     group: 'DIMENSION',
-    dataType: field.valueType,
-    type: 'FIELD',
+    dataType: 'STRING',
+    type: 'MEASURE_GROUP_NAME',
     fieldType: 'DIMENSION',
     uniqueId: resourceId(),
-    parentId,
+    parentId: null,
     parentNodeName: null,
-    order: model.nodes?.find((node) => node.id === field.id)?.order || 0,
-    name: field.name,
-    originalDataType: field.originalDataType || null,
-    businessCaliber: field.businessCaliber || null,
+    name: 'MEASURE_GROUP_NAME',
     fieldLabelStatus: { aggregate: '' },
-  };
-}
-
-function dashboardMeasure(model, measure, displayLabel = measure.alias || measure.name) {
-  const aggregate = String(measure.aggregator || 'sum').toUpperCase();
-  const parentId = model.nodes?.find((node) => node.id === measure.id)?.parentId
-    || `AUGMENTED_DATASET_FOLDER.${model.id}.measure`;
-  const label = String(displayLabel || measure.alias || measure.name).trim();
-  return {
-    id: qualifyModelResource(model.id, 'MEASURE', measure.id),
-    alias: label,
-    label,
-    label0: label,
-    showName: label,
-    aggregatedCalcField: false,
-    aggregate,
-    originAggregate: aggregate,
+  } : null;
+  const tableMeasureValue = tableChart ? {
+    id: 'MEASURE_GROUP_VALUE',
+    alias: '度量值',
+    label: '度量值',
+    label0: '度量值',
+    showName: null,
+    aggregate: null,
     orderBy: null,
     orderBySettings: null,
     align: null,
@@ -1430,52 +3029,45 @@ function dashboardMeasure(model, measure, displayLabel = measure.alias || measur
     orderPriority: 0,
     subtotal: null,
     group: 'MEASURE',
-    dataType: measure.valueType,
-    type: 'MEASURE',
+    dataType: 'DOUBLE',
+    type: 'MEASURE_GROUP_VALUE',
     fieldType: 'MEASURE',
     uniqueId: resourceId(),
-    parentId,
+    parentId: null,
     parentNodeName: null,
-    order: model.nodes?.find((node) => node.id === measure.id)?.order || 0,
-    name: measure.name,
-    originalDataType: measure.valueType,
-    businessCaliber: measure.businessCaliber || null,
-    refDataSetFieldId: measure.refDataSetFieldId
-      ? qualifyModelResource(model.id, 'FIELD', measure.refDataSetFieldId)
-      : null,
-    fieldLabelStatus: { aggregate },
-  };
-}
-
-function buildBarDashboard(
-  model,
-  dimensionName,
-  measureName,
-  requestedName,
-  chartTitle,
-  presentation = {},
-) {
-  const field = (model.fields || []).find(
-    (item) => item.name === dimensionName || item.alias === dimensionName,
+    name: 'MEASURE_GROUP_VALUE',
+    groupName: 'GLOBAL_MARK',
+    originAggregate: null,
+    originalDataType: null,
+  } : null;
+  const publicMapGroup = 'PUBLIC_MARK_NONE_ECHARTS_MAP';
+  const markFields = Object.fromEntries(
+    ['color', 'size', 'angle', 'label', 'tooltip', 'shape'].map((slot) => {
+      const fields = dashboardChartSlot(model, chart, slot);
+      return [slot, mapChart ? fields.map((field) => ({
+        ...field,
+        groupName: publicMapGroup,
+        portletType: chart.type,
+        position: 'LB',
+      })) : fields];
+    }),
   );
-  if (!field) throw new Error(`dashboard dimension field not found: ${dimensionName}`);
-  const measure = (model.measures || []).find(
-    (item) => item.name === measureName || item.alias === measureName,
-  );
-  if (!measure) throw new Error(`dashboard measure not found: ${measureName}`);
-  const pageId = resourceId();
-  const portletId = resourceId();
-  const name = applyNamespace(requestedName);
-  const dimensionLabel = String(presentation.dimensionLabel || field.alias || field.name).trim();
-  const measureLabel = String(presentation.measureLabel || measure.alias || measure.name).trim();
-  const xAxisTitle = String(presentation.xAxisTitle || dimensionLabel).trim();
-  const yAxisTitle = String(presentation.yAxisTitle || measureLabel).trim();
-  const title = String(chartTitle || `${measureLabel} by ${dimensionLabel}`).trim();
+  const markFieldGroups = tableChart
+    ? { GLOBAL_MARK: { sum: [tableMeasureValue] } }
+    : mapChart
+      ? {
+        GLOBAL_MARK: { color: [], label: [], tooltip: [] },
+        [publicMapGroup]: markFields,
+        ...(chart.type === 'ECHARTS_MAP' && columns[0] ? {
+          [`${columns[0].id}_NONE_ECHARTS_MAP_${columns[0].uniqueId}`]: markFields,
+        } : {}),
+      }
+      : { GLOBAL_MARK: markFields };
   return {
     id: pageId,
     name,
     alias: name,
-    desc: title,
+    desc: chart.title,
     define: {
       devices: {
         default: {
@@ -1487,7 +3079,7 @@ function buildBarDashboard(
               floats: {
                 1: {
                   portletId,
-                  type: 'ECHARTS_BAR',
+                  type: portletType,
                   left: 0,
                   top: 0,
                   width: 720,
@@ -1508,21 +3100,53 @@ function buildBarDashboard(
       },
       portlets: [{
         id: portletId,
-        name: String(Date.now()),
-        type: 'ECHARTS_BAR',
-        displayMode: 'ECHARTS_BAR',
+        name: portletId,
+        type: portletType,
+        displayMode: chart.displayMode,
         style: null,
         macros: [],
         extended: {
           asFilter: false,
-          title: { text: title, left: 'center', top: 8 },
+          skillChartType: chart.type,
+          title: { text: chart.title, left: 'center', top: 8 },
           datasetIds: [model.id],
           fields: {
-            cols: [dashboardDimension(model, field, dimensionLabel)],
-            rows: [dashboardMeasure(model, measure, measureLabel)],
+            cols: tableChart ? [tableMeasureName] : columns,
+            rows,
             filters: [],
+            marks: [],
           },
-          markFieldGroups: { GLOBAL_MARK: {} },
+          markFieldGroups,
+          ...(tableChart ? {
+            fieldGroup: {
+              [`${model.id}-MEASURE_GROUP`]: tableMeasures,
+            },
+            data: { showinner: 2 },
+            showSeriesNumber: null,
+            table: {
+              mainColor: 'rgba(236,240,246,1)',
+              styleType: 'custom',
+            },
+            header: {
+              backgroundColor: 'rgba(223,229,239,1)',
+              font: {
+                textStyle: {
+                  fontFamily: 'Microsoft YaHei',
+                  fontSize: 12,
+                  fontWeight: 'bold',
+                  color: 'rgba(78,89,105,1)',
+                  align: 'center',
+                },
+              },
+            },
+            rowheader: { backgroundColor: 'rgba(236,240,246,1)' },
+          } : {}),
+          ...(mapChart ? {
+            scatterLargeCount: {},
+            ...(chart.type === 'ECHARTS_MAP' && columns[0]
+              ? { areaMapId: columns[0].uniqueId }
+              : {}),
+          } : {}),
           linkedSelectionValue: 'KeepSelectedValue',
           pagination: {},
           layoutType: 'FREE',
@@ -1537,35 +3161,10 @@ function buildBarDashboard(
             tooltip: {},
             shape: { GLOBAL_MARK: {}, PRIVATE_MARK: {} },
           },
-          table: {},
-          chartDefine: {
-            tooltip: { trigger: 'axis' },
-            grid: {
-              left: 72,
-              right: 24,
-              top: 64,
-              bottom: 96,
-              containLabel: true,
-            },
-            seriesConfig: {
-              global: {
-                label: { show: true, position: 'top', fontSize: 11 },
-                stack: false,
-              },
-            },
-            xAxis: {
-              name: xAxisTitle,
-              nameLocation: 'middle',
-              nameGap: 62,
-              axisLabel: { interval: 0, rotate: 24 },
-            },
-            yAxis: {
-              name: yAxisTitle,
-              nameLocation: 'middle',
-              nameGap: 54,
-              axisLabel: {},
-            },
-          },
+          ...(!tableChart ? {
+            table: {},
+            chartDefine: dashboardChartDefine(chart),
+          } : {}),
           refresh: { enable: false },
           viewState: {},
         },
@@ -1596,16 +3195,29 @@ function buildBarDashboard(
   };
 }
 
-function buildMultiBarDashboard(model, requestedName, chartInput, description = '') {
+function buildBarDashboard(
+  model,
+  dimensionName,
+  measureName,
+  requestedName,
+  chartTitle,
+  presentation = {},
+) {
+  const [chart] = normalizeDashboardCharts([{
+    ...presentation,
+    type: 'ECHARTS_BAR',
+    dimension: dimensionName,
+    measure: measureName,
+    title: chartTitle,
+  }]);
+  return buildChartDashboard(model, requestedName, chart);
+}
+
+function buildMultiDashboard(model, requestedName, chartInput, description = '') {
   const layout = dashboardGrid(chartInput);
-  const dashboards = layout.charts.map((chart) => buildBarDashboard(
-    model,
-    chart.dimension,
-    chart.measure,
-    requestedName,
-    chart.title,
-    chart,
-  ));
+  const dashboards = layout.charts.map(
+    (chart) => buildChartDashboard(model, requestedName, chart),
+  );
   const dashboard = dashboards[0];
   const portlets = dashboards.map((item) => item.define.portlets[0]);
   dashboard.desc = description || `${layout.charts.length} independent charts`;
@@ -1615,7 +3227,7 @@ function buildMultiBarDashboard(model, requestedName, chartInput, description = 
       const position = layout.floats[index + 1];
       return [position.slot, {
         portletId: portlet.id,
-        type: 'ECHARTS_BAR',
+        type: portlet.type,
         left: position.left,
         top: position.top,
         width: position.width,
@@ -1633,6 +3245,413 @@ function buildMultiBarDashboard(model, requestedName, chartInput, description = 
   return { dashboard, charts: layout.charts };
 }
 
+
+function buildInteractiveDashboard(model, requestedName, specJson, description = '') {
+  const spec = parseInteractiveDashboardSpec(specJson);
+  const { dashboard, charts } = buildMultiDashboard(
+    model,
+    requestedName,
+    spec.charts,
+    description,
+  );
+  const chartPortlets = dashboard.define.portlets;
+  const filterField = dashboardResource(
+    model,
+    spec.filter.field,
+    'dimension',
+    spec.filter.label || spec.filter.title || null,
+  );
+  const filterId = resourceId();
+  const filterTargets = validateDashboardPortletIndexes(
+    spec.filter.targets || chartPortlets.map((_, index) => index),
+    chartPortlets.length,
+    'dashboard filter',
+  );
+  const filterTargetIds = filterTargets.map((index) => chartPortlets[index].id);
+  const filterPortlet = {
+    id: filterId,
+    name: filterId,
+    type: 'FILTER_LIST',
+    displayMode: null,
+    style: null,
+    macros: [],
+    extended: {
+      asFilter: false,
+      title: { text: spec.filter.title || filterField.label },
+      datasetIds: [model.id],
+      fields: {
+        filters: [{
+          ...filterField,
+          showName: null,
+          temp: null,
+          fieldGroupType: 'filters',
+        }],
+      },
+      markFieldGroups: { GLOBAL_MARK: {} },
+      layoutType: 'FREE',
+      filterSelectType: spec.filter.selectType,
+      dataType: filterField.dataType,
+      filterOp: 'EQUALS',
+      dateFormat: '自动',
+      showAllAlternate: true,
+      impactWidgets: filterTargetIds,
+      providerName: 'AUGMENTED',
+      impactReportsType: 'filterCustom',
+      filtersOrder: [filterField.id],
+      filterLabel: '',
+      filterListType: 'SINGLE',
+      columnNum: spec.filter.columnNum,
+      viewState: {},
+      warnImpacts: [],
+      padding: {
+        left: { val: 10, isPx: true },
+        right: { val: 10, isPx: true },
+        top: { val: 4, isPx: true },
+        bottom: { val: 4, isPx: true },
+      },
+      defaultValueSetting: { defaultType: 'ALL' },
+    },
+    invalidField: null,
+  };
+  dashboard.define.portlets = [...chartPortlets, filterPortlet];
+  const allPortletIds = dashboard.define.portlets.map((portlet) => portlet.id);
+  const linkages = spec.linkage.map((linkage, index) => {
+    const [source] = validateDashboardPortletIndexes(
+      [linkage.source],
+      chartPortlets.length,
+      `dashboard linkage ${index + 1} source`,
+    );
+    const targets = validateDashboardPortletIndexes(
+      linkage.targets,
+      chartPortlets.length,
+      `dashboard linkage ${index + 1} targets`,
+    );
+    if (targets.includes(source)) {
+      throw new Error(`dashboard linkage ${index + 1} cannot target its source chart`);
+    }
+    const sourcePortlet = chartPortlets[source];
+    const targetIds = targets.map((target) => chartPortlets[target].id);
+    sourcePortlet.extended.asFilter = true;
+    sourcePortlet.extended.impactReportsType = 'custom';
+    sourcePortlet.extended.ignoreFilters = allPortletIds.filter(
+      (portletId) => !targetIds.includes(portletId),
+    );
+    sourcePortlet.extended.warnImpacts = [];
+    return {
+      source,
+      sourcePortletId: sourcePortlet.id,
+      targets,
+      targetPortletIds: targetIds,
+      ignorePortletIds: [...sourcePortlet.extended.ignoreFilters],
+    };
+  });
+
+  const layout = dashboard.define.devices.default.layout;
+  const filterHeight = 80;
+  const verticalGap = 16;
+  for (const position of Object.values(layout.define.floats)) {
+    position.top += filterHeight + verticalGap;
+  }
+  const slot = String(Object.keys(layout.define.floats).length + 1);
+  layout.define.floats[slot] = {
+    portletId: filterId,
+    type: 'FILTER_LIST',
+    left: 0,
+    top: 0,
+    width: layout.size.width,
+    height: filterHeight,
+    'z-index': 2000,
+    id: slot,
+  };
+  layout.size.height += filterHeight + verticalGap;
+  dashboard.desc = description || 'Dashboard with persisted filter and chart linkage';
+  return {
+    dashboard,
+    charts,
+    interaction: {
+      filter: {
+        id: filterId,
+        field: spec.filter.field,
+        resolvedFieldId: filterField.id,
+        targets: filterTargets,
+        targetPortletIds: filterTargetIds,
+        portlet: filterPortlet,
+      },
+      linkages,
+    },
+  };
+}
+
+async function cmdDashboardCreateInteractive(
+  parentId,
+  modelId,
+  requestedName,
+  specJson,
+  description = '',
+) {
+  if (![parentId, modelId, requestedName, specJson].every(Boolean)) {
+    throw new Error(
+      'dashboard-create-interactive requires <parentId> <modelId> <name> <specJson> '
+      + '[description]',
+    );
+  }
+  await assertOwnedCatalogParent(parentId);
+  await assertCompetitionResourceDirectChild(parentId, modelId, 'model');
+  const model = requireNamespacedResource(await loadModel(modelId), 'model');
+  const { dashboard, charts, interaction } = buildInteractiveDashboard(
+    model,
+    requestedName,
+    specJson,
+    description,
+  );
+  const proposalPresentation = auditDashboardPresentation(dashboard, charts.length);
+  if (!proposalPresentation.ok) {
+    throw new Error(
+      `interactive dashboard proposal is invalid: ${proposalPresentation.issues.join('; ')}`,
+    );
+  }
+  const result = await smartbixApi(
+    `pages/beans/create?pid=${encodeURIComponent(parentId)}`,
+    { method: 'POST', body: dashboard },
+  );
+  const createdId = createdResourceId(result, dashboard.id);
+  const saved = await loadDashboard(createdId);
+  const definition = assertSavedDashboardMatchesDefinition(saved, dashboard);
+  const persistedInteraction = assertInteractiveDashboardPersisted(saved, interaction);
+  const presentation = auditDashboardPresentation(saved, charts.length);
+  if (!presentation.ok) {
+    throw new Error(`interactive dashboard presentation mismatch: ${presentation.issues.join('; ')}`);
+  }
+  safeOutput({
+    ok: true,
+    id: saved.id,
+    name: saved.name,
+    model: { id: model.id, name: model.name },
+    portletCount: definition.portletCount,
+    presentation,
+    interaction: {
+      ...interaction,
+      filter: {
+        ...interaction.filter,
+        portlet: undefined,
+      },
+      persisted: persistedInteraction,
+    },
+  });
+}
+
+
+async function cmdDashboardJumpAddArgs(argsList) {
+  const { positional, confirmation } = parseExactConfirmationArgs(
+    argsList,
+    'dashboard-jump-add',
+    '--confirm-name',
+  );
+  if (positional.length !== 3) {
+    throw new Error(
+      'dashboard-jump-add requires <sourceDashboardId> <targetDashboardId> <specJson> '
+      + '--confirm-name <exactSourceDashboardName>; specJson must select exactly one '
+      + 'sourcePortletId/sourceChart and targetFilterPortletId/targetFilter',
+    );
+  }
+  await cmdDashboardJumpAdd(
+    positional[0],
+    positional[1],
+    positional[2],
+    confirmation,
+  );
+}
+
+async function cmdDashboardJumpAdd(
+  sourceDashboardId,
+  targetDashboardId,
+  specJson,
+  confirmName,
+) {
+  const source = requireNamespacedResource(
+    await loadDashboard(sourceDashboardId),
+    'source dashboard',
+  );
+  const target = requireNamespacedResource(
+    await loadDashboard(targetDashboardId),
+    'target dashboard',
+  );
+  assertExactResourceConfirmation(source, confirmName);
+  if (PLATFORM_PROFILE) {
+    const [sourceParentId, targetParentId] = await Promise.all([
+      locateCompetitionResourceParent(sourceDashboardId, 'source dashboard'),
+      locateCompetitionResourceParent(targetDashboardId, 'target dashboard'),
+    ]);
+    if (sourceParentId !== targetParentId) {
+      throw new Error('dashboard jump source and target must share one candidate folder');
+    }
+  }
+  const spec = parseDashboardJumpSpec(specJson);
+  const sourcePortlet = resolveDashboardPortletReference(
+    source.define?.portlets || [],
+    {
+      portletId: spec.sourcePortletId,
+      index: spec.sourceChart,
+      kind: 'visualization',
+      label: 'dashboard-jump-add source',
+    },
+  );
+  const targetPortlet = resolveDashboardPortletReference(
+    target.define?.portlets || [],
+    {
+      portletId: spec.targetFilterPortletId,
+      index: spec.targetFilter,
+      kind: 'filter',
+      label: 'dashboard-jump-add target',
+    },
+  );
+  const sourceField = locateDashboardPortletField(
+    sourcePortlet,
+    spec.field,
+    spec.sourceSlot,
+  );
+  const targetField = locateDashboardPortletField(
+    targetPortlet,
+    spec.targetField,
+    'filters',
+  );
+  const dataTypeFamily = assertCompatibleDashboardDataTypes(
+    sourceField.field.dataType || sourcePortlet.extended?.dataType,
+    targetField.field.dataType || targetPortlet.extended?.dataType,
+  );
+  const impactedTargetIds = assertFilterImpactsVisualization(target, targetPortlet);
+  const rule = {
+    name: spec.name,
+    disabled: false,
+    source: { trigger: 'RIGHT_CLICK', fieldIds: [] },
+    target: {
+      pageId: target.id,
+      openType: spec.openType,
+      url: 'http://',
+      title: target.alias || target.name,
+      width: 900,
+      height: 600,
+      providerName: 'SMARTBIX_PAGE',
+      ...(spec.openType === 'DIALOG' ? {
+        dialogSize: {
+          unit: '%',
+          widthRate: 72,
+          heightRate: 72,
+          width: 900,
+          height: 600,
+        },
+      } : {}),
+    },
+    jumpType: '',
+    method: 'post',
+    params: [{
+      sourceFieldIds: [
+        sourcePortlet.id,
+        `${sourceField.field.id};${sourceField.slot};${sourceField.index}`,
+      ],
+      paramType: 'select',
+      targetFieldIds: [
+        targetPortlet.id,
+        `${targetField.field.id};filters;${targetField.index}`,
+      ],
+    }],
+    urlParams: [{
+      paramName: '',
+      paramType: 'value',
+      paramValues: '',
+    }],
+  };
+  sourcePortlet.extended ||= {};
+  sourcePortlet.extended.jumpRules = [
+    ...(sourcePortlet.extended.jumpRules || []).filter(
+      (candidate) => candidate?.name !== rule.name,
+    ),
+    rule,
+  ];
+  await smartbixApi('pages/beans?_method=PUT', {
+    method: 'POST',
+    body: source,
+    timeoutMs: 120000,
+  });
+  const [saved, reopenedTarget] = await Promise.all([
+    loadDashboard(source.id),
+    loadDashboard(target.id),
+  ]);
+  assertSavedDashboardMatchesDefinition(saved, source);
+  const savedSource = (saved.define?.portlets || []).find(
+    (portlet) => portlet.id === sourcePortlet.id,
+  );
+  const savedRules = (savedSource?.extended?.jumpRules || []).filter(
+    (candidate) => candidate?.name === rule.name,
+  );
+  if (savedRules.length !== 1) {
+    throw new Error('dashboard conditional jump persistence mismatch: rule name is not unique');
+  }
+  const [savedRule] = savedRules;
+  assertJumpRulePersisted(savedRule, rule);
+  const reopenedTargetPortlet = resolveDashboardPortletReference(
+    reopenedTarget.define?.portlets || [],
+    {
+      portletId: targetPortlet.id,
+      kind: 'filter',
+      label: 'dashboard-jump-add reopened target',
+    },
+  );
+  const savedSourceField = locateDashboardPortletField(
+    savedSource,
+    sourceField.field.id,
+    sourceField.slot,
+  );
+  const reopenedTargetField = locateDashboardPortletField(
+    reopenedTargetPortlet,
+    targetField.field.id,
+    'filters',
+  );
+  if (
+    savedSourceField.field.id !== sourceField.field.id
+    || savedSourceField.slot !== sourceField.slot
+    || savedSourceField.index !== sourceField.index
+    || reopenedTargetField.field.id !== targetField.field.id
+    || reopenedTargetField.slot !== targetField.slot
+    || reopenedTargetField.index !== targetField.index
+  ) {
+    throw new Error('dashboard conditional jump field mapping changed after reopen');
+  }
+  const reopenedDataTypeFamily = assertCompatibleDashboardDataTypes(
+    savedSourceField.field.dataType || savedSource.extended?.dataType,
+    reopenedTargetField.field.dataType || reopenedTargetPortlet.extended?.dataType,
+  );
+  if (reopenedDataTypeFamily !== dataTypeFamily) {
+    throw new Error('dashboard conditional jump field type contract changed after reopen');
+  }
+  const reopenedImpactIds = assertFilterImpactsVisualization(
+    reopenedTarget,
+    reopenedTargetPortlet,
+  );
+  if (
+    JSON.stringify([...new Set(reopenedImpactIds)].sort())
+    !== JSON.stringify([...new Set(impactedTargetIds)].sort())
+  ) {
+    throw new Error('dashboard conditional jump target impact scope changed after reopen');
+  }
+  safeOutput({
+    ok: true,
+    source: { id: saved.id, name: saved.name, portletId: sourcePortlet.id },
+    target: {
+      id: reopenedTarget.id,
+      name: reopenedTarget.name,
+      filterPortletId: reopenedTargetPortlet.id,
+      impactedPortletIds: reopenedImpactIds,
+    },
+    field: {
+      source: `${sourceField.field.id};${sourceField.slot};${sourceField.index}`,
+      target: `${targetField.field.id};filters;${targetField.index}`,
+      dataTypeFamily,
+    },
+    rule: savedRule,
+  });
+}
+
 async function cmdDashboardCreateMulti(parentId, modelId, requestedName, chartsJson, description = '') {
   if (![parentId, modelId, requestedName, chartsJson].every(Boolean)) {
     throw new Error(
@@ -1641,31 +3660,35 @@ async function cmdDashboardCreateMulti(parentId, modelId, requestedName, chartsJ
   }
   await assertOwnedCatalogParent(parentId);
   await assertCompetitionResourceDirectChild(parentId, modelId, 'model');
-  const model = await loadModel(modelId);
-  requireNamespacedResource(model, 'model');
-  const { dashboard, charts } = buildMultiBarDashboard(
+  const model = requireNamespacedResource(await loadModel(modelId), 'model');
+  const { dashboard, charts } = buildMultiDashboard(
     model,
     requestedName,
     chartsJson,
     description,
   );
+  const proposal = auditDashboardPresentation(dashboard, charts.length);
+  if (!proposal.ok) {
+    throw new Error(`dashboard proposal is invalid: ${proposal.issues.join('; ')}`);
+  }
   const result = await smartbixApi(
     `pages/beans/create?pid=${encodeURIComponent(parentId)}`,
     { method: 'POST', body: dashboard },
   );
   const createdId = createdResourceId(result, dashboard.id);
   const saved = await loadDashboard(createdId);
-  const portletCount = saved.define?.portlets?.length || 0;
-  if (portletCount !== charts.length) {
-    throw new Error(`dashboard saved with ${portletCount} charts; expected ${charts.length}`);
+  const definition = assertSavedDashboardMatchesDefinition(saved, dashboard);
+  const presentation = auditDashboardPresentation(saved, charts.length);
+  if (!presentation.ok) {
+    throw new Error(`dashboard saved presentation mismatch: ${presentation.issues.join('; ')}`);
   }
   safeOutput({
     ok: true,
     id: saved.id,
     name: saved.name,
     model: { id: model.id, name: model.name },
-    portletCount,
-    charts,
+    portletCount: definition.portletCount,
+    presentation,
   });
 }
 
@@ -1712,9 +3735,10 @@ async function cmdDashboardRepairMulti(
     const dashboardParentId = await locateCompetitionResourceParent(dashboardId, 'dashboard');
     await assertCompetitionResourceDirectChild(dashboardParentId, modelId, 'model');
   }
-  const model = await loadModel(modelId);
-  requireNamespacedResource(model, 'model');
-  const { dashboard: rebuilt, charts } = buildMultiBarDashboard(
+  const original = structuredClone(current);
+  assertDashboardRepairable(original);
+  const model = requireNamespacedResource(await loadModel(modelId), 'model');
+  const { dashboard: rebuilt, charts } = buildMultiDashboard(
     model,
     current.name,
     chartsJson,
@@ -1728,16 +3752,47 @@ async function cmdDashboardRepairMulti(
     define: rebuilt.define,
     editDefine: rebuilt.editDefine,
   };
-  const beforeAudit = auditDashboardPresentation(current, charts.length);
+  assertDashboardRepairable(repaired);
+  const proposal = auditDashboardPresentation(repaired, charts.length);
+  if (!proposal.ok) {
+    throw new Error(`dashboard repair proposal is invalid: ${proposal.issues.join('; ')}`);
+  }
+  const beforeAudit = auditDashboardPresentation(original);
   await smartbixApi('pages/beans?_method=PUT', {
     method: 'POST',
     body: repaired,
     timeoutMs: 120000,
   });
-  const saved = await loadDashboard(dashboardId);
-  const presentation = auditDashboardPresentation(saved, charts.length);
-  if (!presentation.ok) {
-    throw new Error(`dashboard presentation repair failed: ${presentation.issues.join('; ')}`);
+
+  let saved;
+  let definition;
+  let presentation;
+  try {
+    saved = await loadDashboard(dashboardId);
+    definition = assertSavedDashboardMatchesDefinition(saved, repaired);
+    presentation = auditDashboardPresentation(saved, charts.length);
+    if (!presentation.ok) {
+      throw new Error(presentation.issues.join('; '));
+    }
+  } catch (postconditionError) {
+    try {
+      await smartbixApi('pages/beans?_method=PUT', {
+        method: 'POST',
+        body: original,
+        timeoutMs: 120000,
+      });
+      const restored = await loadDashboard(dashboardId);
+      assertSavedDashboardMatchesDefinition(restored, original);
+    } catch (rollbackError) {
+      throw new Error(
+        `dashboard repair postcondition failed: ${postconditionError.message}; `
+        + `original rollback could not be verified: ${rollbackError.message}`,
+      );
+    }
+    throw new Error(
+      `dashboard repair postcondition failed and the captured original was restored: `
+      + postconditionError.message,
+    );
   }
   safeOutput({
     ok: true,
@@ -1745,6 +3800,7 @@ async function cmdDashboardRepairMulti(
     name: saved.name,
     model: { id: model.id, name: model.name },
     removedIssues: beforeAudit.issues,
+    definition,
     presentation,
   });
 }
@@ -1762,8 +3818,7 @@ async function cmdDashboardCreate(
   }
   await assertOwnedCatalogParent(parentId);
   await assertCompetitionResourceDirectChild(parentId, modelId, 'model');
-  const model = await loadModel(modelId);
-  requireNamespacedResource(model, 'model');
+  const model = requireNamespacedResource(await loadModel(modelId), 'model');
   const dashboard = buildBarDashboard(
     model,
     dimensionName,
@@ -1771,18 +3826,28 @@ async function cmdDashboardCreate(
     requestedName,
     chartTitle,
   );
+  const proposal = auditDashboardPresentation(dashboard, 1);
+  if (!proposal.ok) {
+    throw new Error(`dashboard proposal is invalid: ${proposal.issues.join('; ')}`);
+  }
   const result = await smartbixApi(
     `pages/beans/create?pid=${encodeURIComponent(parentId)}`,
     { method: 'POST', body: dashboard },
   );
   const createdId = createdResourceId(result, dashboard.id);
   const saved = await loadDashboard(createdId);
+  const definition = assertSavedDashboardMatchesDefinition(saved, dashboard);
+  const presentation = auditDashboardPresentation(saved, 1);
+  if (!presentation.ok) {
+    throw new Error(`dashboard saved presentation mismatch: ${presentation.issues.join('; ')}`);
+  }
   safeOutput({
     ok: true,
     id: saved.id,
     name: saved.name,
     model: { id: model.id, name: model.name },
-    portletCount: saved.define?.portlets?.length || 0,
+    portletCount: definition.portletCount,
+    presentation,
   });
 }
 async function loadDashboard(dashboardId) {
@@ -1805,8 +3870,10 @@ async function cmdDashboardClone(parentId, sourceDashboardId, requestedName, des
   }
   await assertOwnedCatalogParent(parentId);
   await assertCompetitionResourceDirectChild(parentId, sourceDashboardId, 'source dashboard');
-  const source = await loadDashboard(sourceDashboardId);
-  requireNamespacedResource(source, 'source dashboard');
+  const source = requireNamespacedResource(
+    await loadDashboard(sourceDashboardId),
+    'source dashboard',
+  );
   const replacements = new Map([[source.id, resourceId()]]);
   for (const portlet of source.define?.portlets || []) replacements.set(portlet.id, resourceId());
   const dashboard = replaceExactStrings(source, replacements);
@@ -1819,101 +3886,120 @@ async function cmdDashboardClone(parentId, sourceDashboardId, requestedName, des
   );
   const createdId = createdResourceId(result, dashboard.id);
   const saved = await loadDashboard(createdId);
+  const definition = assertSavedDashboardMatchesDefinition(saved, dashboard);
   safeOutput({
     ok: true,
     id: saved.id,
     name: saved.name,
-    portletCount: saved.define?.portlets?.length || 0,
+    portletCount: definition.portletCount,
+    definition,
   });
 }
 
 
-async function cmdAichat(modelId, question, { report = false, outputPath = null } = {}) {
-  if (!modelId || !question) {
-    throw new Error(`${report ? 'aichat-report' : 'aichat-query'} requires <modelId> <prompt>`);
+async function cmdAichat({
+  modelId,
+  question,
+  mode,
+  llmId = null,
+  outputPath = null,
+  overwrite = false,
+  confirmPath = null,
+}) {
+  if (!modelId || !question || !['query', 'report'].includes(mode)) {
+    throw new Error('AIChat requires an exact model, query|report mode, and non-blank prompt');
   }
   const model = await loadModel(modelId);
+  if (model.id !== modelId) throw new Error('AIChat model response did not match the exact requested id');
   requireNamespacedResource(model, 'model');
+  if (!hasNamespace(model.name)) {
+    throw new Error(`refusing to query a model whose persisted name is not owned: ${model.name}`);
+  }
+  await assertCatalogPermission(model.id, 'READ', 'AIChat model');
+  const selfRoot = await loadSelfRoot();
+  const modelPath = await rmi('CatalogService', 'getCatalogElementPath', [model.id]);
+  if (
+    modelPath.retCode !== 0
+    || !Array.isArray(modelPath.result)
+    || !modelPath.result.some((node) => node?.id === selfRoot.id)
+  ) {
+    throw new Error('AIChat model is outside the current personal workspace');
+  }
+  let competitionPlacement = 'not-required';
+  if (PLATFORM_PROFILE) {
+    const parentId = await locateCompetitionResourceParent(model.id, 'AIChat model');
+    await assertCompetitionResourceDirectChild(parentId, model.id, 'AIChat model');
+    competitionPlacement = 'direct-candidate-child';
+  }
+  const modelAuthorization = {
+    exactModelId: true,
+    namespaceOwned: true,
+    readPermission: true,
+    personalWorkspace: true,
+    competitionPlacement,
+  };
+
+  const { nodes } = await loadAichatGraphReadiness(model);
+  const graphReadiness = assertAichatGraphReady({
+    modelId: model.id,
+    modelName: model.name,
+    nodes,
+  });
   const llmConfig = await plainJsonRequest('cgi/aichat-llm-config/list-llm-config', {
     body: { filterOption: { keyword: '' } },
   });
-  const llmId = llmConfig?.result?.find((item) => item.isDefault)?.id || llmConfig?.result?.[0]?.id;
-  if (!llmId) throw new Error('AIChat has no available LLM configuration');
-  const skillsResponse = await plainJsonRequest('sdk/cgi/v1/aichat/skill/get-skill-items', { body: undefined });
-  const wanted = new Set([
-    'SKILL_BUILTIN_DATA_MODEL_OR_REPORT_FETCH',
-    ...(report ? ['SKILL_BUILTIN_NO_TEMPLATE_REPORT', 'SKILL_BUILTIN_TEMPLATE_REPORT'] : []),
-  ]);
-  const skills = (skillsResponse?.result || [])
-    .filter((item) => wanted.has(item.id))
-    .map((item) => ({ id: item.id, name: item.alias || item.name, type: item.type }));
+  const llm = selectAichatLlm(llmConfig?.result, llmId);
+  const skillsResponse = await plainJsonRequest(
+    'sdk/cgi/v1/aichat/skill/get-skill-items',
+    { body: undefined },
+  );
+  const skills = selectAichatSkills(skillsResponse?.result, mode);
   const conversationId = shortId();
   const taskId = shortId(6);
-  const payload = {
-    jsonRpcStreamReq: {
-      jsonrpc: '2.0',
-      method: 'message/stream',
-      params: {
-        message: {
-          messageId: shortId(6),
-          kind: 'message',
-          role: 'user',
-          metadata: {
-            agentId: 'customagent_AGENT_DATA_INSIGHT_ASSISTANT',
-            convId: conversationId,
-            datasets: [{ id: model.id, type: 'AUGMENTED_DATASET', name: model.name }],
-            queryGridData: true,
-            params: [
-              { singleRound: false },
-              { use_personal_knowledge: false },
-              { reports: [] },
-              { projectId: '' },
-              { project_desc: '' },
-              {},
-              { webSearch: false },
-              { crossDatasetQuery: true },
-              { uploadFile: false },
-              { need_inquiry: true },
-              { is_recommend_dataset: false },
-              { LLMConfigId: llmId },
-              { skills },
-            ],
-          },
-          parts: [
-            { kind: 'text', text: question },
-            { kind: 'knowledge', knowledge: '[]' },
-          ],
-        },
-      },
-      id: taskId,
-    },
-  };
+  const payload = buildAichatRequest({
+    model,
+    question,
+    mode,
+    llm,
+    skills,
+    conversationId,
+    taskId,
+    messageId: shortId(6),
+  });
   const stream = await plainJsonRequest('sdk/api/v1/aichat/conv/query-rpc', {
     body: payload,
     accept: 'text/event-stream',
+    maxResponseBytes: DEFAULT_AICHAT_STREAM_LIMITS.maxStreamBytes,
     timeoutMs: 300000,
   });
-  const parsed = parseAichatStream(stream);
-  const output = {
-    ...parsed,
+  const parsed = parseAichatStream(stream, {
+    expectedTaskId: taskId,
+    expectedModelId: model.id,
+  });
+  const envelope = createAichatEnvelope({
+    parsed,
+    payload,
+    mode,
+    model,
+    graphReadiness,
+    modelAuthorization,
+    llm,
+    skills,
+    question,
     conversationId,
-    model: { id: model.id, name: model.name },
-    mode: report ? 'report' : 'query',
-  };
+    taskId,
+  });
   if (outputPath) {
-    writeFileSync(outputPath, `${JSON.stringify(output, null, 2)}\n`);
-    safeOutput({
-      ok: output.ok,
-      state: output.state,
-      mode: output.mode,
-      path: outputPath,
-      tableCount: output.tables.length,
-      fileCount: output.files.length,
-      eventCount: output.eventCount,
-    });
+    safeOutput(writePrivateAichatEnvelope({
+      outputPath,
+      envelope,
+      skillDir: SKILL_DIR,
+      overwrite,
+      confirmPath,
+    }));
     return;
   }
-  safeOutput(output);
+  safeOutput(summarizeAichatEnvelope(envelope));
 }
 
 const AICHAT_GRAPH_LEAF_TYPES = new Set([
@@ -1933,7 +4019,10 @@ function graphResult(response, operation) {
     throw new Error(`${operation} returned an invalid response`);
   }
   if (response.success === false) {
-    throw new Error(`${operation} failed: ${response.message || response.error || JSON.stringify(response)}`);
+    const reason = typeof response.message === 'string'
+      ? response.message
+      : (typeof response.error === 'string' ? response.error : 'server rejected the request');
+    throw new Error(`${operation} failed: ${reason}`);
   }
   return response.result;
 }
@@ -1953,15 +4042,6 @@ function collectGraphFields(node, output = []) {
   return output;
 }
 
-function parseGraphExtended(node) {
-  if (!node?.extended) return {};
-  try {
-    return typeof node.extended === 'string' ? JSON.parse(node.extended) : node.extended;
-  } catch {
-    return {};
-  }
-}
-
 async function listAichatGraphNodes(keyword = '') {
   await ensureSession();
   const response = await plainJsonRequest('cgi/aichat-train/list-knowledge-graph-node', {
@@ -1974,19 +4054,65 @@ async function listAichatGraphNodes(keyword = '') {
       },
     },
   });
-  return graphResult(response, 'list model graphs') || [];
+  const nodes = graphResult(response, 'list model graphs');
+  if (nodes == null) return [];
+  if (!Array.isArray(nodes)) throw new Error('list model graphs returned an unsupported result shape');
+  return nodes;
 }
 
-async function loadOwnedGraphModel(modelId) {
+async function loadNamespacedGraphModel(modelId) {
   const model = await loadModel(modelId);
   if (!hasNamespace(model.name)) {
-    throw new Error(`refusing to modify non-namespaced model graph: ${model.name}`);
+    throw new Error(`refusing to use non-namespaced model graph: ${model.name}`);
   }
   return model;
 }
 
-async function loadAichatGraphFields(modelId) {
-  const model = await loadOwnedGraphModel(modelId);
+async function loadAuthorizedAichatGraphMutationTarget({
+  parentId,
+  modelId,
+  confirmName,
+}) {
+  await assertOwnedCatalogParent(parentId);
+  const catalogChildren = await listCatalogChildren(parentId, 'model graph parent');
+  const model = await loadModel(modelId);
+  const competitionParentId = PLATFORM_PROFILE
+    ? await locateCompetitionResourceParent(modelId, 'model graph')
+    : null;
+  const authorization = authorizeAichatGraphMutationTarget({
+    parentId,
+    requestedModelId: modelId,
+    model,
+    catalogChildren,
+    confirmName,
+    competitionParentId,
+  });
+  assertNamespacedResource(authorization.catalogResource);
+  if (!hasNamespace(model.name)) {
+    throw new Error(`refusing to modify non-namespaced model graph: ${model.name}`);
+  }
+  if (PLATFORM_PROFILE) {
+    await assertCompetitionResourceDirectChild(parentId, modelId, 'model graph');
+  }
+  await assertCatalogPermission(parentId, 'WRITE', 'model graph parent');
+  await assertCatalogPermission(modelId, 'WRITE', 'model graph');
+  return {
+    model,
+    authorization: {
+      ...authorization,
+      checked: {
+        ...authorization.checked,
+        catalogParentOwned: true,
+        parentWritePermission: true,
+        modelWritePermission: true,
+      },
+    },
+  };
+}
+
+async function loadAichatGraphFields(modelId, currentModel = null) {
+  const model = currentModel || await loadNamespacedGraphModel(modelId);
+  if (model.id !== modelId) throw new Error('model graph field target changed during authorization');
   const response = await plainJsonRequest(
     `cgi/aichat-train/get-resource-field-tree/${encodeURIComponent(model.id)}`,
     { body: { fieldTreeOption: { filterTypes: AICHAT_GRAPH_FILTER_TYPES } } },
@@ -1996,22 +4122,38 @@ async function loadAichatGraphFields(modelId) {
   return { model, tree, fields: collectGraphFields(tree) };
 }
 
+async function loadAichatGraphReadiness(model) {
+  const nodes = await listAichatGraphNodes(model.name);
+  return {
+    nodes,
+    status: inspectAichatGraphStatus({
+      modelId: model.id,
+      modelName: model.name,
+      nodes,
+    }),
+  };
+}
+
 async function cmdAichatGraphList(keyword = '') {
   const nodes = (await listAichatGraphNodes(keyword)).filter((node) => hasNamespace(node.name));
   safeOutput({
     ok: true,
     count: nodes.length,
+    ownershipEvidence: 'namespace-marker-only',
     graphs: nodes.map((node) => {
-      const extended = parseGraphExtended(node);
+      const status = inspectAichatGraphNode(node);
       return {
         id: node.id,
         name: node.name,
         type: node.type,
-        path: node.path || null,
-        status: extended.status || node.status || node.lastBuildStatus || 'NOTBUILD',
-        updateTime: extended.updateTime || node.lastModifiedDate || null,
-        duration: extended.duration ?? null,
-        fieldCount: extended.trainOption?.fields?.length || 0,
+        pathObserved: Boolean(node.path),
+        status: status.status,
+        updateTime: status.updateTime,
+        duration: status.duration,
+        fieldCount: status.persistedFieldIds.length,
+        persistedFieldIdsObserved: status.persistedFieldIdsObserved,
+        revisionFreshness: status.revisionFreshness,
+        revisionEvidence: status.revisionEvidence,
       };
     }),
   });
@@ -2023,98 +4165,132 @@ async function cmdAichatGraphFields(modelId) {
   safeOutput({
     ok: true,
     model: { id: model.id, name: model.name },
+    ownershipEvidence: 'namespace-marker-only',
     fieldCount: fields.length,
     fields,
+    checked: { exactModelId: true, fieldTreeLoaded: true },
   });
 }
 
 async function cmdAichatGraphStatus(modelId) {
   if (!modelId) throw new Error('aichat-graph-status requires <modelId>');
-  const model = await loadOwnedGraphModel(modelId);
-  const node = (await listAichatGraphNodes(model.name)).find((item) => item.id === model.id);
-  if (!node) {
-    safeOutput({ ok: true, id: model.id, name: model.name, status: 'NOTBUILD', fieldCount: 0 });
-    return;
-  }
-  const extended = parseGraphExtended(node);
+  const model = await loadNamespacedGraphModel(modelId);
+  const { nodes, status } = await loadAichatGraphReadiness(model);
+  const ready = status.status === 'SUCCESS'
+    ? assertAichatGraphReady({ modelId: model.id, modelName: model.name, nodes })
+    : null;
   safeOutput({
     ok: true,
-    id: node.id,
-    name: node.name,
-    status: extended.status || node.status || node.lastBuildStatus || 'NOTBUILD',
-    updateTime: extended.updateTime || node.lastModifiedDate || null,
-    duration: extended.duration ?? null,
-    fields: extended.trainOption?.fields || [],
+    id: model.id,
+    name: model.name,
+    ownershipEvidence: 'namespace-marker-only',
+    status: status.status,
+    ready: Boolean(ready),
+    updateTime: status.updateTime,
+    duration: status.duration,
+    fields: ready?.persistedFieldIds || status.persistedFieldIds,
+    persistedFieldIdsObserved: status.persistedFieldIdsObserved,
+    revisionFreshness: status.revisionFreshness,
+    revisionEvidence: status.revisionEvidence,
+    checked: ready?.checked || status.checked,
   });
 }
 
-function resolveGraphFields(fields, selectors) {
-  return selectors.map((selector) => {
-    const normalized = selector.toLocaleLowerCase();
-    const matches = fields.filter((field) => (
-      field.id === selector
-      || field.name?.toLocaleLowerCase() === normalized
-      || field.alias?.toLocaleLowerCase() === normalized
-    ));
-    if (matches.length === 0) throw new Error(`model graph field not found: ${selector}`);
-    if (matches.length > 1) {
-      throw new Error(`model graph field is ambiguous: ${selector}; use the exact field id`);
-    }
-    return matches[0];
-  });
-}
-
-async function cmdAichatGraphBuild(modelId, fieldSelectorsCsv) {
-  if (!modelId || !fieldSelectorsCsv) {
-    throw new Error('aichat-graph-build requires <modelId> <fieldNameOrId,...>');
+async function validateAichatGraphBuild({
+  model,
+  parentId,
+  fieldIds,
+  etlFlowId,
+}) {
+  const result = graphResult(
+    await plainJsonRequest(
+      `cgi/aichat-train/validate_field_data_count/${encodeURIComponent(model.id)}`,
+      { body: { fieldIds } },
+    ),
+    'validate model graph fields',
+  );
+  if (!result?.valid) {
+    throw new Error(`model graph field validation failed: ${result?.message || 'unknown reason'}`);
   }
-  const selectors = [...new Set(
-    String(fieldSelectorsCsv).split(',').map((value) => value.trim()).filter(Boolean),
-  )];
-  if (selectors.length === 0) throw new Error('aichat-graph-build requires at least one field');
-  const { model, fields } = await loadAichatGraphFields(modelId);
-  const selected = resolveGraphFields(fields, selectors);
-  const fieldIds = selected.map((field) => field.id);
-  let validation = null;
-  const validateFields = async () => {
-    const result = graphResult(
-      await plainJsonRequest(
-        `cgi/aichat-train/validate_field_data_count/${encodeURIComponent(model.id)}`,
-        { body: { fieldIds } },
-      ),
-      'validate model graph fields',
-    );
-    assertCompetitionTrainingCount(PLATFORM_PROFILE, result);
-    if (!result?.valid) {
-      throw new Error(`model graph field validation failed: ${result?.message || 'unknown reason'}`);
-    }
-    return result;
+  if (!PLATFORM_PROFILE) return { valid: true, trainingLimit: null };
+  const validatorCount = extractAichatValidationCount(result);
+  const evidence = await loadCompetitionModelTrainingEvidence({
+    model,
+    parentId,
+    sourceFlowId: etlFlowId,
+    validatorCount,
+  });
+  const count = assertCompetitionTrainingCount(
+    PLATFORM_PROFILE,
+    { rowCount: evidence.count },
+  );
+  return {
+    valid: true,
+    trainingLimit: {
+      ...evidence,
+      count,
+      limit: PLATFORM_PROFILE.aichatTrainingLimit,
+    },
   };
-  if (PLATFORM_PROFILE) validation = await validateFields();
+}
 
-  const existing = (await listAichatGraphNodes(model.name)).find((item) => item.id === model.id);
-  const existingExtended = parseGraphExtended(existing);
-  const existingFields = existingExtended.trainOption?.fields || [];
-  if (
-    existingExtended.status === 'SUCCESS'
-    && fieldIds.length === existingFields.length
-    && fieldIds.every((id) => existingFields.includes(id))
-  ) {
-    safeOutput({
-      ok: true,
-      id: model.id,
-      name: model.name,
-      status: 'SUCCESS',
-      reused: true,
-      fields: selected,
-      validationCount: validation ? assertCompetitionTrainingCount(PLATFORM_PROFILE, validation) : null,
-    });
-    return;
+async function cmdAichatGraphBuildArgs(argsList) {
+  const options = parseAichatGraphBuildArgs(argsList, {
+    requireEtlFlow: Boolean(PLATFORM_PROFILE),
+  });
+  if (!PLATFORM_PROFILE && options.etlFlowId) {
+    throw new Error('aichat-graph-build --etl-flow is valid only for the competition profile');
   }
-  if (!validation) validation = await validateFields();
+  await cmdAichatGraphBuild(options);
+}
+
+async function cmdAichatGraphBuild({
+  parentId,
+  modelId,
+  selectors,
+  confirmName,
+  etlFlowId = null,
+  rebuild = false,
+}) {
+  const target = await loadAuthorizedAichatGraphMutationTarget({
+    parentId,
+    modelId,
+    confirmName,
+  });
+  const { model, fields } = await loadAichatGraphFields(modelId, target.model);
+  const selected = resolveUniqueGraphFields(fields, selectors);
+  const fieldIds = selected.map((field) => field.id);
+  const initialCheck = await loadAichatGraphReadiness(model);
+  planAichatGraphBuild({
+    status: initialCheck.status.status,
+    requestedFieldIds: fieldIds,
+    persistedFieldIds: initialCheck.status.persistedFieldIds,
+    persistedFieldIdsObserved: initialCheck.status.persistedFieldIdsObserved,
+    rebuild,
+  });
+  const preSubmitValidation = await validateAichatGraphBuild({
+    model,
+    parentId,
+    fieldIds,
+    etlFlowId,
+  });
+  const preSubmitTarget = await loadAuthorizedAichatGraphMutationTarget({
+    parentId,
+    modelId,
+    confirmName,
+  });
+  const mutationModel = preSubmitTarget.model;
+  const initial = await loadAichatGraphReadiness(mutationModel);
+  const buildPlan = planAichatGraphBuild({
+    status: initial.status.status,
+    requestedFieldIds: fieldIds,
+    persistedFieldIds: initial.status.persistedFieldIds,
+    persistedFieldIdsObserved: initial.status.persistedFieldIdsObserved,
+    rebuild,
+  });
   const trainResult = graphResult(
     await plainJsonRequest(
-      `cgi/aichat-train/train-resource/${encodeURIComponent(model.id)}`,
+      `cgi/aichat-train/train-resource/${encodeURIComponent(mutationModel.id)}`,
       {
         body: {
           trainOption: {
@@ -2128,54 +4304,157 @@ async function cmdAichatGraphBuild(modelId, fieldSelectorsCsv) {
     ),
     'build model graph',
   );
-  if (!trainResult) throw new Error('model graph build was not accepted');
+  if (trainResult == null || trainResult === false) {
+    throw new Error('model graph build was not accepted');
+  }
+
   const deadline = Date.now() + 300000;
-  let node;
-  let extended = {};
+  let observedStatus = 'PENDING';
+  let observedConcurrentState = false;
+  let completionEvidence = null;
   while (Date.now() < deadline) {
-    node = (await listAichatGraphNodes(model.name)).find((item) => item.id === model.id);
-    extended = parseGraphExtended(node);
-    const status = extended.status || node?.status || node?.lastBuildStatus;
-    if (status === 'SUCCESS') break;
-    if (status === 'FAILED') {
-      throw new Error(`model graph build failed: ${extended.exceptionMessage || 'unknown reason'}`);
+    const observed = await loadAichatGraphReadiness(mutationModel);
+    observedStatus = observed.status.status;
+    if (['BUILDING', 'PENDING'].includes(observedStatus)) {
+      observedConcurrentState = true;
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      continue;
+    }
+    if (observedStatus === 'SUCCESS') {
+      completionEvidence = aichatGraphBuildCompletionEvidence({
+        initialStatus: initial.status.status,
+        requestedFieldIds: fieldIds,
+        initialPersistedFieldIds: initial.status.persistedFieldIds,
+        initialPersistedFieldIdsObserved: initial.status.persistedFieldIdsObserved,
+        initialUpdateTime: initial.status.updateTime,
+        finalStatus: observed.status.status,
+        finalPersistedFieldIds: observed.status.persistedFieldIds,
+        finalPersistedFieldIdsObserved: observed.status.persistedFieldIdsObserved,
+        finalUpdateTime: observed.status.updateTime,
+        observedConcurrentState,
+      });
+      if (!completionEvidence) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        continue;
+      }
+      break;
+    }
+    if (observedStatus === 'FAILED') throw new Error('model graph build failed');
+    if (observedStatus !== 'NOTBUILD') {
+      throw new Error(`model graph build returned unsupported state ${observedStatus}`);
     }
     await new Promise((resolve) => setTimeout(resolve, 2000));
   }
-  const status = extended.status || node?.status || node?.lastBuildStatus || 'PENDING';
-  if (status !== 'SUCCESS') throw new Error(`model graph build timed out with status ${status}`);
+  if (!completionEvidence) {
+    throw new Error(
+      `model graph build timed out without new completion evidence; last status ${observedStatus}`,
+    );
+  }
+
+  const reopenedTarget = await loadAuthorizedAichatGraphMutationTarget({
+    parentId,
+    modelId,
+    confirmName,
+  });
+  const finalNodes = await listAichatGraphNodes(reopenedTarget.model.name);
+  const ready = assertAichatGraphReady({
+    modelId: reopenedTarget.model.id,
+    modelName: reopenedTarget.model.name,
+    nodes: finalNodes,
+  });
+  const persistedFieldIds = assertExactPersistedGraphFieldIds(
+    fieldIds,
+    ready.persistedFieldIds,
+  );
+  const postBuildValidation = PLATFORM_PROFILE
+    ? await validateAichatGraphBuild({
+        model: reopenedTarget.model,
+        parentId,
+        fieldIds,
+        etlFlowId,
+      })
+    : preSubmitValidation;
   safeOutput({
     ok: true,
-    id: model.id,
-    name: model.name,
-    status,
+    id: reopenedTarget.model.id,
+    name: reopenedTarget.model.name,
+    status: ready.status,
     reused: false,
-    updateTime: extended.updateTime || node?.lastModifiedDate || null,
-    duration: extended.duration ?? null,
-    fields: selected,
+    buildAction: buildPlan.action,
+    priorStatus: buildPlan.priorStatus,
+    buildCompletionEvidence: completionEvidence,
+    rebuildConfirmed: rebuild,
+    updateTime: ready.updateTime,
+    duration: ready.duration,
+    revisionFreshness: 'unknown',
+    revisionEvidence: null,
+    requestedSelectors: selectors,
+    requestedFieldIds: fieldIds,
+    persistedFieldIds,
+    trainingLimit: postBuildValidation.trainingLimit,
+    checked: {
+      ...reopenedTarget.authorization.checked,
+      preSubmitAuthorization: true,
+      fieldValidation: true,
+      ...(PLATFORM_PROFILE ? { trainingCountReopened: true } : {}),
+      graphReopened: true,
+      terminalSuccess: true,
+      persistedFieldIdsExact: true,
+      buildCompletionEvidence: true,
+    },
   });
 }
 
-async function loadAgent(agentId, requireOwned = false) {
+async function loadAuthenticatedAgentRoot(purview = 'READ') {
+  const selfRoot = await loadSelfRoot();
+  const rootId = agentRootIdForSelf(selfRoot.id);
+  const root = await loadCatalogElement(rootId, 'authenticated Agent workspace root');
+  if (root.id !== rootId) throw new Error('authenticated Agent workspace root identity changed');
+  await assertCatalogPermission(root.id, purview, 'Agent workspace root');
+  const children = await listCatalogChildren(root.id, 'authenticated Agent workspace root');
+  return { root, children };
+}
+
+async function loadOwnedAgent(
+  agentId,
+  {
+    purview = 'READ',
+    expectedPrompts = null,
+  } = {},
+) {
   if (!agentId) throw new Error('agent id is required');
-  await ensureSession();
-  const agent = await smartbixApi(`dataagent/graph/${encodeURIComponent(agentId)}`);
-  if (!agent?.id) throw new Error(`Agent not found or incomplete: ${agentId}`);
-  if (requireOwned && !hasNamespace(agent.name)) {
-    throw new Error(`refusing to modify or run non-namespaced Agent: ${agent.name}`);
+  const rootState = await loadAuthenticatedAgentRoot(purview);
+  const catalogResource = findDirectOwnedAgentChild(agentId, rootState.children);
+  assertNamespacedResource(catalogResource);
+  await assertCatalogPermission(catalogResource.id, purview, 'Agent');
+
+  const rawAgent = await smartbixApi(`dataagent/graph/${encodeURIComponent(agentId)}`);
+  const { agent, contract } = validateSupportedAgentResource(rawAgent, expectedPrompts);
+  assertNamespacedResource(agent);
+  assertOwnedAgentGraphIdentity(agent, catalogResource, rootState.root.id);
+  return { ...rootState, agent, catalogResource, contract };
+}
+
+async function reopenOwnedAgent(expected, purview = 'READ') {
+  const current = await loadOwnedAgent(expected.agent.id, { purview });
+  if (current.root.id !== expected.root.id) {
+    throw new Error('authenticated Agent workspace changed during the operation');
   }
-  return {
-    ...agent,
-    define: typeof agent.define === 'string' ? JSON.parse(agent.define) : agent.define,
-    params: typeof agent.params === 'string' ? JSON.parse(agent.params) : agent.params,
-    setting: typeof agent.setting === 'string' ? JSON.parse(agent.setting) : agent.setting,
-  };
+  assertDirectResourceSnapshot(
+    expected.catalogResource,
+    current.catalogResource,
+    current.root.id,
+  );
+  assertSameAgentGraphContract(current.contract, expected.contract);
+  return current;
 }
 
 function setAgentConfig(node, name, value) {
-  const config = node.configs?.find((item) => item.name === name);
-  if (!config) throw new Error(`${node.name} template is missing config: ${name}`);
-  config.value = value;
+  const configs = node.configs?.filter((item) => item.name === name) || [];
+  if (configs.length !== 1) {
+    throw new Error(`${node.name} template requires exactly one config: ${name}`);
+  }
+  configs[0].value = value;
 }
 
 function instantiateAgentNode(template, x, color) {
@@ -2197,15 +4476,23 @@ function instantiateAgentNode(template, x, color) {
 
 async function buildBasicAgent(systemPrompt, userPrompt) {
   const catalog = await smartbixApi('dataagent/getNodeOptions');
-  const findTemplate = (name) => catalog?.basic?.find((item) => item.name === name);
-  const templates = ['StartNode', 'LLM', 'FinishNode'].map(findTemplate);
-  if (templates.some((template) => !template)) {
-    throw new Error('Agent node catalog does not contain StartNode, LLM, and FinishNode');
+  const findTemplate = (name) => catalog?.basic?.filter((item) => item.name === name) || [];
+  const templateMatches = ['StartNode', 'LLM', 'FinishNode'].map(findTemplate);
+  if (templateMatches.some((matches) => matches.length !== 1)) {
+    throw new Error('Agent node catalog must contain exactly one StartNode, LLM, and FinishNode template');
   }
 
-  const start = instantiateAgentNode(templates[0], 0, '#5E9F76');
-  const llm = instantiateAgentNode(templates[1], 290, '#3F99E7');
-  const finish = instantiateAgentNode(templates[2], 580, '#5E9F76');
+  const start = instantiateAgentNode(templateMatches[0][0], 0, '#5E9F76');
+  const llm = instantiateAgentNode(templateMatches[1][0], 290, '#3F99E7');
+  const finish = instantiateAgentNode(templateMatches[2][0], 580, '#5E9F76');
+  if (
+    start.outputs?.length !== 1
+    || llm.inputs?.length !== 1
+    || llm.outputs?.length !== 1
+    || finish.inputs?.length !== 1
+  ) {
+    throw new Error('Agent node templates do not expose the supported linear port contract');
+  }
   start.outputs[0].varOptions = {
     label: `${start.alias}-输出1`,
     value: start.outputs[0].id,
@@ -2242,7 +4529,7 @@ async function buildBasicAgent(systemPrompt, userPrompt) {
     }]),
   );
 
-  return {
+  const define = {
     nodes: [start, llm, finish],
     links: [
       {
@@ -2265,16 +4552,24 @@ async function buildBasicAgent(systemPrompt, userPrompt) {
     top: 0,
     left: 0,
   };
+  assertSupportedAgentGraph(define, { systemPrompt, userPrompt });
+  return define;
+}
+
+async function loadAgentDeployment(agentId, { required = false } = {}) {
+  const raw = await smartbixApi(`dataagent/deploy/agent/${encodeURIComponent(agentId)}`);
+  return assertAgentDeploymentRelations(raw, agentId, { required });
 }
 
 async function cmdAgentGet(agentId) {
   assertProfileAllowsAgent(PLATFORM_PROFILE);
-  const agent = await loadAgent(agentId);
-  const deployment = await smartbixApi(`dataagent/deploy/agent/${encodeURIComponent(agent.id)}`);
+  const owned = await loadOwnedAgent(agentId);
+  const deployment = await loadAgentDeployment(owned.agent.id);
   safeOutput({
-    ...agent,
-    deployed: Array.isArray(deployment) && deployment.length > 0,
-    deployment,
+    ok: true,
+    ...summarizeAgentResource(owned.agent, owned.contract),
+    deployed: deployment !== null,
+    deployment: summarizeAgentDeploymentRelation(deployment),
   });
 }
 
@@ -2289,46 +4584,113 @@ async function cmdAgentCreate(
   if (!parentId || !requestedName) {
     throw new Error('agent-create requires <parentId> <name> [description] [systemPrompt] [userPrompt]');
   }
-  await assertOwnedCatalogParent(parentId, { allowAgentRoot: true });
-  await ensureSession();
+  const rootState = await loadAuthenticatedAgentRoot('WRITE');
+  if (parentId !== rootState.root.id) {
+    throw new Error('agent-create requires the exact authenticated Agent workspace root');
+  }
   const name = applyNamespace(requestedName);
+  const collisions = rootState.children.filter((resource) => (
+    resource?.name === name || resource?.alias === name
+  ));
+  if (collisions.length > 1) {
+    throw new Error(`multiple direct Agent resources already use the requested name: ${name}`);
+  }
+  if (collisions.length === 1) {
+    const existing = await loadOwnedAgent(collisions[0].id, {
+      purview: 'WRITE',
+      expectedPrompts: { systemPrompt, userPrompt },
+    });
+    assertDirectResourceSnapshot(
+      collisions[0],
+      existing.catalogResource,
+      existing.root.id,
+    );
+    if (existing.agent.name !== name || existing.agent.alias !== name) {
+      throw new Error('requested Agent name collides with a different current name or alias');
+    }
+    if (!Object.hasOwn(existing.agent, 'desc') || String(existing.agent.desc ?? '') !== description) {
+      throw new Error('existing Agent description does not match the requested value');
+    }
+    safeOutput({
+      ok: true,
+      created: false,
+      reused: true,
+      ...summarizeAgentResource(existing.agent, existing.contract),
+    });
+    return;
+  }
+
   const define = await buildBasicAgent(systemPrompt, userPrompt);
-  const body = {
-    id: null,
-    name,
-    alias: name,
-    desc: description,
-    define: JSON.stringify(define),
-    params: JSON.stringify({ sysParam: [], customParam: [] }),
-  };
+  const expectedContract = assertSupportedAgentGraph(define, { systemPrompt, userPrompt });
   const result = await smartbixApi(`dataagent/graph/create/${encodeURIComponent(parentId)}`, {
     method: 'POST',
-    body,
+    body: {
+      id: null,
+      name,
+      alias: name,
+      desc: description,
+      define: JSON.stringify(define),
+      params: JSON.stringify({ sysParam: [], customParam: [] }),
+    },
   });
   const id = createdResourceId(result);
-  if (!id) throw new Error(`Agent create returned no id: ${JSON.stringify(result)}`);
-  const saved = await loadAgent(id, true);
+  if (!id) throw new Error('Agent create returned no resource id');
+  const saved = await loadOwnedAgent(id, {
+    purview: 'WRITE',
+    expectedPrompts: { systemPrompt, userPrompt },
+  });
+  if (saved.agent.name !== name || saved.agent.alias !== name) {
+    throw new Error('saved Agent name does not match the requested exact name');
+  }
+  if (!Object.hasOwn(saved.agent, 'desc') || String(saved.agent.desc ?? '') !== description) {
+    throw new Error('saved Agent description does not match the requested value');
+  }
+  assertSameAgentGraphContract(saved.contract, expectedContract);
+  const finalRoot = await loadAuthenticatedAgentRoot('WRITE');
+  const finalResource = findDirectOwnedAgentChild(saved.agent.id, finalRoot.children);
+  assertDirectResourceSnapshot(saved.catalogResource, finalResource, finalRoot.root.id);
+  const finalNameMatches = finalRoot.children.filter((resource) => (
+    resource?.name === name || resource?.alias === name
+  ));
+  if (finalNameMatches.length !== 1 || finalNameMatches[0].id !== saved.agent.id) {
+    throw new Error('saved Agent name is not unique in the authenticated Agent root');
+  }
   safeOutput({
     ok: true,
-    id: saved.id,
-    name: saved.name,
-    nodeCount: saved.define?.nodes?.length || 0,
-    linkCount: saved.define?.links?.length || 0,
+    created: true,
+    reused: false,
+    ...summarizeAgentResource(saved.agent, saved.contract),
   });
 }
 
-async function cmdAgentRun(agentId, question) {
+async function cmdAgentRunArgs(argsList) {
   assertProfileAllowsAgent(PLATFORM_PROFILE);
-  if (!agentId || !question) throw new Error('agent-run requires <agentId> <question>');
-  const agent = await loadAgent(agentId, true);
+  const { positional, confirmation } = parseExactConfirmationArgs(
+    argsList,
+    'agent-run',
+    '--confirm-name',
+  );
+  if (positional.length < 2) {
+    throw new Error('agent-run requires <agentId> <question> --confirm-name <exactAgentName>');
+  }
+  await cmdAgentRun(positional[0], positional.slice(1).join(' '), confirmation);
+}
+
+async function cmdAgentRun(agentId, question, confirmName) {
+  assertProfileAllowsAgent(PLATFORM_PROFILE);
+  if (!agentId || !question) {
+    throw new Error('agent-run requires <agentId> <question> --confirm-name <exactAgentName>');
+  }
+  const owned = await loadOwnedAgent(agentId, { purview: 'WRITE' });
+  assertExactAgentNameConfirmation(owned.agent, confirmName);
   const instanceId = resourceId();
   await smartbixApi('dataagent/test/flow', {
     method: 'POST',
     body: {
       query: question,
-      queryType: `customagent_${agent.id}`,
+      queryType: `customagent_${owned.agent.id}`,
       currentInstanceId: instanceId,
-      flowId: agent.id,
+      flowId: owned.agent.id,
       convId: instanceId,
     },
   });
@@ -2342,49 +4704,40 @@ async function cmdAgentRun(agentId, question) {
   if (!state || !isAgentTerminalState(state.state)) {
     throw new Error(`Agent run timed out: ${instanceId}`);
   }
-  if (state.state !== 'FINISH') {
-    throw new Error(`Agent run failed with state ${state.state}: ${instanceId}`);
-  }
-
-  const failedNodes = (state.nodeStates || []).filter((node) => node.state !== 'FINISH');
-  if (!Array.isArray(state.nodeStates) || state.nodeStates.length === 0 || failedNodes.length > 0) {
-    throw new Error(
-      `Agent run did not finish every node: ${failedNodes.map((node) => (
-        `${node.alias || node.name || node.id}:${node.state || 'UNKNOWN'}`
-      )).join(',') || 'node states unavailable'}`,
-    );
-  }
-  const outputs = [];
-  for (const node of state.nodeStates) {
-    if (node.name !== 'LLM') continue;
-    const outputId = agentOutputResourceId(node.id, instanceId);
-    const values = await smartbixApi(`dataagent/output/${encodeURIComponent(outputId)}`);
-    for (const item of Array.isArray(values) ? values : []) {
-      const content = String(item?.value?.result_content || '').trim();
-      if (content) {
-        outputs.push({
-          nodeId: node.id,
-          node: node.alias || node.name,
-          content,
-          inputTokens: item.value.input_tokens ?? null,
-          outputTokens: item.value.output_tokens ?? null,
-        });
-      }
-    }
-  }
-  const answer = assertAgentRunSucceeded(state, outputs);
+  assertAgentNodeStatesSucceeded(state, owned.contract.nodeIds);
+  const outputId = agentOutputResourceId(owned.contract.finish.sourceNodeId, instanceId);
+  const outputRecords = await smartbixApi(`dataagent/output/${encodeURIComponent(outputId)}`);
+  const finishOutput = extractAgentFinishOutput(outputRecords);
+  const answer = assertAgentRunSucceeded(state, {
+    expectedNodeIds: owned.contract.nodeIds,
+    finishOutput,
+  });
+  const outputReceipt = createAgentOutputReceipt({ ...finishOutput, content: answer });
+  const finalAgent = await reopenOwnedAgent(owned, 'WRITE');
+  assertExactAgentNameConfirmation(finalAgent.agent, confirmName);
+  const agentReceipt = summarizeAgentResource(finalAgent.agent, finalAgent.contract);
   safeOutput({
     ok: true,
     id: instanceId,
-    agent: { id: agent.id, name: agent.name },
-    state: state.state,
-    answer,
-    outputs,
-    nodeStates: state.nodeStates,
+    agent: { id: agentReceipt.id, name: agentReceipt.name },
+    graphContract: agentReceipt.graph.contract,
+    state: 'FINISH',
+    answer: outputReceipt.content,
+    answerTruncated: outputReceipt.truncated,
+    answerRedacted: outputReceipt.redacted,
+    finishOutput: {
+      verified: true,
+      sourceField: finalAgent.contract.finish.field,
+      originalLength: outputReceipt.originalLength,
+      inputTokens: outputReceipt.inputTokens,
+      outputTokens: outputReceipt.outputTokens,
+    },
+    nodeStates: summarizeAgentNodeStates(state, finalAgent.contract.nodeIds),
   });
 }
 
 async function cmdAgentDeployArgs(argsList) {
+  assertProfileAllowsAgent(PLATFORM_PROFILE);
   const { positional, confirmation } = parseExactConfirmationArgs(
     argsList,
     'agent-deploy',
@@ -2398,30 +4751,61 @@ async function cmdAgentDeployArgs(argsList) {
 
 async function cmdAgentDeploy(agentId, confirmName) {
   assertProfileAllowsAgent(PLATFORM_PROFILE);
-  const agent = await loadAgent(agentId, true);
-  assertExactResourceConfirmation(agent, confirmName);
-  let deployment = await smartbixApi(`dataagent/deploy/agent/${encodeURIComponent(agent.id)}`);
-  if (!Array.isArray(deployment) || deployment.length === 0) {
-    await smartbixApi('dataagent/relation/create', {
-      method: 'POST',
-      body: { id: null, agentId: agent.id, resId: null },
-    });
-    deployment = await smartbixApi(`dataagent/deploy/agent/${encodeURIComponent(agent.id)}`);
+  const owned = await loadOwnedAgent(agentId, { purview: 'WRITE' });
+  assertExactAgentNameConfirmation(owned.agent, confirmName);
+  const before = await loadAgentDeployment(owned.agent.id);
+  let relation = before;
+  let createAttempted = false;
+  let createResponseUnavailable = false;
+  if (!relation) {
+    createAttempted = true;
+    try {
+      await smartbixApi('dataagent/relation/create', {
+        method: 'POST',
+        body: { id: null, agentId: owned.agent.id, resId: null },
+      });
+    } catch {
+      createResponseUnavailable = true;
+    }
+    for (let attempt = 0; attempt < 5 && !relation; attempt += 1) {
+      relation = await loadAgentDeployment(owned.agent.id);
+      if (!relation && attempt < 4) {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+    }
   }
-  if (!Array.isArray(deployment) || deployment.length === 0) {
-    throw new Error(`Agent deployment was not persisted: ${agent.id}`);
+  if (!relation) {
+    throw new Error(`Agent deployment relation was not persisted: ${owned.agent.id}`);
   }
-  safeOutput({ ok: true, id: agent.id, name: agent.name, deployed: true, deployment });
+
+  const finalAgent = await reopenOwnedAgent(owned, 'WRITE');
+  assertExactAgentNameConfirmation(finalAgent.agent, confirmName);
+  const persisted = await loadAgentDeployment(finalAgent.agent.id, { required: true });
+  if (persisted.id !== relation.id) {
+    throw new Error('Agent deployment relation changed during postcondition verification');
+  }
+  safeOutput({
+    ok: true,
+    id: finalAgent.agent.id,
+    name: finalAgent.agent.name,
+    deployed: true,
+    alreadyDeployed: before !== null,
+    createAttempted,
+    createResponseUnavailable,
+    deployment: summarizeAgentDeploymentRelation(persisted),
+  });
 }
 
 
 async function cmdTree(rootId) {
   await ensureSession();
   const id = rootId || '';
-  const ret = await rmi('CatalogService', 'getChildElements', [id]);
-  if (ret.retCode !== 0) { safeOutput({ error: ret }); return; }
-  const nodes = (ret.result || []).map((n) => ({
-    id: n.id, name: n.name, alias: n.alias, type: n.type, hasChild: n.hasChild,
+  const nodes = (await listCatalogChildren(id, 'catalog tree')).map((node) => ({
+    id: node.id,
+    name: node.name,
+    alias: node.alias,
+    type: node.type,
+    hasChild: node.hasChild,
   }));
   safeOutput({ parent: id, nodes });
 }
@@ -2433,8 +4817,8 @@ async function cmdCatalogAudit(rootId) {
   const queue = [{ parentId: root.id, path: [root.alias || root.name] }];
   const visited = new Set();
   const nodes = [];
-  while (queue.length > 0) {
-    const current = queue.shift();
+  for (let cursor = 0; cursor < queue.length; cursor += 1) {
+    const current = queue[cursor];
     if (visited.has(current.parentId)) continue;
     visited.add(current.parentId);
     if (visited.size > 2000) throw new Error('catalog audit exceeded 2000 folders');
@@ -2452,7 +4836,7 @@ async function cmdCatalogAudit(rootId) {
         namespaced: hasNamespace(node.name) || hasNamespace(node.alias),
         path,
       });
-      if (node.hasChild) queue.push({ parentId: node.id, path });
+      if (shouldTraverseCatalogNode(node)) queue.push({ parentId: node.id, path });
     }
   }
   safeOutput({
@@ -2466,9 +4850,9 @@ async function cmdCatalogAudit(rootId) {
 
 async function loadSelfRoot() {
   await ensureSession();
-  const rootResponse = await rmi('CatalogService', 'getChildElements', ['']);
-  const selfRoot = (rootResponse.result || []).find((node) => node.type === 'SELF_TREENODE');
-  if (rootResponse.retCode !== 0 || !selfRoot?.id) {
+  const selfRoot = (await listCatalogChildren('', 'catalog root'))
+    .find((node) => node.type === 'SELF_TREENODE');
+  if (!selfRoot?.id) {
     throw new Error('cannot resolve the current personal workspace root');
   }
   return selfRoot;
@@ -2489,6 +4873,77 @@ async function listCatalogChildren(parentId, label = 'catalog parent') {
   );
 }
 
+async function recheckDirectCatalogResource(parentId, expected, label = 'resource parent') {
+  const children = await listCatalogChildren(parentId, label);
+  const current = children.find((node) => node.id === expected.id);
+  assertDirectResourceSnapshot(expected, current, parentId);
+  return { current, children };
+}
+
+function assertCatalogNameAvailable(children, name, alias = name, ignoredId = null) {
+  const conflict = findCatalogCollision(children, { name, alias, ignoredId });
+  if (conflict) {
+    throw new Error(`catalog parent already contains a conflicting resource: ${conflict.id}`);
+  }
+}
+
+async function rollbackCreatedCatalogEntries(journal) {
+  const failures = [];
+  for (let index = journal.length - 1; index >= 0; index -= 1) {
+    const entry = journal[index];
+    let current;
+    try {
+      const state = await recheckDirectCatalogResource(
+        entry.parentId,
+        entry,
+        'rollback resource parent',
+      );
+      current = state.current;
+      if (Object.hasOwn(entry, 'description')) {
+        const detail = await loadCatalogElement(current.id, 'rollback resource');
+        if (String(detail.desc || '') !== String(entry.description || '')) {
+          failures.push(`${current.id}: description changed after creation`);
+          continue;
+        }
+      }
+      if (isKnownCatalogFolder(current)) {
+        const children = await listCatalogChildren(current.id, 'rollback folder');
+        if (children.length > 0) {
+          failures.push(`${current.id}: folder is no longer empty`);
+          continue;
+        }
+      }
+      const deleted = await rmi('CatalogService', 'deleteCatalogElement', [current.id]);
+      if (deleted.retCode !== 0) {
+        failures.push(`${current.id}: delete failed`);
+        continue;
+      }
+      const after = await listCatalogChildren(entry.parentId, 'rollback parent after deletion');
+      if (after.some((node) => node.id === current.id)) {
+        failures.push(`${current.id}: still visible`);
+      }
+    } catch (error) {
+      const siblings = await listCatalogChildren(entry.parentId, 'rollback resource parent');
+      if (siblings.some((node) => node.id === entry.id)) {
+        failures.push(`${entry.id}: ${error.message}`);
+      }
+    }
+  }
+  for (const entry of journal) {
+    try {
+      const probe = await rmi('CatalogService', 'getCatalogElementById', [entry.id]);
+      if (probe.retCode === 0 && probe.result?.id === entry.id) {
+        failures.push(`${entry.id}: still exists after rollback`);
+      }
+    } catch {
+      failures.push(`${entry.id}: rollback absence could not be verified`);
+    }
+  }
+  if (failures.length > 0) {
+    throw new Error(`catalog rollback incomplete: ${failures.join('; ')}`);
+  }
+}
+
 async function assertOwnedCatalogParent(
   parentId,
   {
@@ -2498,27 +4953,18 @@ async function assertOwnedCatalogParent(
 ) {
   const selfRoot = await loadSelfRoot();
   const agentRootId = `SELF_AGENT_GRAPHS_${String(selfRoot.id).replace(/^SELF_/, '')}`;
-  if (!PLATFORM_PROFILE && allowSelfRoot && parentId === selfRoot.id) return selfRoot;
-  if (!PLATFORM_PROFILE && allowAgentRoot && parentId === agentRootId) {
-    return loadCatalogElement(agentRootId, 'agent workspace root');
-  }
-  const parent = await loadCatalogElement(parentId, 'catalog parent');
-  if (!['DEFAULT_TREENODE', 'SELF_TREENODE', 'AUGMENTED_DATASET_FOLDER'].includes(parent.type)) {
-    throw new Error(`refusing a non-folder catalog parent: ${parentId}`);
-  }
-  const pathResponse = await rmi('CatalogService', 'getCatalogElementPath', [parentId]);
-  const ownedRoots = new Set([selfRoot.id]);
-  if (allowAgentRoot) ownedRoots.add(agentRootId);
-  const path = pathResponse.result || [];
-  const allowedExactRoot = (allowSelfRoot && parentId === selfRoot.id)
-    || (allowAgentRoot && parentId === agentRootId);
-  if (
-    pathResponse.retCode !== 0
-    || (!allowedExactRoot && !path.some((node) => ownedRoots.has(node.id)))
-  ) {
+  const parent = parentId === selfRoot.id
+    ? selfRoot
+    : await loadCatalogElement(parentId, 'catalog parent');
+  const exactAgentRoot = !PLATFORM_PROFILE && allowAgentRoot && parentId === agentRootId;
+  const pathResponse = parentId === selfRoot.id || exactAgentRoot
+    ? { retCode: 0, result: [parent] }
+    : await rmi('CatalogService', 'getCatalogElementPath', [parentId]);
+  if (pathResponse.retCode !== 0 || !Array.isArray(pathResponse.result)) {
     throw new Error(`catalog parent is outside the current personal workspace: ${parentId}`);
   }
-  let competitionDestination = false;
+  const path = pathResponse.result;
+
   if (PLATFORM_PROFILE) {
     const personalChildren = await listCatalogChildren(selfRoot.id, 'personal workspace root');
     const competitionRoot = assertCompetitionCatalogDestination(PLATFORM_PROFILE, {
@@ -2527,15 +4973,46 @@ async function assertOwnedCatalogParent(
       path,
       personalChildren,
     });
-    competitionDestination = parent.id === competitionRoot.id;
+    return assertContiguousOwnedFolderChain({
+      parent,
+      path,
+      rootId: competitionRoot.id,
+      domain: 'competition',
+      isOwned: (node) => hasNamespace(node.name) || hasNamespace(node.alias),
+    });
   }
-  const namespaced = hasNamespace(parent.name) || hasNamespace(parent.alias);
-  const ownedModelFolder = parent.type === 'AUGMENTED_DATASET_FOLDER'
-    && path.some((node) => hasNamespace(node.name) || hasNamespace(node.alias));
-  if (!namespaced && !ownedModelFolder && !competitionDestination) {
+
+  const inAgentDomain = parentId === agentRootId
+    || path.some((node) => node.id === agentRootId);
+  if (inAgentDomain) {
+    if (!allowAgentRoot) {
+      throw new Error(`catalog parent is outside the current personal workspace: ${parentId}`);
+    }
+    const agentRoot = parentId === agentRootId
+      ? parent
+      : await loadCatalogElement(agentRootId, 'agent workspace root');
+    return assertContiguousOwnedFolderChain({
+      parent,
+      path: parentId === agentRootId ? [agentRoot] : path,
+      rootId: agentRoot.id,
+      domain: 'agent',
+      isOwned: (node) => hasNamespace(node.name) || hasNamespace(node.alias),
+    });
+  }
+
+  if (parentId === selfRoot.id && !allowSelfRoot) {
     throw new Error(`refusing a non-owned catalog parent: ${parentId}`);
   }
-  return parent;
+  if (parentId !== selfRoot.id && !path.some((node) => node.id === selfRoot.id)) {
+    throw new Error(`catalog parent is outside the current personal workspace: ${parentId}`);
+  }
+  return assertContiguousOwnedFolderChain({
+    parent,
+    path,
+    rootId: selfRoot.id,
+    domain: 'workspace',
+    isOwned: (node) => hasNamespace(node.name) || hasNamespace(node.alias),
+  });
 }
 
 
@@ -2543,26 +5020,50 @@ async function cmdFolderCreate(parentId, requestedName, description = '') {
   if (!parentId || !requestedName) {
     throw new Error('folder-create requires <parentId> <name> [description]');
   }
-  await assertOwnedCatalogParent(parentId, {
+  let parentContext = await assertOwnedCatalogParent(parentId, {
     allowSelfRoot: true,
     allowAgentRoot: true,
   });
-  const name = applyNamespace(requestedName);
-  const existingResult = await rmi('CatalogService', 'getChildElements', [parentId]);
-  if (existingResult.retCode !== 0) {
-    throw new Error(`cannot list folder parent: ${JSON.stringify(existingResult)}`);
+  if (!parentContext.isDomainRoot && !isCopyableCatalogFolder(parentContext.parent)) {
+    throw new Error(`folder-create cannot place a folder under ${parentContext.parent.type}`);
   }
-  const existing = (existingResult.result || []).find((node) => (
-    ['DEFAULT_TREENODE', 'SELF_TREENODE'].includes(node.type)
-    && (node.name === name || node.alias === name)
-  ));
+  const name = applyNamespace(requestedName);
+  let children = await listCatalogChildren(parentId, 'folder parent');
+  const existing = findCatalogCollision(children, { name, alias: name });
   if (existing) {
-    if (!hasNamespace(existing.name) && !hasNamespace(existing.alias)) {
-      throw new Error(`refusing to reuse non-namespaced folder: ${existing.alias || existing.name}`);
+    if (
+      !isCopyableCatalogFolder(existing)
+      || existing.name !== name
+      || existing.alias !== name
+      || (!hasNamespace(existing.name) && !hasNamespace(existing.alias))
+    ) {
+      throw new Error(`folder name collides with an existing resource: ${existing.id}`);
     }
-    safeOutput({ ok: true, created: false, id: existing.id, name: existing.name, alias: existing.alias });
+    const detail = await loadCatalogElement(existing.id, 'existing folder');
+    if (description && String(detail.desc || '') !== description) {
+      throw new Error(`folder already exists with a different description: ${existing.id}`);
+    }
+    safeOutput({
+      ok: true,
+      created: false,
+      id: existing.id,
+      name: existing.name,
+      alias: existing.alias,
+    });
     return;
   }
+
+  await assertCatalogPermission(parentId, 'WRITE', 'folder parent');
+  parentContext = await assertOwnedCatalogParent(parentId, {
+    allowSelfRoot: true,
+    allowAgentRoot: true,
+  });
+  if (!parentContext.isDomainRoot && !isCopyableCatalogFolder(parentContext.parent)) {
+    throw new Error(`folder-create cannot place a folder under ${parentContext.parent.type}`);
+  }
+  children = await listCatalogChildren(parentId, 'folder parent immediately before creation');
+  assertCatalogNameAvailable(children, name, name);
+  const beforeIds = new Set(children.map((node) => node.id));
   const created = await rmi('CatalogService', 'createFolderElement', [
     parentId,
     name,
@@ -2573,14 +5074,48 @@ async function cmdFolderCreate(parentId, requestedName, description = '') {
     'DEFAULT_TREENODE.png',
   ]);
   if (created.retCode !== 0 || !created.result?.id) {
-    throw new Error(`folder creation failed: ${JSON.stringify(created)}`);
+    throw new Error('folder creation failed');
   }
-  const savedResult = await rmi('CatalogService', 'getChildElements', [parentId]);
-  const saved = (savedResult.result || []).find((node) => node.id === created.result.id);
-  if (!saved || !hasNamespace(saved.name || saved.alias)) {
-    throw new Error(`created folder was not visible or owned: ${created.result.id}`);
+  if (beforeIds.has(created.result.id)) {
+    throw new Error(`folder creation returned a pre-existing id: ${created.result.id}`);
   }
-  safeOutput({ ok: true, created: true, id: saved.id, name: saved.name, alias: saved.alias });
+
+  const journal = [{
+    id: created.result.id,
+    parentId,
+    name,
+    alias: name,
+    type: 'DEFAULT_TREENODE',
+    description,
+  }];
+  try {
+    const { current: saved } = await recheckDirectCatalogResource(
+      parentId,
+      journal[0],
+      'folder parent after creation',
+    );
+    if (!hasNamespace(saved.name) && !hasNamespace(saved.alias)) {
+      throw new Error(`created folder is not namespaced: ${saved.id}`);
+    }
+    const detail = await loadCatalogElement(saved.id, 'created folder');
+    if (String(detail.desc || '') !== description) {
+      throw new Error(`created folder description was not persisted: ${saved.id}`);
+    }
+    safeOutput({
+      ok: true,
+      created: true,
+      id: saved.id,
+      name: saved.name,
+      alias: saved.alias,
+    });
+  } catch (error) {
+    try {
+      await rollbackCreatedCatalogEntries(journal);
+    } catch (rollbackError) {
+      throw new Error(`${error.message}; ${rollbackError.message}`);
+    }
+    throw error;
+  }
 }
 
 function parseCatalogMutationArgs(argsList, positionalKeys, command) {
@@ -2671,18 +5206,12 @@ async function loadOwnedDirectResource(
     throw new Error(`resource is not a direct child of the supplied parent: ${resourceId}`);
   }
   if (personalAcquisition && resource.type !== 'BASETABLE') {
-    throw new Error(`personal acquisition rename accepts only BASETABLE resources: ${resourceId}`);
+    throw new Error(`personal acquisition mutation accepts only BASETABLE resources: ${resourceId}`);
   }
   assertNamespacedResource(resource);
   return { resource, children };
 }
 
-function findCatalogConflict(children, name, ignoredId = null) {
-  return children.find((node) => (
-    node.id !== ignoredId
-    && (node.name === name || node.alias === name)
-  ));
-}
 
 async function assertCompetitionResourceDirectChild(parentId, resourceId, label) {
   if (!PLATFORM_PROFILE) return;
@@ -2707,19 +5236,14 @@ async function locateCompetitionResourceParent(resourceId, label) {
   }
   const queue = [competitionRoot.id];
   const visited = new Set();
-  while (queue.length > 0 && visited.size < 10000) {
-    const parentId = queue.shift();
+  for (let cursor = 0; cursor < queue.length && visited.size < 10000; cursor += 1) {
+    const parentId = queue[cursor];
     if (visited.has(parentId)) continue;
     visited.add(parentId);
     const children = await listCatalogChildren(parentId, `competition ${label} search`);
     if (children.some((child) => child.id === resourceId)) return parentId;
     for (const child of children) {
-      if (
-        child.hasChild
-        || ['DEFAULT_TREENODE', 'SELF_TREENODE', 'AUGMENTED_DATASET_FOLDER'].includes(child.type)
-      ) {
-        queue.push(child.id);
-      }
+      if (shouldTraverseCatalogNode(child)) queue.push(child.id);
     }
   }
   throw new Error(`competition ${label} is outside the competition folder: ${resourceId}`);
@@ -2753,6 +5277,9 @@ function parseCompetitionHomeArgs(argsList) {
   if (options.confirmName && !options.migrateLegacy) {
     throw new Error('competition-home --confirm-name is valid only with --migrate-legacy');
   }
+  if (options.create && options.migrateLegacy) {
+    throw new Error('competition-home accepts only one of --create or --migrate-legacy');
+  }
   return options;
 }
 
@@ -2768,6 +5295,9 @@ async function cmdCompetitionHome(argsList) {
     throw new Error(`multiple competition folders named ${PLATFORM_PROFILE.resourceFolderName}`);
   }
   let folder = matches[0];
+  if (folder && options.migrateLegacy) {
+    throw new Error('competition-home cannot migrate while the competition folder already exists');
+  }
   let created = false;
   let migratedLegacy = false;
   if (!folder && options.migrateLegacy) {
@@ -2778,48 +5308,115 @@ async function cmdCompetitionHome(argsList) {
       throw new Error(`multiple legacy school folders named ${PLATFORM_PROFILE.schoolName}`);
     }
     const legacy = legacyMatches[0];
+    if (!legacy) {
+      throw new Error(`legacy competition folder not found: ${PLATFORM_PROFILE.schoolName}`);
+    }
     if (legacy) {
       if (!['DEFAULT_TREENODE', 'SELF_TREENODE'].includes(legacy.type)) {
         throw new Error(`legacy competition destination is not a folder: ${legacy.id}`);
       }
       assertExactResourceConfirmation(legacy, options.confirmName);
-      await assertCatalogPermission(legacy.id, 'WRITE', 'competition folder migration');
       const detail = await loadCatalogElement(legacy.id);
+      const migratedDescription = detail.desc
+        || '2026“揭榜挂帅”挑战杯擂台赛 Smartbi Insight 专用资源目录';
+      await assertCatalogPermission(legacy.id, 'WRITE', 'competition folder migration');
+      const freshChildren = await listCatalogChildren(
+        selfRoot.id,
+        'personal workspace root immediately before migration',
+      );
+      const currentLegacy = freshChildren.find((node) => node.id === legacy.id);
+      assertDirectResourceSnapshot(legacy, currentLegacy, selfRoot.id);
+      assertExactResourceConfirmation(currentLegacy, options.confirmName);
+      assertCatalogNameAvailable(
+        freshChildren,
+        PLATFORM_PROFILE.resourceFolderName,
+        PLATFORM_PROFILE.resourceFolderName,
+        legacy.id,
+      );
       const renamed = await rmi('CatalogService', 'updateCatalogNode', [
         legacy.id,
         JSON.stringify({
           alias: PLATFORM_PROFILE.resourceFolderName,
-          desc: detail.desc || '2026“揭榜挂帅”挑战杯擂台赛 Smartbi Insight 专用资源目录',
+          desc: migratedDescription,
         }),
         null,
       ]);
       if (renamed.retCode !== 0) {
-        throw new Error(`legacy competition folder migration failed: ${JSON.stringify(renamed)}`);
+        throw new Error('legacy competition folder migration failed');
       }
       children = await listCatalogChildren(selfRoot.id, 'personal workspace root after migration');
       folder = children.find((node) => (
         node.id === legacy.id && isCompetitionFolder(PLATFORM_PROFILE, node)
       ));
       if (!folder) throw new Error(`legacy competition folder rename was not persisted: ${legacy.id}`);
+      const migratedDetail = await loadCatalogElement(legacy.id, 'migrated competition folder');
+      if (
+        migratedDetail.alias !== PLATFORM_PROFILE.resourceFolderName
+        || String(migratedDetail.desc || '') !== String(migratedDescription)
+      ) {
+        throw new Error(`legacy competition folder details were not persisted: ${legacy.id}`);
+      }
       migratedLegacy = true;
     }
   }
   if (!folder && options.create) {
+    const competitionDescription = '2026“揭榜挂帅”挑战杯擂台赛 Smartbi Insight 专用资源目录';
+    await assertCatalogPermission(selfRoot.id, 'WRITE', 'competition folder parent');
+    children = await listCatalogChildren(
+      selfRoot.id,
+      'personal workspace root immediately before competition folder creation',
+    );
+    assertCatalogNameAvailable(
+      children,
+      PLATFORM_PROFILE.resourceFolderName,
+      PLATFORM_PROFILE.resourceFolderName,
+    );
+    const beforeIds = new Set(children.map((node) => node.id));
     const createdResult = await rmi('CatalogService', 'createFolderElement', [
       selfRoot.id,
       PLATFORM_PROFILE.resourceFolderName,
       PLATFORM_PROFILE.resourceFolderName,
-      '2026“揭榜挂帅”挑战杯擂台赛 Smartbi Insight 专用资源目录',
+      competitionDescription,
       null,
       false,
       'DEFAULT_TREENODE.png',
     ]);
     if (createdResult.retCode !== 0 || !createdResult.result?.id) {
-      throw new Error(`competition folder creation failed: ${JSON.stringify(createdResult)}`);
+      throw new Error('competition folder creation failed');
     }
-    children = await listCatalogChildren(selfRoot.id, 'personal workspace root after creation');
-    folder = children.find((node) => node.id === createdResult.result.id);
-    created = true;
+    if (beforeIds.has(createdResult.result.id)) {
+      throw new Error(`competition folder creation returned a pre-existing id: ${createdResult.result.id}`);
+    }
+    const journal = [{
+      id: createdResult.result.id,
+      parentId: selfRoot.id,
+      name: PLATFORM_PROFILE.resourceFolderName,
+      alias: PLATFORM_PROFILE.resourceFolderName,
+      type: 'DEFAULT_TREENODE',
+      description: competitionDescription,
+    }];
+    try {
+      folder = (await recheckDirectCatalogResource(
+        selfRoot.id,
+        journal[0],
+        'personal workspace root after competition folder creation',
+      )).current;
+      const createdDetail = await loadCatalogElement(folder.id, 'created competition folder');
+      if (
+        !isCompetitionFolder(PLATFORM_PROFILE, folder)
+        || String(createdDetail.desc || '') !== competitionDescription
+      ) {
+        throw new Error(`competition folder postcondition failed: ${folder.id}`);
+      }
+      created = true;
+    } catch (error) {
+      try {
+        await rollbackCreatedCatalogEntries(journal);
+      } catch (rollbackError) {
+        throw new Error(`${error.message}; ${rollbackError.message}`);
+      }
+      throw error;
+    }
   }
   if (!folder) {
     safeOutput({
@@ -2867,44 +5464,95 @@ async function cmdResourceRename(argsList) {
   );
   assertExactResourceConfirmation(resource, confirmName);
   const alias = applyNamespace(requestedAlias);
-  const conflict = findCatalogConflict(children, alias, resource.id);
-  if (conflict) throw new Error(`target alias already exists in the parent: ${alias}`);
+  assertCatalogNameAvailable(children, alias, alias, resource.id);
   if (resource.alias === alias && description == null) {
+    const { current } = await recheckDirectCatalogResource(
+      parentId,
+      resource,
+      'resource parent before rename no-op',
+    );
+    assertExactResourceConfirmation(current, confirmName);
     safeOutput({
       ok: true,
       renamed: false,
-      id: resource.id,
-      name: resource.name,
-      alias: resource.alias,
+      id: current.id,
+      name: current.name,
+      alias: current.alias,
     });
     return;
   }
+
   await assertCatalogPermission(resource.id, 'WRITE', 'rename');
-  const detail = await loadCatalogElement(resource.id);
+  const originalDetail = await loadCatalogElement(resource.id);
+  const newDescription = description ?? originalDetail.desc ?? '';
+  const fresh = await loadOwnedDirectResource(
+    parentId,
+    resourceId,
+    { allowPersonalAcquisition: true },
+  );
+  assertDirectResourceSnapshot(resource, fresh.resource, parentId);
+  assertExactResourceConfirmation(fresh.resource, confirmName);
+  assertCatalogNameAvailable(fresh.children, alias, alias, resource.id);
   const updated = await rmi('CatalogService', 'updateCatalogNode', [
     resource.id,
-    JSON.stringify({
-      alias,
-      desc: description ?? detail.desc ?? '',
-    }),
+    JSON.stringify({ alias, desc: newDescription }),
     null,
   ]);
-  if (updated.retCode !== 0) {
-    throw new Error(`resource rename failed: ${JSON.stringify(updated)}`);
+  if (updated.retCode !== 0) throw new Error('resource rename failed');
+
+  const expectedSaved = { ...resource, alias };
+  try {
+    const { current: saved } = await recheckDirectCatalogResource(
+      parentId,
+      expectedSaved,
+      'resource parent after rename',
+    );
+    const savedDetail = await loadCatalogElement(saved.id, 'renamed resource');
+    if (savedDetail.alias !== alias || String(savedDetail.desc || '') !== String(newDescription)) {
+      throw new Error(`renamed resource details were not persisted: ${resource.id}`);
+    }
+    safeOutput({
+      ok: true,
+      renamed: true,
+      id: saved.id,
+      name: saved.name,
+      oldAlias: resource.alias,
+      alias: saved.alias,
+      description: savedDetail.desc || '',
+    });
+  } catch (error) {
+    try {
+      await recheckDirectCatalogResource(
+        parentId,
+        expectedSaved,
+        'resource parent before rename rollback',
+      );
+      const restored = await rmi('CatalogService', 'updateCatalogNode', [
+        resource.id,
+        JSON.stringify({
+          alias: originalDetail.alias ?? resource.alias ?? resource.name,
+          desc: originalDetail.desc ?? '',
+        }),
+        null,
+      ]);
+      if (restored.retCode !== 0) throw new Error('rename rollback update failed');
+      await recheckDirectCatalogResource(
+        parentId,
+        resource,
+        'resource parent after rename rollback',
+      );
+      const restoredDetail = await loadCatalogElement(resource.id, 'restored resource');
+      if (
+        restoredDetail.alias !== (originalDetail.alias ?? resource.alias ?? resource.name)
+        || String(restoredDetail.desc || '') !== String(originalDetail.desc ?? '')
+      ) {
+        throw new Error('rename rollback postcondition failed');
+      }
+    } catch (rollbackError) {
+      throw new Error(`${error.message}; ${rollbackError.message}`);
+    }
+    throw error;
   }
-  const saved = (await listCatalogChildren(parentId, 'resource parent after rename'))
-    .find((node) => node.id === resource.id);
-  if (!saved || saved.alias !== alias) {
-    throw new Error(`renamed resource was not persisted: ${resource.id}`);
-  }
-  safeOutput({
-    ok: true,
-    renamed: true,
-    id: saved.id,
-    name: saved.name,
-    oldAlias: resource.alias,
-    alias: saved.alias,
-  });
 }
 
 async function cmdResourceMove(argsList) {
@@ -2924,14 +5572,16 @@ async function cmdResourceMove(argsList) {
   if (sourceParentId === targetParentId) {
     throw new Error('resource-move source and target parents must differ');
   }
-  await assertOwnedCatalogParent(sourceParentId, {
-    allowSelfRoot: true,
-    allowAgentRoot: true,
-  });
-  await assertOwnedCatalogParent(targetParentId, {
-    allowSelfRoot: true,
-    allowAgentRoot: true,
-  });
+  let [sourceContext, targetContext] = await Promise.all([
+    assertOwnedCatalogParent(sourceParentId, {
+      allowSelfRoot: true,
+      allowAgentRoot: true,
+    }),
+    assertOwnedCatalogParent(targetParentId, {
+      allowSelfRoot: true,
+      allowAgentRoot: true,
+    }),
+  ]);
   const [sourceChildren, targetChildren] = await Promise.all([
     listCatalogChildren(sourceParentId, 'source parent'),
     listCatalogChildren(targetParentId, 'target parent'),
@@ -2944,42 +5594,99 @@ async function cmdResourceMove(argsList) {
     }
     assertNamespacedResource(alreadyMoved);
     assertExactResourceConfirmation(alreadyMoved, confirmName);
+    assertCatalogPlacementCompatible({
+      resource: alreadyMoved,
+      source: sourceContext,
+      target: targetContext,
+      operation: 'resource-move',
+    });
+    const { current } = await recheckDirectCatalogResource(
+      targetParentId,
+      alreadyMoved,
+      'target parent before move no-op',
+    );
     safeOutput({
       ok: true,
       moved: false,
-      id: alreadyMoved.id,
-      name: alreadyMoved.name,
-      alias: alreadyMoved.alias,
+      id: current.id,
+      name: current.name,
+      alias: current.alias,
       parentId: targetParentId,
     });
     return;
   }
   assertNamespacedResource(resource);
   assertExactResourceConfirmation(resource, confirmName);
-  const conflict = findCatalogConflict(targetChildren, resource.name, resource.id)
-    || findCatalogConflict(targetChildren, resource.alias, resource.id);
-  if (conflict) {
-    throw new Error(`target parent already contains a conflicting resource: ${conflict.id}`);
-  }
-  const targetPath = await rmi('CatalogService', 'getCatalogElementPath', [targetParentId]);
-  if (
-    targetPath.retCode !== 0
-    || (targetPath.result || []).some((node) => node.id === resource.id)
-  ) {
-    throw new Error(`refusing to move a resource into itself or its descendant: ${resource.id}`);
-  }
-  await assertCatalogPermission(resource.id, 'WRITE', 'move');
-  await assertCatalogPermission(targetParentId, 'WRITE', 'target parent');
+  assertCatalogPlacementCompatible({
+    resource,
+    source: sourceContext,
+    target: targetContext,
+    operation: 'resource-move',
+  });
+  assertCatalogNameAvailable(targetChildren, resource.name, resource.alias, resource.id);
+  let targetPath = await rmi('CatalogService', 'getCatalogElementPath', [targetParentId]);
+  assertCopyTargetOutsideSource({
+    sourceId: resource.id,
+    targetParentId,
+    targetPath: targetPath.retCode === 0 ? targetPath.result : null,
+    operation: 'move',
+  });
+
+  await Promise.all([
+    assertCatalogPermission(resource.id, 'WRITE', 'move resource'),
+    assertCatalogPermission(sourceParentId, 'WRITE', 'source parent'),
+    assertCatalogPermission(targetParentId, 'WRITE', 'target parent'),
+  ]);
+  [sourceContext, targetContext] = await Promise.all([
+    assertOwnedCatalogParent(sourceParentId, {
+      allowSelfRoot: true,
+      allowAgentRoot: true,
+    }),
+    assertOwnedCatalogParent(targetParentId, {
+      allowSelfRoot: true,
+      allowAgentRoot: true,
+    }),
+  ]);
+  assertCatalogPlacementCompatible({
+    resource,
+    source: sourceContext,
+    target: targetContext,
+    operation: 'resource-move',
+  });
+  targetPath = await rmi('CatalogService', 'getCatalogElementPath', [targetParentId]);
+  assertCopyTargetOutsideSource({
+    sourceId: resource.id,
+    targetParentId,
+    targetPath: targetPath.retCode === 0 ? targetPath.result : null,
+    operation: 'move',
+  });
+  const [{ current: currentSource }, currentTargetChildren] = await Promise.all([
+    recheckDirectCatalogResource(
+      sourceParentId,
+      resource,
+      'source parent immediately before move',
+    ),
+    listCatalogChildren(targetParentId, 'target parent immediately before move'),
+  ]);
+  assertExactResourceConfirmation(currentSource, confirmName);
+  assertCatalogNameAvailable(
+    currentTargetChildren,
+    resource.name,
+    resource.alias,
+    resource.id,
+  );
   const moved = await rmi('CatalogService', 'moveCatalogElement', [resource.id, targetParentId]);
-  if (moved.retCode !== 0) throw new Error(`resource move failed: ${JSON.stringify(moved)}`);
+  if (moved.retCode !== 0) throw new Error('resource move failed');
+
   const [sourceAfter, targetAfter] = await Promise.all([
     listCatalogChildren(sourceParentId, 'source parent after move'),
     listCatalogChildren(targetParentId, 'target parent after move'),
   ]);
-  const saved = targetAfter.find((node) => node.id === resource.id);
-  if (sourceAfter.some((node) => node.id === resource.id) || !saved) {
-    throw new Error(`resource move was not persisted: ${resource.id}`);
+  if (sourceAfter.some((node) => node.id === resource.id)) {
+    throw new Error(`moved resource is still visible in its source parent: ${resource.id}`);
   }
+  const saved = targetAfter.find((node) => node.id === resource.id);
+  assertDirectResourceSnapshot(resource, saved, targetParentId);
   safeOutput({
     ok: true,
     moved: true,
@@ -2990,84 +5697,272 @@ async function cmdResourceMove(argsList) {
   });
 }
 
-const COPYABLE_FOLDER_TYPES = new Set(['DEFAULT_TREENODE', 'SELF_TREENODE']);
+async function preflightCatalogCopyManifest({
+  sourceParentId,
+  resource,
+  targetParentId,
+}) {
+  const targetPathResponse = await rmi('CatalogService', 'getCatalogElementPath', [targetParentId]);
+  const targetPath = targetPathResponse.retCode === 0 ? targetPathResponse.result : null;
+  assertCopyTargetOutsideSource({
+    sourceId: resource.id,
+    targetParentId,
+    targetPath,
+  });
 
-async function deleteCopiedSubtree(resourceId) {
-  const resource = await loadCatalogElement(resourceId, 'copied resource rollback');
-  if (COPYABLE_FOLDER_TYPES.has(resource.type)) {
-    const children = await listCatalogChildren(resource.id, 'copied subtree rollback');
-    for (const child of children) await deleteCopiedSubtree(child.id);
+  const entries = [];
+  const queue = [{
+    snapshot: resource,
+    actualParentId: sourceParentId,
+    parentSourceId: null,
+  }];
+  for (let cursor = 0; cursor < queue.length; cursor += 1) {
+    if (queue.length > 2000) throw new Error('catalog copy manifest exceeded 2000 resources');
+    const item = queue[cursor];
+    const { current } = await recheckDirectCatalogResource(
+      item.actualParentId,
+      item.snapshot,
+      'copy source manifest parent',
+    );
+    const detail = await loadCatalogElement(current.id, 'copy source manifest resource');
+    assertDirectResourceSnapshot(current, detail, item.actualParentId);
+    const entry = {
+      id: current.id,
+      parentSourceId: item.parentSourceId,
+      name: current.name,
+      alias: current.alias || current.name,
+      type: current.type,
+      hasChild: current.hasChild,
+      description: detail.desc || '',
+    };
+    entries.push(entry);
+    if (shouldTraverseCatalogNode(current)) {
+      if (!isCopyableCatalogFolder(current)) {
+        throw new Error(`catalog copy contains an unsupported container type: ${current.type}`);
+      }
+      const children = await listCatalogChildren(current.id, 'copy source manifest folder');
+      for (const child of children) {
+        queue.push({
+          snapshot: child,
+          actualParentId: current.id,
+          parentSourceId: current.id,
+        });
+      }
+    }
   }
-  const deleted = await rmi('CatalogService', 'deleteCatalogElement', [resource.id]);
-  if (deleted.retCode !== 0) {
-    throw new Error(`copied resource rollback failed: ${resource.id}`);
+
+  const manifest = createImmutableCatalogCopyManifest({
+    sourceId: resource.id,
+    targetParentId,
+    targetPath,
+    entries,
+    isOwned: (entry) => hasNamespace(entry.name) || hasNamespace(entry.alias),
+  });
+  for (const entry of manifest.entries) {
+    await assertCatalogPermission(entry.id, 'READ', 'copy source');
+    if (!isCopyableCatalogFolder(entry)) {
+      const supported = await rmi('CatalogService', 'supportsCopy', [entry.id]);
+      if (supported.retCode !== 0 || supported.result !== true) {
+        throw new Error(`resource type does not support copy: ${entry.id}`);
+      }
+    }
   }
+  return manifest;
 }
 
-async function copyCatalogResourceToParent(resource, targetParentId, name, alias, description) {
-  const targetChildren = await listCatalogChildren(targetParentId, 'copy target parent');
-  const conflict = targetChildren.find((node) => (
-    node.name === name || node.alias === alias || node.alias === name || node.name === alias
-  ));
-  if (conflict) throw new Error(`copy target already contains a conflicting resource: ${conflict.id}`);
-  await assertCatalogPermission(resource.id, 'READ', 'copy source');
-  if (!COPYABLE_FOLDER_TYPES.has(resource.type)) {
-    const supported = await rmi('CatalogService', 'supportsCopy', [resource.id]);
-    if (supported.retCode !== 0 || supported.result !== true) {
-      throw new Error(`resource type does not support copy: ${resource.id}`);
-    }
-    const copied = await rmi('CatalogService', 'copyAndPaste', [
-      targetParentId,
-      resource.id,
-      name,
-      alias,
-      description,
-    ]);
-    if (copied.retCode !== 0) {
-      throw new Error(`resource copy failed: ${JSON.stringify(copied)}`);
-    }
-    const after = await listCatalogChildren(targetParentId, 'copy target parent after copy');
-    const saved = after.find((node) => node.name === name || node.alias === alias);
-    if (!saved) throw new Error(`copied resource was not visible: ${name}`);
-    return saved;
-  }
-
-  const created = await rmi('CatalogService', 'createFolderElement', [
-    targetParentId,
-    name,
-    alias,
-    description,
-    null,
-    false,
-    'DEFAULT_TREENODE.png',
-  ]);
-  if (created.retCode !== 0 || !created.result?.id) {
-    throw new Error(`folder copy creation failed: ${JSON.stringify(created)}`);
-  }
+async function executeCatalogCopyManifest({
+  manifest,
+  sourceParentId,
+  targetParentId,
+  rootName,
+  rootAlias,
+  rootDescription,
+  confirmName,
+}) {
+  const journal = [];
+  const targetBySourceId = new Map();
   try {
-    const sourceChildren = await listCatalogChildren(resource.id, 'copy source folder');
-    for (const child of sourceChildren) {
-      const detail = await loadCatalogElement(child.id, 'copy source child');
-      await copyCatalogResourceToParent(
-        detail,
-        created.result.id,
-        child.name,
-        child.alias || child.name,
-        detail.desc || '',
+    for (const entry of manifest.entries) {
+      const sourceEntryParentId = entry.parentSourceId ?? sourceParentId;
+      const destinationParentId = entry.parentSourceId == null
+        ? targetParentId
+        : targetBySourceId.get(entry.parentSourceId);
+      if (!destinationParentId) {
+        throw new Error(`catalog copy manifest parent was not created: ${entry.id}`);
+      }
+      const desired = entry.id === manifest.sourceId
+        ? {
+            name: rootName,
+            alias: rootAlias,
+            description: rootDescription,
+          }
+        : {
+            name: entry.name,
+            alias: entry.alias,
+            description: entry.description,
+          };
+
+      const { current: currentSource } = await recheckDirectCatalogResource(
+        sourceEntryParentId,
+        entry,
+        'copy source immediately before mutation',
       );
+      if (entry.id === manifest.sourceId) {
+        assertExactResourceConfirmation(currentSource, confirmName);
+        const [currentSourceContext, currentTargetContext] = await Promise.all([
+          assertOwnedCatalogParent(sourceParentId, {
+            allowSelfRoot: true,
+            allowAgentRoot: true,
+          }),
+          assertOwnedCatalogParent(targetParentId, {
+            allowSelfRoot: true,
+            allowAgentRoot: true,
+          }),
+        ]);
+        assertCatalogPlacementCompatible({
+          resource: currentSource,
+          source: currentSourceContext,
+          target: currentTargetContext,
+          operation: 'resource-copy',
+        });
+        const targetPathResponse = await rmi(
+          'CatalogService',
+          'getCatalogElementPath',
+          [targetParentId],
+        );
+        assertCopyTargetOutsideSource({
+          sourceId: entry.id,
+          targetParentId,
+          targetPath: targetPathResponse.retCode === 0 ? targetPathResponse.result : null,
+        });
+      }
+      const before = await listCatalogChildren(
+        destinationParentId,
+        'copy target immediately before mutation',
+      );
+      assertCatalogNameAvailable(before, desired.name, desired.alias);
+      const beforeIds = new Set(before.map((node) => node.id));
+
+      let createdEntry;
+      if (isCopyableCatalogFolder(entry)) {
+        const created = await rmi('CatalogService', 'createFolderElement', [
+          destinationParentId,
+          desired.name,
+          desired.alias,
+          desired.description,
+          null,
+          false,
+          'DEFAULT_TREENODE.png',
+        ]);
+        if (created.retCode !== 0 || !created.result?.id) {
+          throw new Error(`folder copy creation failed: ${entry.id}`);
+        }
+        if (beforeIds.has(created.result.id)) {
+          throw new Error(`folder copy returned a pre-existing id: ${created.result.id}`);
+        }
+        createdEntry = {
+          sourceId: entry.id,
+          id: created.result.id,
+          parentId: destinationParentId,
+          name: desired.name,
+          alias: desired.alias,
+          type: 'DEFAULT_TREENODE',
+          description: desired.description,
+        };
+        journal.push(createdEntry);
+      } else {
+        const copied = await rmi('CatalogService', 'copyAndPaste', [
+          destinationParentId,
+          entry.id,
+          desired.name,
+          desired.alias,
+          desired.description,
+        ]);
+        if (copied.retCode !== 0) throw new Error(`resource copy failed: ${entry.id}`);
+        const after = await listCatalogChildren(
+          destinationParentId,
+          'copy target after resource copy',
+        );
+        const candidates = after.filter((node) => (
+          !beforeIds.has(node.id)
+          && node.name === desired.name
+          && node.alias === desired.alias
+          && node.type === entry.type
+        ));
+        if (candidates.length !== 1) {
+          throw new Error(`cannot identify exactly one invocation-created copy for ${entry.id}`);
+        }
+        createdEntry = {
+          sourceId: entry.id,
+          id: candidates[0].id,
+          parentId: destinationParentId,
+          name: desired.name,
+          alias: desired.alias,
+          type: entry.type,
+          description: desired.description,
+        };
+        journal.push(createdEntry);
+      }
+
+      const { current: saved } = await recheckDirectCatalogResource(
+        destinationParentId,
+        createdEntry,
+        'copy target postcondition',
+      );
+      const savedDetail = await loadCatalogElement(saved.id, 'copied resource');
+      if (String(savedDetail.desc || '') !== String(desired.description || '')) {
+        throw new Error(`copied resource description was not persisted: ${saved.id}`);
+      }
+      targetBySourceId.set(entry.id, saved.id);
     }
+
+    for (const createdEntry of journal) {
+      const { current } = await recheckDirectCatalogResource(
+        createdEntry.parentId,
+        createdEntry,
+        'copy final postcondition',
+      );
+      const detail = await loadCatalogElement(current.id, 'copied resource final postcondition');
+      if (String(detail.desc || '') !== String(createdEntry.description || '')) {
+        throw new Error(`copied resource final description mismatch: ${current.id}`);
+      }
+      if (isKnownCatalogFolder(createdEntry)) {
+        const children = await listCatalogChildren(
+          current.id,
+          'copied folder final postcondition',
+        );
+        const expectedIds = new Set(
+          journal
+            .filter((candidate) => candidate.parentId === current.id)
+            .map((candidate) => candidate.id),
+        );
+        if (
+          children.length !== expectedIds.size
+          || children.some((child) => !expectedIds.has(child.id))
+        ) {
+          throw new Error(`copied folder contains an unexpected child: ${current.id}`);
+        }
+      }
+    }
+    const root = journal.find((entry) => entry.sourceId === manifest.sourceId);
+    if (!root) throw new Error(`copied root was not journaled: ${manifest.sourceId}`);
+    const savedRoot = (await recheckDirectCatalogResource(
+      targetParentId,
+      root,
+      'copy root final postcondition',
+    )).current;
+    if (!hasNamespace(savedRoot.name) && !hasNamespace(savedRoot.alias)) {
+      throw new Error(`copied resource is not namespaced: ${savedRoot.id}`);
+    }
+    return savedRoot;
   } catch (error) {
     try {
-      await deleteCopiedSubtree(created.result.id);
+      await rollbackCreatedCatalogEntries(journal);
     } catch (rollbackError) {
       throw new Error(`${error.message}; ${rollbackError.message}`);
     }
     throw error;
   }
-  const after = await listCatalogChildren(targetParentId, 'copy target parent after folder copy');
-  const saved = after.find((node) => node.id === created.result.id);
-  if (!saved) throw new Error(`copied folder was not visible: ${created.result.id}`);
-  return saved;
 }
 
 async function cmdResourceCopy(argsList) {
@@ -3088,23 +5983,64 @@ async function cmdResourceCopy(argsList) {
   }
   const { resource } = await loadOwnedDirectResource(sourceParentId, resourceId);
   assertExactResourceConfirmation(resource, confirmName);
-  await assertOwnedCatalogParent(targetParentId, {
-    allowSelfRoot: true,
-    allowAgentRoot: true,
+  let [sourceContext, targetContext] = await Promise.all([
+    assertOwnedCatalogParent(sourceParentId, {
+      allowSelfRoot: true,
+      allowAgentRoot: true,
+    }),
+    assertOwnedCatalogParent(targetParentId, {
+      allowSelfRoot: true,
+      allowAgentRoot: true,
+    }),
+  ]);
+  assertCatalogPlacementCompatible({
+    resource,
+    source: sourceContext,
+    target: targetContext,
+    operation: 'resource-copy',
   });
   const name = applyNamespace(requestedName);
-  await assertCatalogPermission(targetParentId, 'WRITE', 'copy target parent');
-  const detail = await loadCatalogElement(resource.id);
-  const saved = await copyCatalogResourceToParent(
-    detail,
+  const targetChildren = await listCatalogChildren(targetParentId, 'copy target parent');
+  assertCatalogNameAvailable(targetChildren, name, name);
+  const manifest = await preflightCatalogCopyManifest({
+    sourceParentId,
+    resource,
     targetParentId,
-    name,
-    name,
-    description ?? detail.desc ?? '',
-  );
-  if (!hasNamespace(saved.name) && !hasNamespace(saved.alias)) {
-    throw new Error(`copied resource is not namespaced: ${saved.id}`);
-  }
+  });
+  await assertCatalogPermission(targetParentId, 'WRITE', 'copy target parent');
+
+  [sourceContext, targetContext] = await Promise.all([
+    assertOwnedCatalogParent(sourceParentId, {
+      allowSelfRoot: true,
+      allowAgentRoot: true,
+    }),
+    assertOwnedCatalogParent(targetParentId, {
+      allowSelfRoot: true,
+      allowAgentRoot: true,
+    }),
+  ]);
+  assertCatalogPlacementCompatible({
+    resource,
+    source: sourceContext,
+    target: targetContext,
+    operation: 'resource-copy',
+  });
+  const targetPathResponse = await rmi('CatalogService', 'getCatalogElementPath', [targetParentId]);
+  assertCopyTargetOutsideSource({
+    sourceId: resource.id,
+    targetParentId,
+    targetPath: targetPathResponse.retCode === 0 ? targetPathResponse.result : null,
+  });
+  const rootEntry = manifest.entries.find((entry) => entry.id === manifest.sourceId);
+  const saved = await executeCatalogCopyManifest({
+    manifest,
+    sourceParentId,
+    targetParentId,
+    rootName: name,
+    rootAlias: name,
+    rootDescription: description ?? rootEntry.description ?? '',
+    confirmName,
+  });
   safeOutput({
     ok: true,
     copied: true,
@@ -3113,6 +6049,7 @@ async function cmdResourceCopy(argsList) {
     name: saved.name,
     alias: saved.alias,
     parentId: targetParentId,
+    copiedCount: manifest.entries.length,
   });
 }
 
@@ -3135,30 +6072,58 @@ async function resolveDeletionParentKind(parentId) {
 
 async function cmdResourceDelete({ parentId, resourceId, confirmName = null }) {
   const parentKind = await resolveDeletionParentKind(parentId);
-  const before = normalizeCatalogElements(
-    await rmi('CatalogService', 'getChildElements', [parentId]),
-    'resource parent',
-  );
+  const before = await listCatalogChildren(parentId, 'resource parent');
   const resource = before.find((node) => node.id === resourceId);
-  if (!resource) throw new Error(`resource is not a direct child of the supplied parent: ${resourceId}`);
-  const authorization = authorizeResourceDeletion({
+  if (!resource) {
+    throw new Error(`resource is not a direct child of the supplied parent: ${resourceId}`);
+  }
+  let authorization = authorizeResourceDeletion({
     resource,
     parentKind,
     confirmName,
     isNamespaced: hasNamespace(resource.name) || hasNamespace(resource.alias),
   });
-  const purview = await rmi('CatalogService', 'isCatalogElementAccessible', [resourceId, 'DELETE']);
-  if (purview.retCode !== 0 || purview.result !== true) {
-    throw new Error(`delete permission denied: ${resourceId}`);
+  if (shouldTraverseCatalogNode(resource)) {
+    const children = await listCatalogChildren(resource.id, 'folder before deletion');
+    if (children.length > 0) {
+      throw new Error(`resource-delete accepts only empty folders: ${resource.id}`);
+    }
+  }
+  await assertCatalogPermission(resourceId, 'DELETE', 'delete');
+
+  const currentParentKind = await resolveDeletionParentKind(parentId);
+  if (currentParentKind !== parentKind) {
+    throw new Error(`resource deletion parent scope changed after authorization: ${parentId}`);
+  }
+  const { current } = await recheckDirectCatalogResource(
+    parentId,
+    resource,
+    'resource parent immediately before deletion',
+  );
+  authorization = authorizeResourceDeletion({
+    resource: current,
+    parentKind: currentParentKind,
+    confirmName,
+    isNamespaced: hasNamespace(current.name) || hasNamespace(current.alias),
+  });
+  if (shouldTraverseCatalogNode(current)) {
+    const children = await listCatalogChildren(
+      current.id,
+      'folder immediately before deletion',
+    );
+    if (children.length > 0) {
+      throw new Error(`resource-delete accepts only empty folders: ${current.id}`);
+    }
   }
   const deleted = await rmi('CatalogService', 'deleteCatalogElement', [resourceId]);
-  if (deleted.retCode !== 0) throw new Error(`resource deletion failed: ${JSON.stringify(deleted)}`);
-  const after = normalizeCatalogElements(
-    await rmi('CatalogService', 'getChildElements', [parentId]),
-    'resource parent after deletion',
-  );
+  if (deleted.retCode !== 0) throw new Error('resource deletion failed');
+  const after = await listCatalogChildren(parentId, 'resource parent after deletion');
   if (after.some((node) => node.id === resourceId)) {
     throw new Error(`deleted resource is still visible: ${resourceId}`);
+  }
+  const deletedProbe = await rmi('CatalogService', 'getCatalogElementById', [resourceId]);
+  if (deletedProbe.retCode === 0 && deletedProbe.result?.id === resourceId) {
+    throw new Error(`deleted resource still exists outside its confirmed parent: ${resourceId}`);
   }
   safeOutput({
     ok: true,
@@ -3178,227 +6143,720 @@ async function locatePersonalFolder() {
   if (currentUser.retCode !== 0 || !currentUser.result) {
     throw new Error('cannot resolve the authenticated Smartbi user');
   }
-  const dsKids = await rmi('CatalogService', 'getChildElements', ['DS.input']);
-  if (dsKids.retCode !== 0) throw new Error('cannot list the import data source');
-  const schema = (dsKids.result || []).find((node) => node.type === 'SCHEMA');
-  if (!schema) throw new Error('可导入数据库 schema not found');
-  const schemaKids = await rmi('CatalogService', 'getChildElements', [schema.id]);
-  if (schemaKids.retCode !== 0) throw new Error('cannot list the import schema');
-  const space = (schemaKids.result || []).find((node) => node.alias === '数据采集空间');
-  if (!space) throw new Error('数据采集空间 not found');
-  const spaceKids = await rmi('CatalogService', 'getChildElements', [space.id]);
-  if (spaceKids.retCode !== 0) throw new Error('cannot list the acquisition space');
+  const requireUnique = (nodes, predicate, label) => {
+    const matches = nodes.filter(predicate);
+    if (matches.length === 0) throw new Error(`${label} not found`);
+    if (matches.length > 1) throw new Error(`${label} is ambiguous`);
+    return matches[0];
+  };
+
+  const schemas = await listCatalogChildren('DS.input', 'import data source');
+  const schema = requireUnique(
+    schemas,
+    (node) => node.type === 'SCHEMA',
+    '可导入数据库 schema',
+  );
+  const schemaChildren = await listCatalogChildren(schema.id, 'import schema');
+  const space = requireUnique(
+    schemaChildren,
+    (node) => (
+      isKnownCatalogFolder(node)
+      && (node.alias === '数据采集空间' || node.name === '数据采集空间')
+    ),
+    '数据采集空间',
+  );
   const account = String(currentUser.result);
-  const personal = (spaceKids.result || []).find((node) => (
-    String(node.alias || '') === account || String(node.name || '') === account
-  ));
-  if (!personal) throw new Error('authenticated personal acquisition folder not found');
+  const spaceChildren = await listCatalogChildren(space.id, 'acquisition space');
+  const personal = requireUnique(
+    spaceChildren,
+    (node) => (
+      isKnownCatalogFolder(node)
+      && (String(node.alias || '') === account || String(node.name || '') === account)
+    ),
+    'authenticated personal acquisition folder',
+  );
   return {
     dsId: 'DS.input',
     schemaId: schema.name,
+    bindingSchemaId: schema.id,
     catalog: schema.name,
     folderId: personal.id,
   };
 }
 
-// Upload a local CSV/TXT/XLSX and import as a new table named <namespace><name>
-// (namespace configurable: prefix or suffix). Returns table info after import.
-async function cmdUpload(
-  filePath,
-  tableName,
-  {
-    previewRows = 30,
-    sheetIndex = 0,
-    replace = false,
-    sourceUrl = null,
-    confirmTargetName = null,
-  } = {},
-) {
-  if (!filePath) throw new Error('upload requires <file> [tableName] [--replace]');
-  if (replace && !confirmTargetName) {
-    throw new Error('upload --replace requires --confirm-target <exactExistingTableName>');
+function makeImportTableTarget(folder, logicalName, existing = null) {
+  if (existing) {
+    const parsed = parseImportedTableId(existing.id);
+    if (parsed.dataSourceId !== folder.dsId) {
+      throw new Error('existing import target is outside the personal import data source');
+    }
+    if (String(logicalName).toLocaleLowerCase() !== parsed.tableName.toLocaleLowerCase()) {
+      throw new Error(
+        'replacement of a table whose alias differs from its physical name is unsupported',
+      );
+    }
+    return Object.freeze({
+      logicalName,
+      physicalName: parsed.tableName,
+      dataSourceId: folder.dsId,
+      tableId: existing.id,
+      tableName: parsed.tableName,
+    });
   }
-  const stats = (await import('node:fs')).statSync(filePath);
-  if (!stats.isFile()) throw new Error(`not a file: ${filePath}`);
-  if (!/\.(csv|txt|xlsx|xls)$/i.test(filePath)) {
-    throw new Error('upload supports CSV, TXT, XLSX, or XLS files');
-  }
-  const base = tableName || filePath.split('/').pop().replace(/\.[^.]+$/, '');
-  const table = applyNamespace(base);
-  if (!table) throw new Error('resolved table name is empty');
-
-  await ensureSession();
-  const folder = await locatePersonalFolder();
-  const physicalTable = table.toLowerCase();
-  const tableRef = {
+  const physicalName = logicalName.toLocaleLowerCase();
+  return Object.freeze({
+    logicalName,
+    physicalName,
     dataSourceId: folder.dsId,
-    tableId: `TAB.${folder.catalog}.${folder.schemaId}.null.${physicalTable}`,
-    tableName: physicalTable,
-  };
-  const existingResponse = await rmi('CatalogService', 'getChildElements', [folder.folderId]);
-  if (existingResponse.retCode !== 0) throw new Error('cannot inspect the personal acquisition folder');
-  const existing = (existingResponse.result || []).find((node) => (
-    String(node.id || '').toLocaleLowerCase() === tableRef.tableId.toLocaleLowerCase()
-    || String(node.name || '').toLocaleLowerCase() === physicalTable
-    || String(node.alias || '').toLocaleLowerCase() === table.toLocaleLowerCase()
-  ));
-  if (existing && !replace) {
-    throw new Error(`table already exists; pass --replace to overwrite the owned table: ${table}`);
-  }
-  if (existing && !hasNamespace(existing.alias || existing.name)) {
-    throw new Error(`refusing to replace non-namespaced table: ${existing.alias || existing.name}`);
-  }
-  if (existing && replace) assertExactResourceConfirmation(existing, confirmTargetName);
+    tableId: `TAB.${folder.catalog}.${folder.schemaId}.null.${physicalName}`,
+    tableName: physicalName,
+  });
+}
 
+function matchingImportTargets(children, target) {
+  const expectedId = target.tableId.toLocaleLowerCase();
+  const expectedPhysical = target.physicalName.toLocaleLowerCase();
+  const expectedLogical = target.logicalName.toLocaleLowerCase();
+  return children.filter((node) => (
+    String(node.id || '').toLocaleLowerCase() === expectedId
+    || String(node.name || '').toLocaleLowerCase() === expectedPhysical
+    || String(node.alias || '').toLocaleLowerCase() === expectedLogical
+  ));
+}
+
+async function dataPackageResponse(response, label) {
+  if (!response.ok) throw new Error(`${label} failed with HTTP ${response.status}`);
+  let payload;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new Error(`${label} returned a non-JSON response`);
+  }
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw new Error(`${label} returned an unsupported response shape`);
+  }
+  if (payload.retCode !== 0) {
+    const code = Number.isSafeInteger(payload.retCode) ? payload.retCode : 'unknown';
+    throw new Error(`${label} failed (retCode=${code})`);
+  }
+  return payload;
+}
+
+async function cleanupUploadedImport(clientId) {
+  if (!clientId) return;
+  try {
+    await fetch(`${BASE_URL}/DataPackageServlet`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        Cookie: cookieHeader(),
+      },
+      body: new URLSearchParams({ action: 'DELETE_FILE', clientId }),
+      signal: AbortSignal.timeout(30000),
+    });
+  } catch {}
+}
+
+async function localImportDigest(filePath) {
+  try {
+    const [{ createReadStream }, { createHash }] = await Promise.all([
+      import('node:fs'),
+      import('node:crypto'),
+    ]);
+    const hash = createHash('sha256');
+    for await (const chunk of createReadStream(filePath)) hash.update(chunk);
+    return hash.digest('hex');
+  } catch {
+    throw new Error('cannot read local upload file');
+  }
+}
+
+async function prepareLocalImport(source, previewRows) {
+  if (!Number.isSafeInteger(previewRows) || previewRows < 1 || previewRows > 1000) {
+    throw new Error('previewRows must be an integer between 1 and 1000');
+  }
+  const { openAsBlob } = await import('node:fs');
+  if (typeof openAsBlob !== 'function') {
+    throw new Error('this Node.js runtime does not support file-backed upload blobs');
+  }
+  const sourceDigest = await localImportDigest(source.filePath);
+  let fileBlob;
+  try {
+    fileBlob = await openAsBlob(source.filePath);
+  } catch {
+    throw new Error('cannot open local upload file');
+  }
   const form = new FormData();
   form.append('action', 'UPLOAD_FILE');
-  const { Blob } = await import('node:buffer');
-  form.append('file', new Blob([readFileSync(filePath)]), filePath.split('/').pop());
-  const uploaded = await fetch(`${BASE_URL}/DataPackageServlet`, {
-    method: 'POST',
-    headers: { Cookie: cookieHeader() },
-    body: form,
-    signal: AbortSignal.timeout(120000),
-  });
-  const uploadJson = await uploaded.json();
-  if (uploadJson.retCode !== 0) throw new Error(`upload failed: ${JSON.stringify(uploadJson)}`);
-  const { clientId } = uploadJson.result || {};
-  if (!clientId) throw new Error('upload did not return a client id');
-
+  form.append('file', fileBlob, source.fileName);
+  const uploaded = await dataPackageResponse(
+    await fetch(`${BASE_URL}/DataPackageServlet`, {
+      method: 'POST',
+      headers: { Cookie: cookieHeader() },
+      body: form,
+      signal: AbortSignal.timeout(120000),
+    }),
+    'file upload',
+  );
+  const clientId = uploaded.result?.clientId;
+  if (typeof clientId !== 'string' || !clientId) {
+    throw new Error('file upload did not return a client id');
+  }
   try {
-    const preview = await fetch(`${BASE_URL}/DataPackageServlet`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-        Cookie: cookieHeader(),
-      },
-      body: `action=GET_PREVIEW_DATA&clientId=${clientId}&previewRows=${previewRows}&sheetIndex=${sheetIndex}`,
-      signal: AbortSignal.timeout(120000),
-    });
-    const previewJson = await preview.json();
-    if (previewJson.retCode !== 0) {
-      throw new Error(`preview failed: ${JSON.stringify(previewJson)}`);
-    }
-    const {
-      fieldTypeList,
-      fieldNameList,
-      fieldAliasList,
-      datas,
-      rowCount,
-    } = previewJson.result || {};
-    const header = Array.isArray(datas?.[0]) ? datas[0] : null;
-    const resolvedFieldNames = Array.isArray(fieldNameList) && fieldNameList.length > 0
-      ? fieldNameList
-      : (header || []).map((value) => String(value));
-    if (
-      resolvedFieldNames.length === 0
-      || !Array.isArray(fieldTypeList)
-      || fieldTypeList.length !== resolvedFieldNames.length
-    ) {
-      throw new Error(
-        `preview field contract mismatch: names=${resolvedFieldNames.length}, `
-        + `types=${fieldTypeList?.length || 0}`,
-      );
-    }
-    if (existing && replace) {
-      const existingTable = await smartbixApi('datasets/table', {
-        method: 'POST',
-        body: tableRef,
-      });
-      assertReplacementSchemaCompatible(
-        existingTable?.fields,
-        resolvedFieldNames.map((name, index) => ({ name, dataType: fieldTypeList[index] })),
-        table,
-      );
-    }
-
-    const settings = [{
-      createTable: true,
-      sheetIndex: String(sheetIndex),
-      headerRowIndex: 0,
-      fieldTypeList,
-      dsId: folder.dsId,
-      schemaId: folder.schemaId,
-      catalog: folder.catalog,
-      folderId: folder.folderId,
-      tableName: table,
-      tableAlias: table,
-      fieldAliasList: fieldAliasList || resolvedFieldNames,
-      fieldNameList: resolvedFieldNames,
-      importType: 'REPLACE',
-      keepUniqueData: true,
-      fileName: filePath.split('/').pop(),
-      primaryKeyIndexs: [],
-    }];
-    const inserted = await fetch(`${BASE_URL}/DataPackageServlet`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-        Cookie: cookieHeader(),
-      },
-      body: `action=INSERT_DATA&clientId=${clientId}&settings=${encodeURIComponent(JSON.stringify(settings))}`,
-      signal: AbortSignal.timeout(120000),
-    });
-    const insertJson = await inserted.json();
-    if (insertJson.retCode !== 0) throw new Error(`insert failed: ${JSON.stringify(insertJson)}`);
-
-    for (let attempt = 0; attempt < 60; attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 5000));
-      const status = await rmi('DataPackageModule', 'getImportStatus', [clientId]);
-      if (status.retCode !== 0 || !status.result) continue;
-      if (status.result.retCode === 0) {
-        safeOutput({
-          ok: true,
-          table,
-          tableRef,
-          rows: Math.max(0, Number(status.result.rowCount ?? rowCount ?? 1) - 1),
-          fields: resolvedFieldNames,
-          replaced: Boolean(existing),
-          sourceUrl,
-        });
-        return;
-      }
-      if (status.result.retCode !== undefined) {
-        throw new Error(`import status error: ${JSON.stringify(status.result)}`);
-      }
-    }
-    throw new Error('import status was not confirmed within 5 minutes');
-  } catch (error) {
-    try {
+    const worksheet = resolveWorksheetSelection(source, uploaded.result?.sheetNames);
+    const preview = await dataPackageResponse(
       await fetch(`${BASE_URL}/DataPackageServlet`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
           Cookie: cookieHeader(),
         },
-        body: `action=DELETE_FILE&clientId=${encodeURIComponent(clientId)}`,
-        signal: AbortSignal.timeout(30000),
-      });
-    } catch {}
+        body: new URLSearchParams({
+          action: 'GET_PREVIEW_DATA',
+          clientId,
+          previewRows: String(previewRows),
+          sheetIndex: String(worksheet.index),
+        }),
+        signal: AbortSignal.timeout(120000),
+      }),
+      'file preview',
+    );
+    const validatedPreview = validateImportPreview(preview.result);
+    if (await localImportDigest(source.filePath) !== sourceDigest) {
+      throw new Error('local import file changed while it was being uploaded');
+    }
+    return Object.freeze({
+      clientId,
+      worksheet,
+      preview: validatedPreview,
+      sourceDigest,
+    });
+  } catch (error) {
+    await cleanupUploadedImport(clientId);
     throw error;
   }
+}
+
+async function waitForTerminalImport(clientId) {
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+    const status = await rmi('DataPackageModule', 'getImportStatus', [clientId]);
+    if (status.retCode !== 0) {
+      const code = Number.isSafeInteger(status.retCode) ? status.retCode : 'unknown';
+      throw new Error(`import status check failed (retCode=${code})`);
+    }
+    if (!status.result || typeof status.result !== 'object' || Array.isArray(status.result)) {
+      throw new Error('import status check returned an unsupported response shape');
+    }
+    if (status.result.retCode === 0) return status.result;
+    if (Object.hasOwn(status.result, 'retCode')) {
+      const code = Number.isSafeInteger(status.result.retCode)
+        ? status.result.retCode
+        : 'unknown';
+      throw new Error(`import reached a terminal error (retCode=${code})`);
+    }
+  }
+  throw new Error('import did not reach terminal success within 5 minutes');
+}
+
+async function insertPreparedImport(prepared, source, folder, target) {
+  const settings = [{
+    createTable: true,
+    sheetIndex: String(prepared.worksheet.index),
+    headerRowIndex: 0,
+    fieldTypeList: prepared.preview.fieldTypes,
+    dsId: folder.dsId,
+    schemaId: folder.schemaId,
+    catalog: folder.catalog,
+    folderId: folder.folderId,
+    tableName: target.logicalName,
+    tableAlias: target.logicalName,
+    fieldAliasList: prepared.preview.fieldAliases,
+    fieldNameList: prepared.preview.fieldNames,
+    importType: 'REPLACE',
+    keepUniqueData: true,
+    fileName: source.fileName,
+    primaryKeyIndexs: [],
+  }];
+  await dataPackageResponse(
+    await fetch(`${BASE_URL}/DataPackageServlet`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        Cookie: cookieHeader(),
+      },
+      body: new URLSearchParams({
+        action: 'INSERT_DATA',
+        clientId: prepared.clientId,
+        settings: JSON.stringify(settings),
+      }),
+      signal: AbortSignal.timeout(120000),
+    }),
+    'file import',
+  );
+  const terminalStatus = await waitForTerminalImport(prepared.clientId);
+  return Object.freeze({
+    terminalStatus,
+    rowCounts: importRowCountReceipt(prepared.preview.previewCount, terminalStatus),
+  });
+}
+
+function rememberCleanupId(journal, key, resourceId) {
+  if (resourceId && !journal[key].includes(resourceId)) journal[key].push(resourceId);
+}
+
+async function captureCreatedImportResource(folder, target, beforeIds, journal) {
+  const children = await listCatalogChildren(
+    folder.folderId,
+    'personal acquisition folder after import',
+  );
+  const candidates = matchingImportTargets(children, target).filter((node) => (
+    !beforeIds.has(node.id)
+    && node.type === 'BASETABLE'
+    && (hasNamespace(node.name) || hasNamespace(node.alias))
+    && (node.alias || node.name) === target.logicalName
+  ));
+  if (candidates.length === 1) {
+    rememberCleanupId(journal, 'createdIds', candidates[0].id);
+    return candidates[0];
+  }
+  return null;
+}
+
+function assertImportTableIdentity(reopened, target, label) {
+  const reopenedDataSourceId = reopened?.dataSource?.id ?? reopened?.dataSourceId ?? null;
+  if (
+    String(reopened?.originId || '').toLocaleLowerCase() !== target.tableId.toLocaleLowerCase()
+    || String(reopened?.name || '').toLocaleLowerCase() !== target.physicalName.toLocaleLowerCase()
+    || (reopenedDataSourceId != null && reopenedDataSourceId !== target.dataSourceId)
+  ) {
+    throw new Error(`${label} physical table identity or placement check failed`);
+  }
+  return reopened;
+}
+
+async function reopenImportedTable(folder, target, expectedSchema, beforeIds, journal) {
+  const children = await listCatalogChildren(
+    folder.folderId,
+    'personal acquisition folder import postcondition',
+  );
+  const matches = matchingImportTargets(children, target);
+  if (matches.length !== 1) {
+    throw new Error(
+      `import placement postcondition failed: expected one direct table, found ${matches.length}`,
+    );
+  }
+  const node = matches[0];
+  if (!beforeIds.has(node.id)) rememberCleanupId(journal, 'createdIds', node.id);
+  if (node.type !== 'BASETABLE') {
+    throw new Error('import placement postcondition failed: reopened resource is not a BASETABLE');
+  }
+  if (String(node.id).toLocaleLowerCase() !== target.tableId.toLocaleLowerCase()) {
+    throw new Error('import physical table id postcondition failed');
+  }
+  if (String(node.name || '').toLocaleLowerCase() !== target.physicalName.toLocaleLowerCase()) {
+    throw new Error('import physical table name postcondition failed');
+  }
+  if ((node.alias || node.name) !== target.logicalName) {
+    throw new Error('import exact table alias postcondition failed');
+  }
+  const reopened = await smartbixApi('datasets/table', {
+    method: 'POST',
+    body: {
+      dataSourceId: target.dataSourceId,
+      tableId: target.tableId,
+      tableName: target.tableName,
+    },
+  });
+  assertImportTableIdentity(reopened, target, 'reopened import');
+  const schema = assertImportedSchemaMatches(expectedSchema, reopened.fields, target.logicalName);
+  return Object.freeze({
+    node: Object.freeze({
+      id: node.id,
+      name: node.name,
+      alias: node.alias,
+      type: node.type,
+    }),
+    schema: Object.freeze(schema),
+  });
+}
+
+async function importAndVerifyLocalFile({
+  source,
+  folder,
+  target,
+  previewRows,
+  beforeIds,
+  journal,
+  compatibleWith = null,
+  expectedSourceDigest = null,
+}) {
+  let prepared = null;
+  try {
+    prepared = await prepareLocalImport(source, previewRows);
+    if (expectedSourceDigest && prepared.sourceDigest !== expectedSourceDigest) {
+      throw new Error('replacement source file changed after the staging table was proven');
+    }
+    if (compatibleWith) {
+      assertReplacementSchemaCompatible(
+        compatibleWith,
+        prepared.preview.schema,
+        target.logicalName,
+      );
+    }
+    const inserted = await insertPreparedImport(prepared, source, folder, target);
+    const reopened = await reopenImportedTable(
+      folder,
+      target,
+      prepared.preview.schema,
+      beforeIds,
+      journal,
+    );
+    return Object.freeze({
+      ...reopened,
+      worksheet: prepared.worksheet,
+      preview: prepared.preview,
+      sourceDigest: prepared.sourceDigest,
+      rowCounts: inserted.rowCounts,
+      terminalSuccess: true,
+    });
+  } catch (error) {
+    try {
+      await captureCreatedImportResource(folder, target, beforeIds, journal);
+    } catch {}
+    throw error;
+  } finally {
+    await cleanupUploadedImport(prepared?.clientId);
+  }
+}
+
+async function deleteCreatedImportResource(folder, target, journal) {
+  const children = await listCatalogChildren(
+    folder.folderId,
+    'personal acquisition folder before import cleanup',
+  );
+  const candidates = children.filter((node) => (
+    journal.createdIds.includes(node.id)
+    && !journal.cleanedIds.includes(node.id)
+    && matchingImportTargets([node], target).length === 1
+  ));
+  if (candidates.length === 0) return false;
+  if (candidates.length !== 1) {
+    throw new Error('refusing ambiguous cleanup of invocation-created import resources');
+  }
+  const resource = candidates[0];
+  const resourceId = resource.id;
+  if (
+    resource.type !== 'BASETABLE'
+    || !(hasNamespace(resource.name) || hasNamespace(resource.alias))
+    || (resource.alias || resource.name) !== target.logicalName
+  ) {
+    throw new Error(`refusing cleanup for an unproven import resource: ${resourceId}`);
+  }
+  await assertCatalogPermission(resourceId, 'DELETE', 'import cleanup');
+  const deleted = await rmi('CatalogService', 'deleteCatalogElement', [resourceId]);
+  if (deleted.retCode !== 0) {
+    throw new Error(`import cleanup failed (retCode=${deleted.retCode}) for ${resourceId}`);
+  }
+  const after = await listCatalogChildren(
+    folder.folderId,
+    'personal acquisition folder after import cleanup',
+  );
+  if (after.some((node) => node.id === resourceId)) {
+    throw new Error(`import cleanup postcondition failed for ${resourceId}`);
+  }
+  rememberCleanupId(journal, 'cleanedIds', resourceId);
+  return true;
+}
+
+function assertReplacementCountConsistency(staging, target) {
+  if (
+    staging.worksheet.name !== target.worksheet.name
+    || staging.worksheet.index !== target.worksheet.index
+    || staging.worksheet.sheetCount !== target.worksheet.sheetCount
+  ) {
+    throw new Error('replacement worksheet postcondition failed: selected sheet changed');
+  }
+  if (staging.rowCounts.preview.value !== target.rowCounts.preview.value) {
+    throw new Error('replacement row-count postcondition failed: preview counts changed');
+  }
+  const stagedAuthoritative = staging.rowCounts.authoritative;
+  const targetAuthoritative = target.rowCounts.authoritative;
+  if (
+    stagedAuthoritative.available
+    && targetAuthoritative.available
+    && stagedAuthoritative.value !== targetAuthoritative.value
+  ) {
+    throw new Error('replacement row-count postcondition failed: terminal counts changed');
+  }
+}
+
+// Upload a nonempty local CSV/TXT/XLS/XLSX and import it into the personal acquisition folder.
+async function cmdUpload(
+  filePath,
+  tableName,
+  {
+    previewRows = 30,
+    worksheet = null,
+    replace = false,
+    sourceProvenance = null,
+    confirmTargetName = null,
+  } = {},
+) {
+  if (!filePath) {
+    throw new Error(
+      'upload requires <localFile> [tableName] [--worksheet <exactWorksheetName>] [--replace]',
+    );
+  }
+  if (replace && !confirmTargetName) {
+    throw new Error('upload --replace requires --confirm-target <exactExistingTableName>');
+  }
+  classifyLocalImportSource({ filePath, worksheet });
+  let stats;
+  try {
+    stats = lstatSync(filePath, { throwIfNoEntry: false });
+  } catch {
+    throw new Error('cannot inspect local upload file');
+  }
+  const source = planLocalImportSource({
+    filePath,
+    worksheet,
+    isFile: stats?.isFile() === true,
+    size: stats?.size,
+  });
+  const base = tableName || source.fileName.replace(/\.[^.]+$/, '');
+  if (!String(base).trim()) throw new Error('resolved table name is empty');
+  const requestedTable = applyTableNamespace(base);
+  if (!requestedTable || !hasNamespace(requestedTable)) {
+    throw new Error('resolved table name does not retain the configured namespace');
+  }
+
+  await ensureSession();
+  const folder = await locatePersonalFolder();
+  const initialChildren = await listCatalogChildren(
+    folder.folderId,
+    'personal acquisition folder before import',
+  );
+  const requestedTarget = makeImportTableTarget(folder, requestedTable);
+  const matches = matchingImportTargets(initialChildren, requestedTarget);
+  if (matches.length > 1) {
+    throw new Error(`import target is ambiguous in the personal acquisition folder: ${requestedTable}`);
+  }
+  const existing = matches[0] || null;
+  if (existing && !replace) {
+    throw new Error(`table already exists; pass --replace to replace the owned table: ${requestedTable}`);
+  }
+  if (existing && existing.type !== 'BASETABLE') {
+    throw new Error('refusing to replace a personal acquisition resource that is not a BASETABLE');
+  }
+  if (existing && !(hasNamespace(existing.name) || hasNamespace(existing.alias))) {
+    throw new Error(`refusing to replace non-namespaced table: ${existing.alias || existing.name}`);
+  }
+  if (existing && replace) assertExactResourceConfirmation(existing, confirmTargetName);
+
+  const targetLogicalName = existing ? (existing.alias || existing.name) : requestedTable;
+  const target = makeImportTableTarget(folder, targetLogicalName, existing);
+  let staging = null;
+  if (replace) {
+    const stagingName = applyTableNamespace(
+      `import_stage_${randomBytes(6).toString('hex')}`,
+    );
+    if (!stagingName || !hasNamespace(stagingName)) {
+      throw new Error('replacement staging name does not retain the configured namespace');
+    }
+    staging = makeImportTableTarget(folder, stagingName);
+    if (
+      staging.tableId.toLocaleLowerCase() === target.tableId.toLocaleLowerCase()
+      || matchingImportTargets(initialChildren, staging).length > 0
+    ) {
+      throw new Error('could not reserve a distinct namespaced replacement staging table');
+    }
+  }
+  const mutation = planImportMutation({
+    replace,
+    existing,
+    target,
+    staging,
+  });
+  const journal = {
+    createdIds: [],
+    cleanedIds: [],
+    preservedIds: [],
+  };
+  const initialIds = new Set(initialChildren.map((node) => node.id));
+  let finalResult;
+
+  if (mutation.mode === 'replace') {
+    const existingTable = await smartbixApi('datasets/table', {
+      method: 'POST',
+      body: {
+        dataSourceId: target.dataSourceId,
+        tableId: target.tableId,
+        tableName: target.tableName,
+      },
+    });
+    assertImportTableIdentity(existingTable, target, 'existing replacement target');
+    assertCompleteImportSchema(existingTable?.fields, target.logicalName);
+    let staged;
+    try {
+      staged = await importAndVerifyLocalFile({
+        source,
+        folder,
+        target: staging,
+        previewRows,
+        beforeIds: initialIds,
+        journal,
+        compatibleWith: existingTable?.fields,
+      });
+    } catch (error) {
+      try {
+        await deleteCreatedImportResource(folder, staging, journal);
+      } catch (cleanupError) {
+        throw new Error(
+          `${sanitizeErrorMessage(error)}; staging cleanup failed: `
+          + sanitizeErrorMessage(cleanupError),
+        );
+      }
+      throw error;
+    }
+
+    const beforeTargetReplace = new Set(
+      (await listCatalogChildren(
+        folder.folderId,
+        'personal acquisition folder before target replacement',
+      )).map((node) => node.id),
+    );
+    try {
+      finalResult = await importAndVerifyLocalFile({
+        source,
+        folder,
+        target,
+        previewRows,
+        beforeIds: beforeTargetReplace,
+        journal,
+        compatibleWith: staged.schema,
+        expectedSourceDigest: staged.sourceDigest,
+      });
+      assertReplacementCountConsistency(staged, finalResult);
+    } catch (error) {
+      let recoveryCleanupError = null;
+      try {
+        await deleteCreatedImportResource(folder, target, journal);
+      } catch (cleanupError) {
+        recoveryCleanupError = cleanupError;
+      }
+      rememberCleanupId(journal, 'preservedIds', staged.node.id);
+      throw new Error(
+        `${sanitizeErrorMessage(error)}; proven staging table preserved for recovery: `
+        + staged.node.id
+        + (recoveryCleanupError
+          ? `; invocation-created target cleanup failed: ${sanitizeErrorMessage(recoveryCleanupError)}`
+          : ''),
+      );
+    }
+    await deleteCreatedImportResource(folder, staging, journal);
+  } else {
+    try {
+      finalResult = await importAndVerifyLocalFile({
+        source,
+        folder,
+        target,
+        previewRows,
+        beforeIds: initialIds,
+        journal,
+      });
+    } catch (error) {
+      try {
+        await deleteCreatedImportResource(folder, target, journal);
+      } catch (cleanupError) {
+        throw new Error(
+          `${sanitizeErrorMessage(error)}; created-table cleanup failed: `
+          + sanitizeErrorMessage(cleanupError),
+        );
+      }
+      throw error;
+    }
+  }
+
+  safeOutput({
+    ok: true,
+    replaced: mutation.mode === 'replace',
+    import: {
+      source: 'local-file',
+      format: source.format,
+      worksheet: {
+        name: finalResult.worksheet.name,
+        index: finalResult.worksheet.index,
+        workbookSheetCount: finalResult.worksheet.sheetCount,
+        explicitlyRequested: finalResult.worksheet.explicitlyRequested,
+      },
+      terminalSuccess: finalResult.terminalSuccess,
+      sourceIntegrity: {
+        stableDuringUpload: true,
+        matchedProvenStagingContent: mutation.mode === 'replace' ? true : null,
+      },
+    },
+    table: {
+      ...finalResult.node,
+      physicalName: target.physicalName,
+      dataSourceId: target.dataSourceId,
+    },
+    schema: finalResult.schema,
+    rowCounts: finalResult.rowCounts,
+    postcondition: {
+      directPersonalPlacement: true,
+      exactLogicalName: true,
+      physicalTableReopened: true,
+      orderedNameTypeSchema: true,
+    },
+    provenance: sourceProvenance || {
+      kind: 'local-file-only',
+      publicUrlDeclared: false,
+      remoteSourceFetched: false,
+    },
+    cleanup: {
+      createdByInvocation: journal.createdIds,
+      deletedAfterProof: journal.cleanedIds,
+      preservedForRecovery: journal.preservedIds,
+    },
+  });
 }
 
 async function cmdUploadArgs(argsList) {
   let replace = false;
   let sourceUrl = null;
+  let worksheet = null;
   let confirmTargetName = null;
   const positional = [];
   for (let index = 0; index < argsList.length; index += 1) {
     const argument = argsList[index];
     if (argument === '--replace') {
+      if (replace) throw new Error('upload accepts --replace only once');
       replace = true;
       continue;
     }
     if (argument === '--source-url') {
+      if (sourceUrl != null) throw new Error('upload accepts --source-url only once');
       sourceUrl = argsList[index + 1];
       if (!sourceUrl || sourceUrl.startsWith('--')) {
-        throw new Error('--source-url requires a public dataset URL');
+        throw new Error('--source-url requires a public provenance URL');
+      }
+      index += 1;
+      continue;
+    }
+    if (argument === '--worksheet') {
+      if (worksheet != null) throw new Error('upload accepts --worksheet only once');
+      worksheet = argsList[index + 1];
+      if (!worksheet || worksheet.startsWith('--')) {
+        throw new Error('--worksheet requires the exact worksheet name');
       }
       index += 1;
       continue;
     }
     if (argument === '--confirm-target') {
+      if (confirmTargetName != null) {
+        throw new Error('upload accepts --confirm-target only once');
+      }
       confirmTargetName = argsList[index + 1];
       if (!confirmTargetName || confirmTargetName.startsWith('--')) {
         throw new Error('--confirm-target requires the exact existing table name');
@@ -3406,35 +6864,57 @@ async function cmdUploadArgs(argsList) {
       index += 1;
       continue;
     }
+    if (['--encoding', '--delimiter'].includes(argument)) {
+      throw new Error(
+        `${argument} is unsupported because no captured live import contract exists for it`,
+      );
+    }
     if (argument.startsWith('--')) throw new Error(`unknown upload option: ${argument}`);
     positional.push(argument);
   }
-  if (positional.length > 2) {
+  if (positional.length < 1 || positional.length > 2) {
     throw new Error(
-      'upload accepts only <file> [tableName] [--replace] '
-      + '[--confirm-target <exactName>] [--source-url <url>]',
+      'upload usage: <localFile> [tableName] [--worksheet <exactWorksheetName>] '
+      + '[--replace --confirm-target <exactName>] [--source-url <publicProvenanceUrl>]',
     );
   }
-  const verifiedSourceUrl = PLATFORM_PROFILE
-    ? await assertCompetitionUploadSource(PLATFORM_PROFILE, sourceUrl)
-    : sourceUrl;
+  if (confirmTargetName && !replace) {
+    throw new Error('--confirm-target is valid only with --replace');
+  }
+  if (replace && !confirmTargetName) {
+    throw new Error('upload --replace requires --confirm-target <exactExistingTableName>');
+  }
+  classifyLocalImportSource({ filePath: positional[0], worksheet });
+  let sourceProvenance = null;
+  if (PLATFORM_PROFILE) {
+    await assertCompetitionUploadSource(PLATFORM_PROFILE, sourceUrl);
+    sourceProvenance = {
+      kind: 'declared-public-url',
+      validatedPublic: true,
+      provenanceOnly: true,
+      persistedByImport: false,
+      remoteSourceFetched: false,
+    };
+  } else if (sourceUrl != null) {
+    throw new Error(
+      '--source-url is not a remote import source and is accepted only as required '
+      + 'competition-2026 provenance metadata',
+    );
+  }
   await cmdUpload(positional[0], positional[1], {
     replace,
-    sourceUrl: verifiedSourceUrl,
+    worksheet,
+    sourceProvenance,
     confirmTargetName,
   });
 }
 
 function parseImportedTableId(tableId) {
-  const parts = String(tableId || '').split('.');
-  if (parts.length < 5 || parts[0] !== 'TAB') {
-    throw new Error(`expected an imported table id such as TAB.input.input.null.table_name: ${tableId}`);
-  }
-  const [, catalog, schema, nullMarker, ...tableNameParts] = parts;
+  const parsed = parseImportedTableReference(tableId);
   return {
-    dataSourceId: `DS.${catalog}`,
-    schemaId: `SCHEMA.${catalog}.${schema}.${nullMarker}`,
-    tableName: tableNameParts.join('.'),
+    dataSourceId: parsed.dataSourceId,
+    schemaId: parsed.schemaId,
+    tableName: parsed.physicalTableName,
   };
 }
 
@@ -3482,30 +6962,155 @@ async function assertCompetitionModelLineage({
   if (!sourceFlowId) {
     throw new Error('competition model-create requires --etl-flow <ownedFlowId>');
   }
+  const source = normalizeModelSourceReference({ dataSourceId, tableId, tableName });
   const { processDag, graph } = await loadEtlFlow(sourceFlowId, { requireOwned: true });
-  assertCompetitionEtlGraph(PLATFORM_PROFILE, graph);
-  if (processDag.pid !== parentId) {
-    throw new Error('competition model and source ETL must use the same candidate folder');
+  if (processDag.id !== sourceFlowId) {
+    throw new Error('competition source ETL id changed while verifying model lineage');
   }
+  assertCompetitionEtlGraph(PLATFORM_PROFILE, graph);
+  await assertCompetitionResourceDirectChild(parentId, sourceFlowId, 'source ETL');
   const target = parseEtlTargetReference(graph);
-  const requestedTable = parseImportedTableId(tableId);
-  const expectedNames = new Set(
-    [tableId, tableName, requestedTable.tableName].map((value) => String(value).toLocaleLowerCase()),
-  );
   if (
-    target.dataSourceId !== dataSourceId
-    || ![target.tableId, target.physicalTableName]
-      .some((value) => expectedNames.has(String(value).toLocaleLowerCase()))
+    target.dataSourceId !== source.dataSource
+    || target.schemaId !== source.schema
+    || target.tableId !== source.tableId
+    || target.physicalTableName !== source.table
   ) {
     throw new Error(
-      `competition model source does not match ETL materialized target: ${sourceFlowId}`,
+      `competition model source does not exactly match ETL target tuple: ${sourceFlowId}`,
     );
+  }
+  const instanceId = String(processDag.currentInstanceId || '').trim();
+  if (!instanceId) throw new Error(`competition source ETL has no current run: ${sourceFlowId}`);
+  const flowState = await smartbixApi(
+    `datamining/flowstate/${encodeURIComponent(instanceId)}`,
+  );
+  const currentRun = assertCurrentEtlRunEvidence(processDag, graph, flowState, {
+    tableId: source.tableId,
+    dataSourceId: source.dataSource,
+    physicalTableName: source.table,
+  });
+  const inbound = (graph.links || []).filter((link) => link.to === currentRun.target.nodeId);
+  if (inbound.length !== 1) {
+    throw new Error(`competition source ETL target must have one inbound link; found ${inbound.length}`);
+  }
+  const previewNode = (graph.nodes || []).find((node) => node.id === inbound[0].from);
+  const previewPortId = inbound[0].inputPortId;
+  if (!previewNode?.id || !previewPortId) {
+    throw new Error(`competition source ETL has no previewable terminal port: ${sourceFlowId}`);
+  }
+  const previewResult = await smartbixApi(
+    `miningnode/portresult/${encodeURIComponent(`${previewNode.id}-${instanceId}`)}/`
+    + `${encodeURIComponent(previewPortId)}/csv`,
+  );
+  const preview = summarizePortResult(previewResult);
+  if (!preview.available || !Number.isInteger(preview.rowCount) || preview.rowCountComplete !== true) {
+    throw new Error(`competition source ETL current run has no complete terminal preview: ${sourceFlowId}`);
   }
   return {
     flowId: processDag.id,
     flowName: processDag.name,
-    targetTableId: target.tableId,
+    currentInstanceId: currentRun.instanceId,
+    target: {
+      dataSource: source.dataSource,
+      schema: source.schema,
+      table: source.table,
+      tableId: source.tableId,
+    },
+    terminalPreview: {
+      rowCount: preview.rowCount,
+      fieldCount: preview.featureCount,
+      complete: preview.rowCountComplete,
+    },
   };
+}
+
+async function loadCompetitionModelTrainingEvidence({
+  model,
+  parentId,
+  sourceFlowId,
+  validatorCount,
+}) {
+  if (!PLATFORM_PROFILE) return null;
+  if (!sourceFlowId) {
+    throw new Error('competition aichat-graph-build requires --etl-flow <ownedFlowId>');
+  }
+  await assertCompetitionResourceDirectChild(parentId, sourceFlowId, 'source ETL');
+  const { processDag, graph } = await loadEtlFlow(sourceFlowId, { requireOwned: true });
+  if (processDag.id !== sourceFlowId) {
+    throw new Error('model source ETL id changed while verifying training-count provenance');
+  }
+  assertCompetitionEtlGraph(PLATFORM_PROFILE, graph);
+  const target = parseEtlTargetReference(graph);
+  const modelViews = (model.views || []).filter(Boolean);
+  if (modelViews.length !== 1) {
+    throw new Error(
+      `competition AIChat training-count provenance requires exactly one model source; found ${modelViews.length}`,
+    );
+  }
+  const modelView = modelViews[0];
+  const normalizeEvidenceId = (value) => String(value || '').toLowerCase();
+  const modelDataSourceId = normalizeEvidenceId(
+    modelView.define?.dataSource || modelView.dataSource,
+  );
+  const targetDataSourceId = normalizeEvidenceId(target.dataSourceId);
+  const modelTableIds = new Set(
+    [modelView.define?.tableId, modelView.define?.tableName, modelView.name]
+      .map(normalizeEvidenceId)
+      .filter(Boolean),
+  );
+  const targetTableIds = [target.tableId, target.physicalTableName]
+    .map(normalizeEvidenceId)
+    .filter(Boolean);
+  if (
+    !modelDataSourceId
+    || modelDataSourceId !== targetDataSourceId
+    || !targetTableIds.some((tableId) => modelTableIds.has(tableId))
+  ) {
+    throw new Error('model source does not exactly match the confirmed ETL materialized target');
+  }
+
+  const instanceId = String(processDag.currentInstanceId || '').trim();
+  if (!instanceId) {
+    throw new Error(`model source ETL has no current completed instance: ${sourceFlowId}`);
+  }
+  const state = await smartbixApi(`datamining/flowstate/${encodeURIComponent(instanceId)}`);
+  const currentRun = assertCurrentEtlRunEvidence(processDag, graph, state, target);
+  const inbound = (graph.links || []).filter((link) => link.to === currentRun.target.nodeId);
+  if (inbound.length !== 1) {
+    throw new Error(`model source ETL target must have one inbound link; found ${inbound.length}`);
+  }
+  const previewNode = (graph.nodes || []).find((node) => node.id === inbound[0].from);
+  const previewPortId = inbound[0].inputPortId || previewNode?.outputs?.[0]?.id;
+  if (!previewNode?.id || !previewPortId) {
+    throw new Error(`model source ETL has no previewable terminal port: ${sourceFlowId}`);
+  }
+  const previewResult = await smartbixApi(
+    `miningnode/portresult/${encodeURIComponent(`${previewNode.id}-${instanceId}`)}/${encodeURIComponent(previewPortId)}/csv`,
+  );
+  const preview = summarizePortResult(previewResult);
+  if (
+    !preview.available
+    || !Number.isInteger(preview.rowCount)
+    || preview.rowCountComplete !== true
+  ) {
+    throw new Error(`model source ETL current run did not report a complete row count: ${sourceFlowId}`);
+  }
+  const targetMetadata = await smartbixApi(
+    `miningdatasource/table?tableId=${encodeURIComponent(target.tableId)}`,
+  );
+  requireNamespacedResource(targetMetadata, 'materialized ETL target table');
+  return verifyAichatTrainingCountProvenance({
+    validatorCount,
+    etlRunCount: preview.rowCount,
+    etlFlowId: sourceFlowId,
+    currentInstanceId: instanceId,
+    targetTableId: target.tableId,
+    currentEtlRunVerified: true,
+    etlCountComplete: true,
+    etlCountSource: preview.rowCountSource,
+    independentTargetVerified: true,
+  });
 }
 
 function instantiateEtlNode(template, x, y) {
@@ -3521,16 +7126,8 @@ function instantiateEtlNode(template, x, y) {
   return node;
 }
 
-function connectEtlNodes(left, right) {
-  if (!left.outputs?.[0]?.id || !right.inputs?.[0]?.id) {
-    throw new Error(`cannot connect ETL nodes ${left.alias || left.name} -> ${right.alias || right.name}`);
-  }
-  return {
-    from: left.id,
-    to: right.id,
-    inputPortId: left.outputs[0].id,
-    outputPortId: right.inputs[0].id,
-  };
+function connectEtlNodes(left, right, options = {}) {
+  return createEtlLink(left, right, options);
 }
 
 async function cmdEtlCreateArgs(argsList) {
@@ -3567,6 +7164,7 @@ async function cmdEtlCreate(
       + '[rowNumber|-] [description] --confirm-target <exactTargetName>',
     );
   }
+  assertDistinctEtlTableIds([sourceTableId], targetTableId);
   const addRowNumber = rowNumber !== '-';
   if (addRowNumber && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(rowNumber)) {
     throw new Error(`invalid row-number column name: ${rowNumber}`);
@@ -3574,10 +7172,12 @@ async function cmdEtlCreate(
 
   await assertOwnedCatalogParent(parentId);
   await ensureSession();
-  const [sourceMeta, targetMeta, nodeCatalog] = await Promise.all([
+  const personalFolder = await locatePersonalFolder();
+  const [sourceMeta, targetMeta, rawNodeCatalog, personalChildren] = await Promise.all([
     smartbixApi(`miningdatasource/table?tableId=${encodeURIComponent(sourceTableId)}`),
     smartbixApi(`miningdatasource/table?tableId=${encodeURIComponent(targetTableId)}`),
     smartbixApi('datamining/nodes'),
+    listCatalogChildren(personalFolder.folderId, 'personal acquisition folder'),
   ]);
   if (!hasNamespace(sourceMeta?.alias || sourceMeta?.name)) {
     throw new Error(`refusing to read non-namespaced source table: ${sourceMeta?.alias || sourceTableId}`);
@@ -3586,34 +7186,43 @@ async function cmdEtlCreate(
     throw new Error(`refusing to overwrite non-namespaced target table: ${targetMeta?.alias || targetTableId}`);
   }
   assertExactResourceConfirmation(targetMeta, confirmTargetName);
+  const sourceRef = parseImportedTableId(sourceTableId);
+  const targetRef = parseImportedTableId(targetTableId);
+  assertCompetitionEtlTableBindings(PLATFORM_PROFILE, {
+    sources: [{ tableId: sourceTableId, ...sourceRef, physicalTableName: sourceRef.tableName }],
+    target: { tableId: targetTableId, ...targetRef, physicalTableName: targetRef.tableName },
+    personalFolder,
+    personalChildren,
+  });
 
-  const templates = nodeCatalog.defaultOptions || [];
-  const sourceTemplate = templates.find((node) => node.name === 'JDBC_DATASOURCE');
-  const rowNumberTemplate = templates.find((node) => node.name === 'DATAPREPARE_ROW_NUMBER');
+  const nodeCatalog = normalizeEtlNodeCatalog(rawNodeCatalog);
+  const sourceTemplate = nodeCatalog.defaultOptions.find((node) => node.name === 'JDBC_DATASOURCE');
+  const rowNumberTemplate = nodeCatalog.defaultOptions.find((node) => node.name === 'DATAPREPARE_ROW_NUMBER');
   if (!sourceTemplate || (addRowNumber && !rowNumberTemplate)) {
     throw new Error('required ETL node templates are unavailable');
   }
+  assertVerifiedEtlTemplate(sourceTemplate, 'create');
+  if (rowNumberTemplate) assertVerifiedEtlTemplate(rowNumberTemplate, 'create');
 
-  const sourceRef = parseImportedTableId(sourceTableId);
-  const source = instantiateEtlNode(sourceTemplate, 350, 50);
+  let source = instantiateEtlNode(sourceTemplate, 350, 50);
   source.alias = sourceMeta.alias || sourceMeta.name;
-  const jdbc = source.configs?.find((config) => config.name === 'jdbc');
-  if (!jdbc) throw new Error('JDBC source template has no jdbc config');
-  jdbc.value = JSON.stringify({
-    datasourceId: sourceRef.dataSourceId,
-    schemaId: sourceRef.schemaId,
-    tableData: {
-      id: sourceTableId,
-      schema: sourceMeta.schema ?? null,
-      name: sourceMeta.name || sourceRef.tableName,
-      alias: sourceMeta.alias || sourceMeta.name || sourceRef.tableName,
-      desc: sourceMeta.desc || sourceMeta.alias || sourceMeta.name || sourceRef.tableName,
-      type: sourceMeta.type ?? null,
-      extended: sourceMeta.extended ?? null,
-    },
-    advancedSettings: '# 读取数据批次大小\n# QUERY_JDBC_FETCHSIZE=5000',
-    tableId: sourceTableId,
-  });
+  source = configureEtlNode(source, sourceTemplate, {
+    jdbc: JSON.stringify({
+      datasourceId: sourceRef.dataSourceId,
+      schemaId: sourceRef.schemaId,
+      tableData: {
+        id: sourceTableId,
+        schema: sourceMeta.schema ?? null,
+        name: sourceMeta.name || sourceRef.tableName,
+        alias: sourceMeta.alias || sourceMeta.name || sourceRef.tableName,
+        desc: sourceMeta.desc || sourceMeta.alias || sourceMeta.name || sourceRef.tableName,
+        type: sourceMeta.type ?? null,
+        extended: sourceMeta.extended ?? null,
+      },
+      advancedSettings: '# 读取数据批次大小\n# QUERY_JDBC_FETCHSIZE=5000',
+      tableId: sourceTableId,
+    }),
+  }).node;
 
   const tempDag = await smartbixApi('dataprocess/jdbcDataTargetDag', {
     method: 'POST',
@@ -3632,21 +7241,21 @@ async function cmdEtlCreate(
     },
   });
   if (!tempDag?.id || !tempDag?.define) {
-    throw new Error(`target-node template creation failed: ${JSON.stringify(tempDag)}`);
+    throw new Error('target-node template creation returned an incomplete contract');
   }
-  const targetGraph = JSON.parse(tempDag.define);
-  const target = targetGraph.nodes?.find((node) => node.type === 'JDBC_DATATARGER_OVERWRITE');
+  const targetGraph = normalizeEtlGraph(JSON.parse(tempDag.define));
+  const target = targetGraph.nodes.find((node) => node.type === 'JDBC_DATATARGER_OVERWRITE');
   if (!target) throw new Error('target-node template contains no overwrite node');
+  assertVerifiedEtlTemplate(target, 'create');
   target.state = 'INITED';
   target.smartbiCliTargetTableId = targetTableId;
 
   const nodes = [source];
   if (addRowNumber) {
     const rowNode = instantiateEtlNode(rowNumberTemplate, 470, 50);
-    const nameConfig = rowNode.configs?.find((config) => config.name === 'name');
-    if (!nameConfig) throw new Error('row-number template has no name config');
-    nameConfig.value = rowNumber;
-    nodes.push(rowNode);
+    const configured = configureEtlNode(rowNode, rowNumberTemplate, { name: rowNumber });
+    configured.node.smartbiCliKey = 'row_number';
+    nodes.push(configured.node);
   }
   target.x = 350 + (nodes.length * 120);
   target.y = 50;
@@ -3669,14 +7278,19 @@ async function cmdEtlCreate(
     state: 'INITED',
     currentInstanceId: null,
     runningInfo: { dagState: 'INITED', costTime: 0 },
-    define: JSON.stringify({
+    define: JSON.stringify(normalizeEtlGraph({
       version: { editor: 'HORIZONTAL' },
       nodes,
       links,
       top: 10,
       left: 37,
-    }),
+    })),
   };
+  const createdGraph = assertExecutableEtlGraph(JSON.parse(processDag.define));
+  const createdBindings = extractEtlTableBindings(createdGraph);
+  if (createdBindings.sources.length !== 1 || createdBindings.targets.length !== 1) {
+    throw new Error('created ETL graph did not preserve its exact source and target bindings');
+  }
   const saved = await smartbixApi('dataprocess/processflowdefine/define', {
     method: 'POST',
     body: {
@@ -3688,6 +7302,10 @@ async function cmdEtlCreate(
   });
   const flowId = saved.id || tempDag.id;
   const verified = await loadEtlFlow(flowId, { requireOwned: true });
+  if (verified.processDag.pid !== parentId || verified.processDag.name !== name) {
+    throw new Error('created ETL flow was not reopened at the exact requested placement and name');
+  }
+  assertEtlGraphPersisted(JSON.parse(processDag.define), verified.graph);
   safeOutput({
     ok: true,
     id: flowId,
@@ -3733,12 +7351,15 @@ async function cmdEtlUnionCreate(
   }
   assertCompetitionUnionAllowed(PLATFORM_PROFILE);
   const sourceTableIds = JSON.parse(sourceTableIdsJson);
-  if (!Array.isArray(sourceTableIds) || sourceTableIds.length < 2 || sourceTableIds.length > 6) {
-    throw new Error('etl-union-create requires an array of 2 to 6 source table ids');
+  if (!Array.isArray(sourceTableIds) || sourceTableIds.length < 2) {
+    throw new Error('etl-union-create requires an array of at least 2 source table ids');
   }
+  assertDistinctEtlTableIds(sourceTableIds, targetTableId);
   await assertOwnedCatalogParent(parentId);
   await ensureSession();
-  const [sourceMetas, targetMeta, nodeCatalog] = await Promise.all([
+  const personalFolder = await locatePersonalFolder();
+  const targetRef = parseImportedTableId(targetTableId);
+  const [sourceMetas, targetMeta, targetTable, rawNodeCatalog, personalChildren] = await Promise.all([
     Promise.all(sourceTableIds.map(async (tableId) => {
       const tableRef = parseImportedTableId(tableId);
       const [sourceMeta, table] = await Promise.all([
@@ -3755,7 +7376,16 @@ async function cmdEtlUnionCreate(
       return { ...sourceMeta, fields: table.fields || [] };
     })),
     smartbixApi(`miningdatasource/table?tableId=${encodeURIComponent(targetTableId)}`),
+    smartbixApi('datasets/table', {
+      method: 'POST',
+      body: {
+        dataSourceId: targetRef.dataSourceId,
+        tableId: targetTableId,
+        tableName: targetRef.tableName,
+      },
+    }),
     smartbixApi('datamining/nodes'),
+    listCatalogChildren(personalFolder.folderId, 'personal acquisition folder'),
   ]);
   for (let index = 0; index < sourceMetas.length; index += 1) {
     if (!hasNamespace(sourceMetas[index]?.alias || sourceMetas[index]?.name)) {
@@ -3766,46 +7396,61 @@ async function cmdEtlUnionCreate(
     throw new Error(`refusing to overwrite non-namespaced target table: ${targetTableId}`);
   }
   assertExactResourceConfirmation(targetMeta, confirmTargetName);
-  const templates = nodeCatalog.defaultOptions || [];
-  const sourceTemplate = templates.find((node) => node.name === 'JDBC_DATASOURCE');
-  const unionTemplate = templates.find((node) => node.name === 'UNION_ALL');
-  if (!sourceTemplate || !unionTemplate || unionTemplate.inputs?.length < sourceTableIds.length) {
+  assertCompetitionEtlTableBindings(PLATFORM_PROFILE, {
+    sources: sourceTableIds.map((tableId) => {
+      const sourceRef = parseImportedTableId(tableId);
+      return { tableId, ...sourceRef, physicalTableName: sourceRef.tableName };
+    }),
+    target: { tableId: targetTableId, ...targetRef, physicalTableName: targetRef.tableName },
+    personalFolder,
+    personalChildren,
+  });
+  const nodeCatalog = normalizeEtlNodeCatalog(rawNodeCatalog);
+  const sourceTemplate = nodeCatalog.defaultOptions.find((node) => node.name === 'JDBC_DATASOURCE');
+  const unionTemplate = nodeCatalog.defaultOptions.find((node) => node.name === 'UNION_ALL');
+  if (!sourceTemplate || !unionTemplate || unionTemplate.inputs.length < sourceTableIds.length) {
     throw new Error('required JDBC source or UNION_ALL node template is unavailable');
   }
+  assertVerifiedEtlTemplate(sourceTemplate, 'create');
+  assertVerifiedEtlTemplate(unionTemplate, 'create');
   const sources = sourceMetas.map((sourceMeta, index) => {
     const tableId = sourceTableIds[index];
     const sourceRef = parseImportedTableId(tableId);
-    const source = instantiateEtlNode(sourceTemplate, 350, 50 + (index * 120));
+    let source = instantiateEtlNode(sourceTemplate, 350, 50 + (index * 120));
     source.alias = sourceMeta.alias || sourceMeta.name;
-    const jdbc = source.configs?.find((config) => config.name === 'jdbc');
-    if (!jdbc) throw new Error('JDBC source template has no jdbc config');
-    jdbc.value = JSON.stringify({
-      datasourceId: sourceRef.dataSourceId,
-      schemaId: sourceRef.schemaId,
-      tableData: {
-        id: tableId,
-        schema: sourceMeta.schema ?? null,
-        name: sourceMeta.name || sourceRef.tableName,
-        alias: sourceMeta.alias || sourceMeta.name || sourceRef.tableName,
-        desc: sourceMeta.desc || sourceMeta.alias || sourceMeta.name || sourceRef.tableName,
-        type: sourceMeta.type ?? null,
-        extended: sourceMeta.extended ?? null,
-      },
-      advancedSettings: '# 读取数据批次大小\n# QUERY_JDBC_FETCHSIZE=5000',
-      tableId,
-    });
+    source = configureEtlNode(source, sourceTemplate, {
+      jdbc: JSON.stringify({
+        datasourceId: sourceRef.dataSourceId,
+        schemaId: sourceRef.schemaId,
+        tableData: {
+          id: tableId,
+          schema: sourceMeta.schema ?? null,
+          name: sourceMeta.name || sourceRef.tableName,
+          alias: sourceMeta.alias || sourceMeta.name || sourceRef.tableName,
+          desc: sourceMeta.desc || sourceMeta.alias || sourceMeta.name || sourceRef.tableName,
+          type: sourceMeta.type ?? null,
+          extended: sourceMeta.extended ?? null,
+        },
+        advancedSettings: '# 读取数据批次大小\n# QUERY_JDBC_FETCHSIZE=5000',
+        tableId,
+      }),
+    }).node;
     return source;
   });
   const canonicalFields = sourceMetas[0].fields || [];
-  if (canonicalFields.length === 0) throw new Error('union source metadata has no fields');
-  const canonicalNames = canonicalFields.map((field) => field.name);
+  normalizeEtlSchema(canonicalFields, 'union source schema 0');
   for (let index = 1; index < sourceMetas.length; index += 1) {
-    const names = (sourceMetas[index].fields || []).map((field) => field.name);
-    if (JSON.stringify(names) !== JSON.stringify(canonicalNames)) {
-      throw new Error(`union source schema mismatch at index ${index}`);
-    }
+    assertEtlSchemasIdentical(canonicalFields, sourceMetas[index].fields || [], {
+      expectedLabel: 'union source schema 0',
+      actualLabel: `union source schema ${index}`,
+    });
   }
-  const union = instantiateEtlNode(unionTemplate, 540, 50 + ((sources.length - 1) * 60));
+  assertEtlSchemasIdentical(canonicalFields, targetTable?.fields || [], {
+    expectedLabel: 'union output schema',
+    actualLabel: 'union overwrite target schema',
+  });
+  const canonicalNames = canonicalFields.map((field) => field.name);
+  let union = instantiateEtlNode(unionTemplate, 540, 50 + ((sources.length - 1) * 60));
   union.smartbiCliKey = 'decision_master_union';
   const inputColumns = sourceMetas.map((meta) => meta.fields || []);
   const mappedInputs = inputColumns.map((fields) => fields.map((field) => ({ ...field, tag: 'name' })));
@@ -3830,7 +7475,7 @@ async function cmdEtlUnionCreate(
       columns: inputColumns[index],
     })),
   ];
-  applyEtlNodeConfigs(union, {
+  union = configureEtlNode(union, unionTemplate, {
     unionAll: JSON.stringify({
       tableData: JSON.stringify(tableData),
       columns: JSON.stringify(columns),
@@ -3843,7 +7488,7 @@ async function cmdEtlUnionCreate(
       recordOperateType: 'byName',
     }),
     type: 'unionAll',
-  });
+  }).node;
   const tempDag = await smartbixApi('dataprocess/jdbcDataTargetDag', {
     method: 'POST',
     body: {
@@ -3861,22 +7506,20 @@ async function cmdEtlUnionCreate(
     },
   });
   if (!tempDag?.id || !tempDag?.define) {
-    throw new Error(`target-node template creation failed: ${JSON.stringify(tempDag)}`);
+    throw new Error('target-node template creation returned an incomplete contract');
   }
-  const targetGraph = JSON.parse(tempDag.define);
-  const target = targetGraph.nodes?.find((node) => node.type === 'JDBC_DATATARGER_OVERWRITE');
+  const targetGraph = normalizeEtlGraph(JSON.parse(tempDag.define));
+  const target = targetGraph.nodes.find((node) => node.type === 'JDBC_DATATARGER_OVERWRITE');
   if (!target) throw new Error('target-node template contains no overwrite node');
+  assertVerifiedEtlTemplate(target, 'create');
   target.state = 'INITED';
   target.smartbiCliTargetTableId = targetTableId;
   target.x = 730;
   target.y = union.y;
   const nodes = [...sources, union, target];
-  const links = sources.map((source, index) => ({
-    from: source.id,
-    to: union.id,
-    inputPortId: source.outputs[0].id,
-    outputPortId: union.inputs[index].id,
-  }));
+  const links = sources.map((source, index) => (
+    connectEtlNodes(source, union, { rightPortIndex: index })
+  ));
   links.push(connectEtlNodes(union, target));
   const name = applyNamespace(requestedName);
   const processDag = {
@@ -3890,14 +7533,22 @@ async function cmdEtlUnionCreate(
     state: 'INITED',
     currentInstanceId: null,
     runningInfo: { dagState: 'INITED', costTime: 0 },
-    define: JSON.stringify({
+    define: JSON.stringify(normalizeEtlGraph({
       version: { editor: 'HORIZONTAL' },
       nodes,
       links,
       top: 10,
       left: 37,
-    }),
+    })),
   };
+  const createdGraph = assertExecutableEtlGraph(JSON.parse(processDag.define));
+  const createdBindings = extractEtlTableBindings(createdGraph);
+  if (
+    createdBindings.sources.length !== sourceTableIds.length
+    || createdBindings.targets.length !== 1
+  ) {
+    throw new Error('created union ETL graph did not preserve its exact source and target bindings');
+  }
   const saved = await smartbixApi('dataprocess/processflowdefine/define', {
     method: 'POST',
     body: {
@@ -3909,6 +7560,10 @@ async function cmdEtlUnionCreate(
   });
   const flowId = saved.id || tempDag.id;
   const verified = await loadEtlFlow(flowId, { requireOwned: true });
+  if (verified.processDag.pid !== parentId || verified.processDag.name !== name) {
+    throw new Error('created union ETL flow was not reopened at the exact requested placement and name');
+  }
+  assertEtlGraphPersisted(JSON.parse(processDag.define), verified.graph);
   safeOutput({
     ok: true,
     id: flowId,
@@ -3927,124 +7582,173 @@ async function loadEtlFlow(flowId, { requireOwned = false } = {}) {
   if (!flowId) throw new Error('flow id is required');
   await ensureSession();
   const wrapper = await smartbixApi(`datamining/flow/${encodeURIComponent(flowId)}/no`);
-  const processDag = wrapper.processDag;
-  if (!processDag?.define) throw new Error(`ETL flow not found or incomplete: ${flowId}`);
+  const processDag = wrapper?.processDag;
+  if (!processDag?.define || (processDag.id && processDag.id !== flowId)) {
+    throw new Error(`ETL flow not found, mismatched, or incomplete: ${flowId}`);
+  }
   if (requireOwned && !hasNamespace(processDag.name)) {
     throw new Error(`refusing to modify or run non-namespaced ETL flow: ${processDag.name}`);
   }
-  return { wrapper, processDag, graph: JSON.parse(processDag.define) };
+  let parsed;
+  try {
+    parsed = JSON.parse(processDag.define);
+  } catch {
+    throw new Error(`ETL flow definition is not valid JSON: ${flowId}`);
+  }
+  return { wrapper, processDag, graph: normalizeEtlGraph(parsed) };
 }
 
-async function saveEtlGraph(processDag, graph) {
-  processDag.define = JSON.stringify(graph);
-  processDag.state = 'INITED';
-  return smartbixApi('dataprocess/processflowdefine/define', {
+async function saveEtlGraph(processDag, graph, { definitionChanged = true } = {}) {
+  if (definitionChanged && processDag.currentInstanceId) {
+    const currentState = await smartbixApi(
+      `datamining/flowstate/${encodeURIComponent(processDag.currentInstanceId)}`,
+    );
+    if (!isEtlTerminalState(currentState?.state)) {
+      throw new Error('refusing to change an ETL definition while its current instance is non-terminal');
+    }
+  }
+  const nextDag = prepareEtlProcessDag(processDag, graph, { definitionChanged });
+  const saved = await smartbixApi('dataprocess/processflowdefine/define', {
     method: 'POST',
     body: {
-      processDag: {
-        id: processDag.id,
-        name: processDag.name,
-        alias: processDag.alias,
-        cache: processDag.cache,
-        smallBatch: processDag.smallBatch,
-        desc: processDag.desc,
-        createdDate: processDag.createdDate,
-        lastModifiedDate: processDag.lastModifiedDate,
-        runningInfo: { dagState: 'INITED', costTime: 0 },
-        subDefine: processDag.subDefine,
-        define: processDag.define,
-        currentInstanceId: processDag.currentInstanceId,
-        param: processDag.param,
-        callerId: processDag.callerId,
-        state: processDag.state,
-      },
+      processDag: nextDag,
       dagRemark: null,
       toSaveTempDag: false,
       cover: false,
     },
   });
+  const flowId = saved?.id || nextDag.id;
+  if (!flowId) throw new Error('ETL graph save returned no flow id');
+  const verified = await loadEtlFlow(flowId, { requireOwned: true });
+  if (
+    (nextDag.id && verified.processDag.id !== nextDag.id)
+    || (nextDag.pid && verified.processDag.pid !== nextDag.pid)
+    || verified.processDag.name !== nextDag.name
+    || (nextDag.alias != null && verified.processDag.alias !== nextDag.alias)
+  ) {
+    throw new Error(`ETL graph save changed the resource identity or placement: ${flowId}`);
+  }
+  assertEtlGraphPersisted(JSON.parse(nextDag.define), verified.graph);
+  assertEtlProcessDagMetadataPreserved(nextDag, verified.processDag);
+  if (definitionChanged && verified.processDag.currentInstanceId) {
+    throw new Error(`ETL definition save retained stale run identity: ${flowId}`);
+  }
+  if (
+    !definitionChanged
+    && String(verified.processDag.currentInstanceId || '') !== String(processDag.currentInstanceId || '')
+  ) {
+    throw new Error(`ETL metadata save changed the current run identity: ${flowId}`);
+  }
+  return verified;
 }
 
-async function cmdEtlDescribe(flowId, description) {
+async function cmdEtlDescribeArgs(argsList) {
+  const { positional, confirmation } = parseExactConfirmationArgs(
+    argsList,
+    'etl-describe',
+    '--confirm-name',
+    { required: false },
+  );
+  if (positional.length < 2 || !confirmation) {
+    throw new Error(
+      'etl-describe requires <flowId> <natural-language description> --confirm-name <exactFlowName>',
+    );
+  }
+  await cmdEtlDescribe(positional[0], positional.slice(1).join(' '), confirmation);
+}
+
+async function cmdEtlDescribe(flowId, description, confirmFlowName = null) {
   const text = String(description || '').trim();
   if (!flowId || !text) {
-    throw new Error('etl-describe requires <flowId> <natural-language description>');
+    throw new Error(
+      'etl-describe requires <flowId> <natural-language description> --confirm-name <exactFlowName>',
+    );
   }
   const { processDag, graph } = await loadEtlFlow(flowId, { requireOwned: true });
-  processDag.desc = text;
-  processDag.currentInstanceId = null;
-  await saveEtlGraph(processDag, graph);
-  const verified = await loadEtlFlow(flowId, { requireOwned: true });
+  assertExactResourceConfirmation(processDag, confirmFlowName);
+  const previousInstanceId = processDag.currentInstanceId || null;
+  const verified = await saveEtlGraph({ ...processDag, desc: text }, graph, {
+    definitionChanged: false,
+  });
   if (verified.processDag.desc !== text) {
     throw new Error(`ETL description update was not persisted: ${flowId}`);
+  }
+  if ((verified.processDag.currentInstanceId || null) !== previousInstanceId) {
+    throw new Error(`ETL description update invalidated current run identity: ${flowId}`);
   }
   safeOutput({
     ok: true,
     id: flowId,
     name: verified.processDag.name,
     description: verified.processDag.desc,
+    currentInstanceId: verified.processDag.currentInstanceId || null,
   });
 }
 
 async function cmdEtlNodeList(keyword = '') {
   await ensureSession();
-  const catalog = await smartbixApi('datamining/nodes');
+  const catalog = normalizeEtlNodeCatalog(await smartbixApi('datamining/nodes'));
   const normalized = String(keyword).toLocaleLowerCase();
-  const nodes = (catalog.defaultOptions || []).filter((node) => (
+  const nodes = catalog.defaultOptions.filter((node) => (
     !normalized
-    || node.name?.toLocaleLowerCase().includes(normalized)
-    || node.alias?.toLocaleLowerCase().includes(normalized)
+    || node.name.toLocaleLowerCase().includes(normalized)
+    || String(node.alias || '').toLocaleLowerCase().includes(normalized)
   ));
   safeOutput({
     ok: true,
     count: nodes.length,
-    nodes: nodes.map((node) => ({
-      name: node.name,
-      alias: node.alias,
-      inputCount: node.inputs?.length || 0,
-      outputCount: node.outputs?.length || 0,
-      configs: (node.configs || []).map((config) => ({
-        name: config.name,
-        label: config.label || config.lable || null,
-        type: config.type || null,
-        required: Boolean(config.required),
-        defaultValue: config.value ?? null,
-      })),
-    })),
+    nodes: nodes.map(describeEtlNodeTemplate),
   });
 }
 
-function applyEtlNodeConfigs(node, values) {
-  if (!values || typeof values !== 'object' || Array.isArray(values)) {
-    throw new Error('ETL node config must be a JSON object');
-  }
-  const known = new Map((node.configs || []).map((config) => [config.name, config]));
-  for (const [name, value] of Object.entries(values)) {
-    const config = known.get(name);
-    if (!config) {
-      throw new Error(`ETL node ${node.name} has no config named ${name}`);
-    }
-    config.value = value !== null && typeof value === 'object' ? JSON.stringify(value) : value;
-  }
-}
 
-async function cmdEtlInsert(flowId, nodeName, configJson = '{}', instanceKey = nodeName) {
-  if (!flowId || !nodeName) {
-    throw new Error('etl-insert requires <flowId> <nodeName> [configJson] [instanceKey]');
-  }
-  const configValues = JSON.parse(configJson);
-  const { processDag, graph } = await loadEtlFlow(flowId, { requireOwned: true });
-  const catalog = await smartbixApi('datamining/nodes');
-  graph.nodes ||= [];
-  graph.links ||= [];
-  const template = (catalog.defaultOptions || []).find((node) => node.name === nodeName);
-  if (!template) throw new Error(`ETL node template not found: ${nodeName}`);
-  if (template.inputs?.length !== 1 || template.outputs?.length !== 1) {
+async function cmdEtlInsertArgs(argsList) {
+  const { positional, confirmation } = parseExactConfirmationArgs(
+    argsList,
+    'etl-insert',
+    '--confirm-name',
+    { required: false },
+  );
+  if (positional.length < 2 || positional.length > 4 || !confirmation) {
     throw new Error(
-      `etl-insert supports unary transforms only; ${nodeName} has `
-      + `${template.inputs?.length || 0} inputs and ${template.outputs?.length || 0} outputs`,
+      'etl-insert requires <flowId> <nodeName> [configJson] [instanceKey] '
+      + '--confirm-name <exactFlowName>',
     );
   }
+  await cmdEtlInsert(
+    positional[0],
+    positional[1],
+    positional[2],
+    positional[3],
+    confirmation,
+  );
+}
+
+async function cmdEtlInsert(
+  flowId,
+  nodeName,
+  configJson = '{}',
+  instanceKey = nodeName,
+  confirmFlowName = null,
+) {
+  if (!flowId || !nodeName) {
+    throw new Error(
+      'etl-insert requires <flowId> <nodeName> [configJson] [instanceKey] '
+      + '--confirm-name <exactFlowName>',
+    );
+  }
+  const configValues = JSON.parse(configJson);
+  if (!instanceKey || typeof instanceKey !== 'string') {
+    throw new Error('etl-insert instanceKey must be a non-empty string');
+  }
+  const loaded = await loadEtlFlow(flowId, { requireOwned: true });
+  assertExactResourceConfirmation(loaded.processDag, confirmFlowName);
+  const { processDag } = loaded;
+  let { graph } = loaded;
+  const catalog = normalizeEtlNodeCatalog(await smartbixApi('datamining/nodes'));
+  const template = catalog.defaultOptions.find((node) => node.name === nodeName);
+  if (!template) throw new Error(`ETL node template not found: ${nodeName}`);
+  assertVerifiedEtlTemplate(template, 'insert');
 
   let node = graph.nodes.find((item) => item.smartbiCliKey === instanceKey);
   let changed = false;
@@ -4052,137 +7756,153 @@ async function cmdEtlInsert(flowId, nodeName, configJson = '{}', instanceKey = n
     if (node.name !== nodeName) {
       throw new Error(`ETL instance key ${instanceKey} already belongs to ${node.name}`);
     }
-    const before = JSON.stringify({
-      configs: node.configs || [],
-      configuredKeys: node.smartbiCliConfiguredKeys || [],
-    });
-    applyEtlNodeConfigs(node, configValues);
-    node.smartbiCliConfiguredKeys = Object.keys(configValues).sort();
-    changed = before !== JSON.stringify({
-      configs: node.configs || [],
-      configuredKeys: node.smartbiCliConfiguredKeys,
-    });
-    if (changed) node.state = 'INITED';
-  } else {
-    const targets = graph.nodes.filter((item) => (
-      (item.inputs?.length || 0) > 0 && (item.outputs?.length || 0) === 0
-    ));
-    const inbound = targets.length === 1
-      ? graph.links.filter((link) => link.to === targets[0].id)
-      : [];
-    if (targets.length !== 1 || inbound.length !== 1) {
-      throw new Error(
-        `ETL must have one terminal target with one inbound link; found `
-        + `${targets.length} targets and ${inbound.length} inbound links`,
-      );
-    }
-    const target = targets[0];
-    const previousLink = inbound[0];
-    node = instantiateEtlNode(
+    const configured = configureEtlNode(
+      node,
       template,
-      Math.max(0, Number(target.x || 0) - 120),
-      Number(target.y || 0),
+      configValues,
+      node.smartbiCliConfiguredKeys || [],
     );
-    node.smartbiCliKey = instanceKey;
-    applyEtlNodeConfigs(node, configValues);
-    node.smartbiCliConfiguredKeys = Object.keys(configValues).sort();
-    target.x = Number(target.x || 0) + 120;
-    target.state = 'INITED';
-    graph.nodes.push(node);
-    graph.links = graph.links.filter((link) => link !== previousLink);
-    graph.links.push(
-      {
-        from: previousLink.from,
-        to: node.id,
-        inputPortId: previousLink.inputPortId,
-        outputPortId: node.inputs[0].id,
-      },
-      {
-        from: node.id,
-        to: target.id,
-        inputPortId: node.outputs[0].id,
-        outputPortId: previousLink.outputPortId,
-      },
-    );
+    node = configured.node;
+    changed = configured.changed;
+    if (changed) {
+      node.state = 'INITED';
+      graph = {
+        ...graph,
+        nodes: graph.nodes.map((candidate) => candidate.id === node.id ? node : candidate),
+      };
+    }
+  } else {
+    const terminals = graph.nodes.filter((candidate) => candidate.outputs.length === 0);
+    if (terminals.length !== 1) {
+      throw new Error(`ETL must have one zero-output terminal; found ${terminals.length}`);
+    }
+    node = instantiateEtlNode(template, 0, 0);
+    const configured = configureEtlNode(node, template, configValues);
+    node = { ...configured.node, smartbiCliKey: instanceKey };
+    positionEtlNodeBeforeTarget(node, terminals[0]);
+    graph = spliceUnaryBeforeTerminal(graph, node).graph;
     changed = true;
   }
 
-  changed = layoutLinearEtlGraph(graph) || changed;
-  const saved = changed ? await saveEtlGraph(processDag, graph) : processDag;
+  graph = assertExecutableEtlGraph(graph);
+  const bindingCheck = extractEtlTableBindings(graph);
+  if (bindingCheck.targets.length !== 1) throw new Error('ETL mutation lost its overwrite target');
+  assertDistinctEtlTableIds(
+    bindingCheck.sources.map((source) => source.tableId),
+    bindingCheck.targets[0].tableId,
+  );
+  assertCompetitionEtlGraph(PLATFORM_PROFILE, graph);
+  const verified = changed
+    ? await saveEtlGraph(processDag, graph, { definitionChanged: true })
+    : loaded;
+  const persistedNode = verified.graph.nodes.find((candidate) => candidate.id === node.id);
+  if (!persistedNode) throw new Error(`ETL inserted node was not persisted: ${node.id}`);
   safeOutput({
     ok: true,
     changed,
-    flowId: saved.id || processDag.id,
-    flowName: saved.name || processDag.name,
+    flowId: verified.processDag.id || processDag.id,
+    flowName: verified.processDag.name || processDag.name,
     node: {
-      id: node.id,
-      name: node.name,
-      alias: node.alias,
+      id: persistedNode.id,
+      name: persistedNode.name,
+      alias: persistedNode.alias,
       instanceKey,
-      configs: Object.fromEntries((node.configs || []).map((config) => [config.name, config.value])),
+      configuredKeys: persistedNode.smartbiCliConfiguredKeys || [],
+      configs: Object.fromEntries(
+        (persistedNode.configs || []).map((config) => [config.name, config.value]),
+      ),
     },
   });
 }
 
-async function cmdEtlOutputDataset(flowId, requestedName) {
-  if (!flowId || !requestedName) {
-    throw new Error('etl-output-dataset requires <flowId> <datasetName>');
+async function cmdEtlOutputDatasetArgs(argsList) {
+  const { positional, confirmation } = parseExactConfirmationArgs(
+    argsList,
+    'etl-output-dataset',
+    '--confirm-name',
+    { required: false },
+  );
+  if (positional.length !== 2 || !confirmation) {
+    throw new Error(
+      'etl-output-dataset requires <flowId> <datasetName> --confirm-name <exactFlowName>',
+    );
   }
-  const { processDag, graph } = await loadEtlFlow(flowId, { requireOwned: true });
-  graph.nodes ||= [];
-  graph.links ||= [];
-  const targets = graph.nodes.filter((item) => (
-    (item.inputs?.length || 0) > 0 && (item.outputs?.length || 0) === 0
-  ));
+  await cmdEtlOutputDataset(positional[0], positional[1], confirmation);
+}
+
+async function cmdEtlOutputDataset(flowId, requestedName, confirmFlowName = null) {
+  if (!flowId || !requestedName) {
+    throw new Error(
+      'etl-output-dataset requires <flowId> <datasetName> --confirm-name <exactFlowName>',
+    );
+  }
+  assertCompetitionEtlOutputMutationAllowed(PLATFORM_PROFILE);
+  const loaded = await loadEtlFlow(flowId, { requireOwned: true });
+  assertExactResourceConfirmation(loaded.processDag, confirmFlowName);
+  const { processDag } = loaded;
+  let { graph } = loaded;
+  const targets = graph.nodes.filter((item) => item.outputs.length === 0);
   if (targets.length !== 1) {
     throw new Error(`ETL must have one terminal target; found ${targets.length}`);
   }
   const target = targets[0];
+  if (!['JDBC_DATATARGER_OVERWRITE', 'SMARTBI_DATASET_OUTPUT'].includes(target.name)) {
+    throw new Error(`ETL terminal effect is not supported for output mutation: ${target.name}`);
+  }
   const inbound = graph.links.filter((link) => link.to === target.id);
   if (inbound.length !== 1) {
     throw new Error(`ETL terminal target must have one inbound link; found ${inbound.length}`);
   }
   const tableName = applyNamespace(requestedName);
+  const catalog = normalizeEtlNodeCatalog(await smartbixApi('datamining/nodes'));
+  const template = catalog.defaultOptions.find((item) => item.name === 'SMARTBI_DATASET_OUTPUT');
+  if (!template) throw new Error('SMARTBI_DATASET_OUTPUT template is unavailable');
+  assertVerifiedEtlTemplate(template, 'configure');
+
   let changed = false;
   let output = target;
   if (target.name === 'SMARTBI_DATASET_OUTPUT') {
-    const before = JSON.stringify(target.configs || []);
-    applyEtlNodeConfigs(target, { tableName });
-    changed = before !== JSON.stringify(target.configs || []);
-    if (changed) target.state = 'INITED';
-  } else {
-    const catalog = await smartbixApi('datamining/nodes');
-    const template = (catalog.defaultOptions || [])
-      .find((item) => item.name === 'SMARTBI_DATASET_OUTPUT');
-    if (!template || template.inputs?.length !== 1 || template.outputs?.length !== 0) {
-      throw new Error('SMARTBI_DATASET_OUTPUT template is unavailable or has an unexpected port contract');
+    const configured = configureEtlNode(target, template, { tableName });
+    output = configured.node;
+    changed = configured.changed;
+    if (changed) {
+      output.state = 'INITED';
+      graph = {
+        ...graph,
+        nodes: graph.nodes.map((node) => node.id === output.id ? output : node),
+      };
     }
+  } else {
     output = instantiateEtlNode(template, Number(target.x || 0), Number(target.y || 0));
+    output = configureEtlNode(output, template, { tableName }).node;
     output.smartbiCliKey = 'materialized_dataset_output';
-    applyEtlNodeConfigs(output, { tableName });
-    graph.nodes = graph.nodes.filter((item) => item !== target);
-    graph.nodes.push(output);
     const previousLink = inbound[0];
-    graph.links = graph.links.filter((link) => link !== previousLink);
-    graph.links.push({
-      from: previousLink.from,
-      to: output.id,
-      inputPortId: previousLink.inputPortId,
-      outputPortId: output.inputs[0].id,
-    });
+    graph = {
+      ...graph,
+      nodes: graph.nodes.filter((item) => item.id !== target.id).concat(output),
+      links: graph.links.filter((link) => link !== previousLink).concat({
+        ...previousLink,
+        to: output.id,
+        outputPortId: output.inputs[0].id,
+      }),
+    };
     changed = true;
   }
-  changed = layoutLinearEtlGraph(graph) || changed;
-  const saved = changed ? await saveEtlGraph(processDag, graph) : processDag;
+  graph = assertExecutableEtlGraph(graph, { allowDatasetOutput: true });
+  const verified = changed
+    ? await saveEtlGraph(processDag, graph, { definitionChanged: true })
+    : loaded;
+  const persistedOutput = verified.graph.nodes.find((node) => node.id === output.id);
+  if (!persistedOutput) throw new Error(`ETL dataset output was not persisted: ${output.id}`);
   safeOutput({
     ok: true,
     changed,
-    flowId: saved.id || processDag.id,
-    flowName: saved.name || processDag.name,
+    flowId: verified.processDag.id || processDag.id,
+    flowName: verified.processDag.name || processDag.name,
     output: {
-      id: output.id,
-      name: output.name,
-      alias: output.alias,
+      id: persistedOutput.id,
+      name: persistedOutput.name,
+      alias: persistedOutput.alias,
       tableName,
     },
   });
@@ -4190,33 +7910,32 @@ async function cmdEtlOutputDataset(flowId, requestedName) {
 
 async function cmdEtlGet(flowId) {
   const { processDag, graph } = await loadEtlFlow(flowId);
+  const bindings = extractEtlTableBindings(graph);
   safeOutput({
     ok: true,
     id: processDag.id,
     name: processDag.name,
+    description: processDag.desc || '',
     state: processDag.state,
-    currentInstanceId: processDag.currentInstanceId,
-    nodes: (graph.nodes || []).map((node) => ({
+    currentInstanceId: processDag.currentInstanceId || null,
+    version: graph.version || null,
+    sources: bindings.sources,
+    targets: bindings.targets,
+    nodes: graph.nodes.map((node) => ({
+      ...describeEtlNodeTemplate(node),
       id: node.id,
-      name: node.name,
-      alias: node.alias,
       state: node.state,
-      inputs: (node.inputs || []).map((port) => port.id),
-      outputs: (node.outputs || []).map((port) => port.id),
+      x: node.x,
+      y: node.y,
+      instanceKey: node.smartbiCliKey || null,
+      configuredKeys: node.smartbiCliConfiguredKeys || [],
     })),
-    links: graph.links || [],
+    links: graph.links.map(sanitizeEtlContractValue),
   });
 }
 
 function summarizePortResult(result) {
-  const features = Array.isArray(result?.features) ? result.features : [];
-  const csv = result?.csv;
-  return {
-    featureCount: features.length,
-    fields: features.map((feature) => feature.alias || feature.name).filter(Boolean),
-    rowCount: Array.isArray(csv) ? csv.length : null,
-    available: Boolean(features.length || csv),
-  };
+  return summarizeEtlPortResult(result);
 }
 
 async function cmdEtlRunArgs(argsList) {
@@ -4226,158 +7945,235 @@ async function cmdEtlRunArgs(argsList) {
     '--confirm-target',
     { required: false },
   );
-  if (positional.length !== 1) {
-    throw new Error('etl-run requires <flowId> [--confirm-target <exactTargetName>]');
+  if (positional.length !== 1 || !confirmation) {
+    throw new Error('etl-run requires <flowId> --confirm-target <exactTargetName>');
   }
   await cmdEtlRun(positional[0], confirmation);
 }
 
-async function cmdEtlRun(flowId, confirmTargetName = null) {
-  const { processDag, graph } = await loadEtlFlow(flowId, { requireOwned: true });
-  assertCompetitionEtlGraph(PLATFORM_PROFILE, graph);
-  const materialTargetNode = (graph.nodes || []).find((node) => (
-    node.type === 'JDBC_DATATARGER_OVERWRITE'
-    || node.name === 'JDBC_DATATARGER_OVERWRITE'
-  ));
-  if (materialTargetNode) {
-    if (!confirmTargetName) {
-      throw new Error('etl-run requires --confirm-target <exactTargetName> for materialized overwrite');
-    }
-    const targetRef = parseEtlTargetReference(graph);
-    const targetMeta = await smartbixApi(
-      `miningdatasource/table?tableId=${encodeURIComponent(targetRef.tableId)}`,
-    );
-    requireNamespacedResource(targetMeta, 'materialized ETL target table');
-    assertExactResourceConfirmation(targetMeta, confirmTargetName);
+async function loadVerifiedEtlTableEvidence(binding, label) {
+  const parsed = parseImportedTableId(binding.tableId);
+  const [metadata, table] = await Promise.all([
+    smartbixApi(`miningdatasource/table?tableId=${encodeURIComponent(binding.tableId)}`),
+    smartbixApi('datasets/table', {
+      method: 'POST',
+      body: {
+        dataSourceId: binding.dataSourceId,
+        tableId: binding.tableId,
+        tableName: parsed.tableName,
+      },
+    }),
+  ]);
+  requireNamespacedResource(metadata, label);
+  if (
+    metadata.id
+    && String(metadata.id).toLocaleLowerCase() !== String(binding.tableId).toLocaleLowerCase()
+  ) {
+    throw new Error(`${label} reopened with a different table identity`);
   }
+  return {
+    binding,
+    metadata,
+    table,
+    schema: normalizeEtlSchema(table?.fields || [], `${label} schema`),
+  };
+}
+
+async function cmdEtlRun(flowId, confirmTargetName = null) {
+  const loaded = await loadEtlFlow(flowId, { requireOwned: true });
+  const { processDag } = loaded;
+  const graph = assertExecutableEtlGraph(loaded.graph);
+  const liveCatalog = normalizeEtlNodeCatalog(await smartbixApi('datamining/nodes'));
+  for (const node of graph.nodes) {
+    if (node.name === 'JDBC_DATATARGER_OVERWRITE') continue;
+    const template = liveCatalog.defaultOptions.find((candidate) => candidate.name === node.name);
+    if (!template) throw new Error(`persisted ETL node has no current live template: ${node.name}`);
+    assertVerifiedEtlTemplate(template, 'execute');
+    const checked = configureEtlNode(
+      node,
+      template,
+      {},
+      node.smartbiCliConfiguredKeys || [],
+    );
+    if (checked.changed) {
+      throw new Error(`persisted ETL node contract is stale and must be explicitly resaved: ${node.name}`);
+    }
+  }
+  assertCompetitionEtlGraph(PLATFORM_PROFILE, graph);
+  if (!processDag.pid) throw new Error('ETL flow has no persisted catalog parent');
+  await assertOwnedCatalogParent(processDag.pid);
+  await assertCompetitionResourceDirectChild(processDag.pid, processDag.id, 'ETL flow');
+
+  const { sources, targets } = extractEtlTableBindings(graph);
+  if (targets.length !== 1) {
+    throw new Error(`ETL run requires exactly one persisted overwrite target; found ${targets.length}`);
+  }
+  const [targetBinding] = targets;
+  if (!confirmTargetName) {
+    throw new Error('etl-run requires --confirm-target <exactTargetName> for materialized overwrite');
+  }
+  const personalFolder = await locatePersonalFolder();
+  const personalChildren = await listCatalogChildren(
+    personalFolder.folderId,
+    'personal acquisition folder',
+  );
+  assertCompetitionEtlTableBindings(PLATFORM_PROFILE, {
+    sources,
+    target: targetBinding,
+    personalFolder,
+    personalChildren,
+  });
+  const [sourceEvidenceBefore, targetEvidenceBefore] = await Promise.all([
+    Promise.all(sources.map((source, index) => (
+      loadVerifiedEtlTableEvidence(source, `ETL source table ${index}`)
+    ))),
+    loadVerifiedEtlTableEvidence(targetBinding, 'materialized ETL target table'),
+  ]);
+  assertExactResourceConfirmation(targetEvidenceBefore.metadata, confirmTargetName);
+
+  if (processDag.currentInstanceId) {
+    const priorState = await smartbixApi(
+      `datamining/flowstate/${encodeURIComponent(processDag.currentInstanceId)}`,
+    );
+    if (!isEtlTerminalState(priorState?.state)) {
+      throw new Error(`ETL flow already has a non-terminal current instance: ${processDag.currentInstanceId}`);
+    }
+    const current = await loadEtlFlow(flowId, { requireOwned: true });
+    assertEtlGraphPersisted(graph, current.graph);
+    if (current.processDag.currentInstanceId !== processDag.currentInstanceId) {
+      throw new Error('ETL current instance changed during run preflight');
+    }
+  }
+
   const runDag = {
-    id: processDag.id,
-    name: processDag.name,
-    alias: processDag.alias,
+    ...processDag,
     cache: String(processDag.cache) === 'true',
-    desc: processDag.desc,
+    smallBatch: String(processDag.smallBatch) === 'true',
     state: null,
-    createdDate: processDag.createdDate,
-    lastModifiedDate: processDag.lastModifiedDate,
     nodeStates: null,
     flowRunInfo: null,
-    path: processDag.path,
     dagRemark: null,
     dagParam: null,
-    smallBatch: String(processDag.smallBatch) === 'true',
     priority: null,
     dagId: null,
-    define: processDag.define,
+    define: JSON.stringify(graph),
     endTime: null,
     startTime: null,
-    runningInfo: { dagState: processDag.state || 'INITED', costTime: 0 },
-    currentInstanceId: processDag.currentInstanceId,
-    param: processDag.param,
-    callerId: processDag.callerId,
+    runningInfo: {
+      ...(processDag.runningInfo && typeof processDag.runningInfo === 'object'
+        ? processDag.runningInfo
+        : {}),
+      dagState: processDag.state || 'INITED',
+      costTime: 0,
+    },
   };
   const started = await smartbixApi('datamining/processflowdefine', {
     method: 'POST',
     body: { processDag: runDag, dagRemark: null, useCache: false },
     timeoutMs: 120000,
   });
-  const instanceId = started.id;
-  if (!instanceId) throw new Error(`ETL run did not return an instance id: ${JSON.stringify(started)}`);
+  const instanceId = String(started?.id || '').trim();
+  if (!instanceId) throw new Error('ETL run did not return an instance id');
 
   let state;
   for (let attempt = 0; attempt < 120; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 1000));
     state = await smartbixApi(`datamining/flowstate/${encodeURIComponent(instanceId)}`);
-    if (isEtlTerminalState(state.state)) break;
+    if (isEtlTerminalState(state?.state)) break;
   }
   if (!state || !isEtlTerminalState(state.state)) {
-    throw new Error(`ETL run timed out: ${instanceId}`);
+    throw new Error(`ETL run timed out with an unresolved instance: ${instanceId}`);
   }
-  const nodeStates = assertEtlRunSucceeded(
+
+  const completed = await loadEtlFlow(flowId, { requireOwned: true });
+  assertEtlGraphPersisted(graph, completed.graph);
+  if (completed.processDag.currentInstanceId !== instanceId) {
+    throw new Error('ETL terminal result is not the flow current instance');
+  }
+  const currentRun = assertCurrentEtlRunEvidence(
+    completed.processDag,
+    completed.graph,
     state,
-    (graph.nodes || []).map((node) => node.id).filter(Boolean),
+    targetBinding,
   );
 
-  let previewNode = null;
-  let previewPortId = null;
-  if (materialTargetNode) {
-    const inbound = (graph.links || []).filter((link) => link.to === materialTargetNode.id);
-    if (inbound.length !== 1) {
-      throw new Error(`materialized ETL target must have one inbound link; found ${inbound.length}`);
-    }
-    previewNode = (graph.nodes || []).find((node) => node.id === inbound[0].from);
-    previewPortId = inbound[0].inputPortId || previewNode?.outputs?.[0]?.id;
-  } else {
-    const fromIds = new Set((graph.links || []).map((link) => link.from));
-    const terminalNodes = (graph.nodes || []).filter((node) => !fromIds.has(node.id));
-    if (terminalNodes.length === 1) {
-      [previewNode] = terminalNodes;
-      previewPortId = previewNode.outputs?.[0]?.id;
-    }
+  const targetNode = completed.graph.nodes.find((node) => node.id === targetBinding.nodeId);
+  const inbound = completed.graph.links.filter((link) => link.to === targetNode?.id);
+  if (!targetNode || inbound.length !== 1) {
+    throw new Error(`materialized ETL target must have one inbound link; found ${inbound.length}`);
+  }
+  const previewNode = completed.graph.nodes.find((node) => node.id === inbound[0].from);
+  const previewPortId = inbound[0].inputPortId;
+  if (
+    !previewNode?.id
+    || !previewNode.outputs.some((port) => port.id === previewPortId)
+  ) {
+    throw new Error('materialized ETL target has no verified terminal preview port');
+  }
+  const previewResult = await smartbixApi(
+    `miningnode/portresult/${encodeURIComponent(`${previewNode.id}-${instanceId}`)}/${encodeURIComponent(previewPortId)}/csv`,
+  );
+  const preview = summarizePortResult(previewResult);
+  if (!preview.available || !preview.schemaAvailable || !Number.isInteger(preview.rowCount)) {
+    throw new Error('ETL completed without a verifiable terminal row and typed-field preview');
   }
 
-  let preview = null;
-  if (previewNode?.id && previewPortId) {
-    try {
-      const result = await smartbixApi(
-        `miningnode/portresult/${encodeURIComponent(`${previewNode.id}-${instanceId}`)}/${encodeURIComponent(previewPortId)}/csv`,
-      );
-      preview = summarizePortResult(result);
-    } catch {
-      preview = { available: false, featureCount: 0, fields: [], rowCount: null };
-    }
+  const refreshedChildren = await listCatalogChildren(
+    personalFolder.folderId,
+    'personal acquisition folder after ETL run',
+  );
+  assertCompetitionEtlTableBindings(PLATFORM_PROFILE, {
+    sources,
+    target: targetBinding,
+    personalFolder,
+    personalChildren: refreshedChildren,
+  });
+  const [sourceEvidenceAfter, targetEvidenceAfter] = await Promise.all([
+    Promise.all(sources.map((source, index) => (
+      loadVerifiedEtlTableEvidence(source, `reopened ETL source table ${index}`)
+    ))),
+    loadVerifiedEtlTableEvidence(targetBinding, 'reopened materialized ETL target table'),
+  ]);
+  assertExactResourceConfirmation(targetEvidenceAfter.metadata, confirmTargetName);
+  for (let index = 0; index < sourceEvidenceBefore.length; index += 1) {
+    assertEtlSchemasIdentical(
+      sourceEvidenceBefore[index].schema,
+      sourceEvidenceAfter[index].schema,
+      {
+        expectedLabel: `ETL source ${index} preflight schema`,
+        actualLabel: `ETL source ${index} reopened schema`,
+      },
+    );
   }
-  if (PLATFORM_PROFILE && (!preview?.available || !Number.isInteger(preview.rowCount))) {
-    throw new Error('competition ETL completed without a verifiable terminal row/field preview');
-  }
+  assertEtlSchemasIdentical(targetEvidenceBefore.schema, targetEvidenceAfter.schema, {
+    expectedLabel: 'ETL target preflight schema',
+    actualLabel: 'ETL target reopened schema',
+  });
+  const targetSchema = assertEtlSchemasIdentical(preview.schema, targetEvidenceAfter.schema, {
+    expectedLabel: 'ETL terminal output schema',
+    actualLabel: 'ETL target reopened schema',
+  });
 
-  let materializedTarget = null;
-  if (materialTargetNode) {
-    const targetRef = parseEtlTargetReference(graph);
-    const parsedTarget = parseImportedTableId(targetRef.tableId);
-    const [metadata, table] = await Promise.all([
-      smartbixApi(`miningdatasource/table?tableId=${encodeURIComponent(targetRef.tableId)}`),
-      smartbixApi('datasets/table', {
-        method: 'POST',
-        body: {
-          dataSourceId: targetRef.dataSourceId,
-          tableId: targetRef.tableId,
-          tableName: parsedTarget.tableName,
-        },
-      }),
-    ]);
-    requireNamespacedResource(metadata, 'materialized ETL target table');
-    const fields = (table?.fields || []).map((field) => ({
-      name: field.name,
-      alias: field.alias,
-      dataType: field.dataType,
-    }));
-    if (fields.length === 0) {
-      throw new Error(`materialized ETL target has no readable fields: ${targetRef.tableId}`);
-    }
-    if (preview?.featureCount && preview.featureCount !== fields.length) {
-      throw new Error(
-        `materialized ETL field reconciliation failed: preview=${preview.featureCount}, target=${fields.length}`,
-      );
-    }
-    materializedTarget = {
-      id: targetRef.tableId,
-      name: metadata.alias || metadata.name,
-      fieldCount: fields.length,
-      fields,
-      rowCount: preview?.rowCount ?? null,
-      reconciled: Boolean(preview?.available && preview.featureCount === fields.length),
-    };
-  } else if (PLATFORM_PROFILE) {
-    throw new Error('competition ETL must persist a materialized target table');
-  }
+  const materializedTarget = {
+    id: targetBinding.tableId,
+    name: targetEvidenceAfter.metadata.alias || targetEvidenceAfter.metadata.name,
+    fieldCount: targetSchema.length,
+    fields: targetSchema,
+    terminalPreviewRowCount: preview.rowCount,
+    terminalPreviewRowCountComplete: preview.rowCountComplete,
+    schemaVerified: true,
+    reopened: true,
+    reconciled: false,
+    reconciliationEvidence: 'unavailable-no-authoritative-reopened-target-row-count',
+  };
 
   safeOutput({
     ok: true,
-    flowId: processDag.id,
-    flowName: processDag.name,
-    instanceId,
+    flowId: completed.processDag.id,
+    flowName: completed.processDag.name,
+    instanceId: currentRun.instanceId,
     state: state.state,
-    nodes: nodeStates.map((node) => ({
+    nodes: currentRun.nodeStates.map((node) => ({
       id: node.id,
       name: node.name,
       alias: node.alias,
@@ -4389,83 +8185,92 @@ async function cmdEtlRun(flowId, confirmTargetName = null) {
   });
 }
 
-async function cmdEtlRowNumber(flowId, columnName = 'row_number') {
+async function cmdEtlRowNumberArgs(argsList) {
+  const { positional, confirmation } = parseExactConfirmationArgs(
+    argsList,
+    'etl-row-number',
+    '--confirm-name',
+    { required: false },
+  );
+  if (positional.length < 1 || positional.length > 2 || !confirmation) {
+    throw new Error(
+      'etl-row-number requires <flowId> [column] --confirm-name <exactFlowName>',
+    );
+  }
+  await cmdEtlRowNumber(positional[0], positional[1], confirmation);
+}
+
+async function cmdEtlRowNumber(
+  flowId,
+  columnName = 'row_number',
+  confirmFlowName = null,
+) {
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(columnName)) {
     throw new Error(`invalid row-number column name: ${columnName}`);
   }
-  const { processDag, graph } = await loadEtlFlow(flowId, { requireOwned: true });
-  graph.nodes ||= [];
-  let node = graph.nodes.find((item) => item.name === 'DATAPREPARE_ROW_NUMBER');
+  const loaded = await loadEtlFlow(flowId, { requireOwned: true });
+  assertExactResourceConfirmation(loaded.processDag, confirmFlowName);
+  const { processDag } = loaded;
+  let { graph } = loaded;
+  const catalog = normalizeEtlNodeCatalog(await smartbixApi('datamining/nodes'));
+  const template = catalog.defaultOptions.find((item) => item.name === 'DATAPREPARE_ROW_NUMBER');
+  if (!template) throw new Error('DATAPREPARE_ROW_NUMBER live template is unavailable');
+  assertVerifiedEtlTemplate(template, 'insert');
+  const existing = graph.nodes.filter((item) => item.name === 'DATAPREPARE_ROW_NUMBER');
+  if (existing.length > 1) throw new Error(`ETL contains multiple row-number nodes: ${existing.length}`);
+  let [node] = existing;
   let changed = false;
 
   if (node) {
-    const config = node.configs?.find((item) => item.name === 'name');
-    if (!config) throw new Error('existing row-number node has no name config');
-    changed = config.value !== columnName;
-    config.value = columnName;
-    if (changed) node.state = 'INITED';
-  } else {
-    const fromIds = new Set(graph.links.map((link) => link.from));
-    const sinks = graph.nodes.filter((item) => !fromIds.has(item.id));
-    if (sinks.length !== 1 || !sinks[0].outputs?.[0]?.id) {
-      throw new Error(`ETL must have exactly one connectable sink; found ${sinks.length}`);
+    const configured = configureEtlNode(
+      node,
+      template,
+      { name: columnName },
+      node.smartbiCliConfiguredKeys || [],
+    );
+    node = configured.node;
+    changed = configured.changed;
+    if (changed) {
+      node.state = 'INITED';
+      graph = {
+        ...graph,
+        nodes: graph.nodes.map((candidate) => candidate.id === node.id ? node : candidate),
+      };
     }
-    const sink = sinks[0];
-    node = {
-      id: randomBytes(16).toString('hex'),
-      name: 'DATAPREPARE_ROW_NUMBER',
-      type: 'DATAPREPARE_ROW_NUMBER',
-      alias: '增加序列号',
-      configs: [{
-        name: 'name',
-        lable: '序列列名称',
-        type: 'string',
-        desc: '请输入新增序列号的名称，不能含有：空格,;{}()\\n\\t=等字符。',
-        required: true,
-        typeOptions: null,
-        options: null,
-        value: columnName,
-        isHidden: null,
-        disable: null,
-        control: { controlType: 'SxMiningInput', controlProps: { type: 'text', rows: 1 } },
-        extra: null,
-        iframeUrl: null,
-      }],
-      combineConfigs: [],
-      path: null,
-      inputs: [{ id: randomBytes(16).toString('hex'), order: 0, types: ['DATASET'] }],
-      outputs: [{ id: randomBytes(16).toString('hex'), order: 0, types: ['DATASET'] }],
-      isCompatible: null,
-      noOutputData: null,
-      isSource: null,
-      desc: null,
-      needCache: false,
-      state: 'INITED',
-      nodeIcon: 'sx-tree-node__mining-icon icon-16 sx-icon-Append-ID-columns',
-      expand: null,
-      extended: null,
-      nodeDefine: null,
-      x: Number(sink.x || 0) + 120,
-      y: Number(sink.y || 0),
-    };
-    graph.nodes.push(node);
-    graph.links.push({
-      from: sink.id,
-      to: node.id,
-      inputPortId: sink.outputs[0].id,
-      outputPortId: node.inputs[0].id,
-    });
+  } else {
+    const terminals = graph.nodes.filter((candidate) => candidate.outputs.length === 0);
+    if (terminals.length !== 1) {
+      throw new Error(`ETL must have one zero-output terminal; found ${terminals.length}`);
+    }
+    node = instantiateEtlNode(template, 0, 0);
+    node = configureEtlNode(node, template, { name: columnName }).node;
+    node.smartbiCliKey = 'row_number';
+    positionEtlNodeBeforeTarget(node, terminals[0]);
+    graph = spliceUnaryBeforeTerminal(graph, node).graph;
     changed = true;
   }
 
-  const saved = changed ? await saveEtlGraph(processDag, graph) : processDag;
+  graph = assertExecutableEtlGraph(graph);
+  const bindingCheck = extractEtlTableBindings(graph);
+  if (bindingCheck.targets.length !== 1) throw new Error('ETL mutation lost its overwrite target');
+  assertDistinctEtlTableIds(
+    bindingCheck.sources.map((source) => source.tableId),
+    bindingCheck.targets[0].tableId,
+  );
+  assertCompetitionEtlGraph(PLATFORM_PROFILE, graph);
+  const verified = changed
+    ? await saveEtlGraph(processDag, graph, { definitionChanged: true })
+    : loaded;
+  const persisted = verified.graph.nodes.find((candidate) => candidate.id === node.id);
+  if (!persisted) throw new Error(`ETL row-number node was not persisted: ${node.id}`);
   safeOutput({
     ok: true,
     changed,
-    flowId: saved.id || processDag.id,
-    flowName: saved.name || processDag.name,
-    nodeId: node.id,
+    flowId: verified.processDag.id || processDag.id,
+    flowName: verified.processDag.name || processDag.name,
+    nodeId: persisted.id,
     column: columnName,
+    configuredKeys: persisted.smartbiCliConfiguredKeys || [],
   });
 }
 
@@ -4475,16 +8280,36 @@ function safeOutput(value) {
 
 // ---- Playwright fallback (UI-only operations) ----
 
+function isConfiguredSmartbiPage(page, { workspace = false } = {}) {
+  try {
+    const candidate = new URL(page.url());
+    const base = new URL(BASE_URL);
+    if (candidate.origin !== base.origin) return false;
+    return workspace
+      ? candidate.pathname === `${base.pathname}/index.jsp`
+      : (
+        candidate.pathname === base.pathname
+        || candidate.pathname.startsWith(`${base.pathname}/`)
+      );
+  } catch {
+    return false;
+  }
+}
+
 async function connect() {
   const { chromium } = await loadPlaywright();
   const browser = await chromium.connectOverCDP(CDP_URL, { timeout: 10_000 });
-  const context = browser.contexts()[0];
-  if (!context) throw new Error('No Chrome context found');
-  return { browser, context };
+  const contexts = browser.contexts().filter(
+    (candidate) => candidate.pages().some((page) => isConfiguredSmartbiPage(page)),
+  );
+  if (contexts.length !== 1) {
+    throw new Error(`expected exactly one Smartbi browser context; found ${contexts.length}`);
+  }
+  return { browser, context: contexts[0] };
 }
 
 function workspacePage(context) {
-  return context.pages().find((page) => page.url().includes('/smartbi/vision/index.jsp'));
+  return context.pages().find((page) => isConfiguredSmartbiPage(page, { workspace: true }));
 }
 
 async function loadOwnedCatalogResource(resourceId, expectedTypes = []) {
@@ -4557,6 +8382,7 @@ async function cmdUiDashboardCheck(resourceId) {
 async function cmdNav(moduleName) {
   const MODULES = new Set(['数据门户', '数据连接', '数据准备', '分析展现', 'AIChat', 'Agent', '数据挖掘', '运维设置']);
   if (!MODULES.has(moduleName)) throw new Error(`Unsupported module: ${moduleName}`);
+  assertCompetitionGenericAccess(PLATFORM_PROFILE, { kind: 'nav', moduleName });
   const { context } = await connect();
   const workspace = workspacePage(context);
   if (!workspace) throw new Error(`Smartbi workspace not found. Open ${LOGIN_URL}`);
@@ -4601,27 +8427,15 @@ function parseSetupArgs(argsList) {
 }
 
 function normalizeNaming(mode, value) {
-  if (mode !== 'prefix' && mode !== 'suffix') {
-    throw new Error(`invalid naming mode: ${mode} (use prefix or suffix)`);
-  }
-  const normalized = String(value || '').replace(/[^\w.-]/g, '');
-  if (!normalized) throw new Error('namespace value must not be empty');
-  return { mode, value: normalized };
+  return normalizeNamingConfig(mode, value, { maxLength: MAX_TABLE_NAME });
 }
 
 function validateCredentialsFile(path) {
-  if (!existsSync(path)) throw new Error(`credentials file not found: ${path}`);
-  const [account, password] = readFileSync(path, 'utf8').split(/\r?\n/);
-  if (!account || !password) {
-    throw new Error(`credentials file must contain account on line 1 and password on line 2: ${path}`);
-  }
-  const { mode } = statSync(path);
-  if ((mode & 0o777) !== 0o600) {
-    throw new Error(`credentials file must use mode 0600: ${path}`);
-  }
+  parseCredentials(readPrivateCredentialFile(path));
 }
 
 async function persistSetup(saved) {
+  assertCredentialTransport(saved.baseUrl);
   validateCredentialsFile(saved.credFile);
   const { mkdirSync } = await import('node:fs');
   mkdirSync(dirname(CONFIG_FILE), { recursive: true });
@@ -4747,7 +8561,10 @@ async function runInteractiveSetup() {
 
 async function cmdSetup(argsList) {
   const options = parseSetupArgs(argsList);
-  if (options.interactive || (argsList.length === 0 && process.stdin.isTTY && process.stdout.isTTY)) {
+  const interactive = options.interactive
+    || (argsList.length === 0 && process.stdin.isTTY && process.stdout.isTTY);
+  if (STARTUP_ERROR && !interactive && argsList.length === 0) throw STARTUP_ERROR;
+  if (interactive) {
     await runInteractiveSetup();
     return;
   }
@@ -4809,7 +8626,7 @@ async function cmdConfig() {
   safeOutput({
     configFile: CONFIG_FILE,
     baseUrl: BASE_URL,
-    cdpUrl: CDP_URL,
+    cdpUrl: CDP_DISPLAY_URL,
     credFile: CRED_FILE,
     codecCacheFile: CODEC_CACHE_FILE,
     naming: { mode: NAMING_MODE, value: NAMESPACE },
@@ -4822,6 +8639,7 @@ async function cmdConfig() {
       'SMARTBI_CONFIG_FILE',
       'SMARTBI_BASE_URL',
       'SMARTBI_CDP_URL',
+      'SMARTBI_ALLOW_REMOTE_CDP',
       'SMARTBI_CRED_FILE',
       'SMARTBI_PLAYWRIGHT_PATH',
       'SMARTBI_BROWSER_PATH',
@@ -4853,12 +8671,16 @@ async function cmdDoctor(argsList) {
   if (argsList.includes('--require-browser') && !report.readiness.browserFallback) {
     throw new Error('browser fallback is not ready; run scripts/install.sh --install-playwright');
   }
-  safeOutput(report);
+  safeOutput({
+    ...report,
+    cdp: { ...report.cdp, url: CDP_DISPLAY_URL },
+  });
 }
 
 // ---- main ----
 const [,, command, ...args] = process.argv;
 try {
+  if (STARTUP_ERROR && command !== 'setup') throw STARTUP_ERROR;
   switch (command) {
     case 'login': await cmdLogin(); break;
     case 'health': await cmdHealth(); break;
@@ -4869,29 +8691,41 @@ try {
     case 'plain-post': await cmdPlainPost(args[0], args[1]); break;
     case 'model-get': await cmdModelGet(args[0]); break;
     case 'model-create': await cmdModelCreateArgs(args); break;
+    case 'model-create-relational': await cmdModelCreateRelational(args[0], args[1], args[2], args.slice(3).join(' ')); break;
+    case 'model-hierarchy-add': await cmdModelHierarchyAddArgs(args); break;
+    case 'model-calc-measure-add': await cmdModelCalcMeasureAddArgs(args); break;
     case 'model-clone': await cmdModelClone(args[0], args[1], args[2], args[3]); break;
     case 'analysis-get': await cmdAnalysisGet(args[0]); break;
     case 'analysis-create': await cmdAnalysisCreate(args[0], args[1], args[2], args[3], args[4], args[5]); break;
+    case 'analysis-create-hierarchy': await cmdAnalysisCreateHierarchy(args[0], args[1], args[2], args[3], args[4], args.slice(5).join(' ')); break;
     case 'analysis-repair': await cmdAnalysisRepairArgs(args); break;
     case 'analysis-run': await cmdAnalysisRun(args[0]); break;
     case 'analysis-profile': await cmdAnalysisProfile(args[0], args[1]); break;
     case 'analysis-clone': await cmdAnalysisClone(args[0], args[1], args[2], args[3]); break;
     case 'dashboard-get': await cmdDashboardGet(args[0]); break;
     case 'dashboard-create-multi': await cmdDashboardCreateMulti(args[0], args[1], args[2], args[3], args.slice(4).join(' ')); break;
+    case 'dashboard-create-interactive': await cmdDashboardCreateInteractive(args[0], args[1], args[2], args[3], args.slice(4).join(' ')); break;
+    case 'dashboard-jump-add': await cmdDashboardJumpAddArgs(args); break;
     case 'dashboard-repair-multi': await cmdDashboardRepairMultiArgs(args); break;
     case 'dashboard-create': await cmdDashboardCreate(args[0], args[1], args[2], args[3], args[4], args[5]); break;
     case 'dashboard-clone': await cmdDashboardClone(args[0], args[1], args[2], args[3]); break;
-    case 'aichat-query': await cmdAichat(args[0], args.slice(1).join(' ')); break;
-    case 'aichat-report': await cmdAichat(args[0], args.slice(1).join(' '), { report: true }); break;
-    case 'aichat-export': await cmdAichat(args[0], args.slice(2).join(' '), { report: true, outputPath: args[1] }); break;
+    case 'aichat-query': await cmdAichat(parseAichatRunArgs(args, {
+      command: 'aichat-query',
+      mode: 'query',
+    })); break;
+    case 'aichat-report': await cmdAichat(parseAichatRunArgs(args, {
+      command: 'aichat-report',
+      mode: 'report',
+    })); break;
+    case 'aichat-export': await cmdAichat(parseAichatExportArgs(args)); break;
     case 'aichat-graph-list': await cmdAichatGraphList(args.join(' ')); break;
     case 'aichat-graph-fields': await cmdAichatGraphFields(args[0]); break;
     case 'aichat-graph-status': await cmdAichatGraphStatus(args[0]); break;
-    case 'aichat-graph-build': await cmdAichatGraphBuild(args[0], args[1]); break;
+    case 'aichat-graph-build': await cmdAichatGraphBuildArgs(args); break;
     case 'agent-get': await cmdAgentGet(args[0]); break;
     case 'catalog-audit': await cmdCatalogAudit(args[0]); break;
     case 'agent-create': await cmdAgentCreate(args[0], args[1], args[2], args[3], args[4]); break;
-    case 'agent-run': await cmdAgentRun(args[0], args.slice(1).join(' ')); break;
+    case 'agent-run': await cmdAgentRunArgs(args); break;
     case 'agent-deploy': await cmdAgentDeployArgs(args); break;
     case 'tree': await cmdTree(args[0]); break;
     case 'competition-home': await cmdCompetitionHome(args); break;
@@ -4901,15 +8735,15 @@ try {
     case 'resource-copy': await cmdResourceCopy(args); break;
     case 'resource-delete': await cmdResourceDelete(parseResourceDeleteArgs(args)); break;
     case 'upload': await cmdUploadArgs(args); break;
-    case 'etl-describe': await cmdEtlDescribe(args[0], args.slice(1).join(' ')); break;
+    case 'etl-describe': await cmdEtlDescribeArgs(args); break;
     case 'etl-create': await cmdEtlCreateArgs(args); break;
     case 'etl-union-create': await cmdEtlUnionCreateArgs(args); break;
     case 'etl-node-list': await cmdEtlNodeList(args.join(' ')); break;
-    case 'etl-insert': await cmdEtlInsert(args[0], args[1], args[2], args[3]); break;
-    case 'etl-output-dataset': await cmdEtlOutputDataset(args[0], args[1]); break;
+    case 'etl-insert': await cmdEtlInsertArgs(args); break;
+    case 'etl-output-dataset': await cmdEtlOutputDatasetArgs(args); break;
     case 'etl-get': await cmdEtlGet(args[0]); break;
     case 'etl-run': await cmdEtlRunArgs(args); break;
-    case 'etl-row-number': await cmdEtlRowNumber(args[0], args[1]); break;
+    case 'etl-row-number': await cmdEtlRowNumberArgs(args); break;
     case 'nav': await cmdNav(args[0]); break;
     case 'ui-open': await cmdUiOpen(args[0]); break;
     case 'ui-dashboard-check': await cmdUiDashboardCheck(args[0]); break;
@@ -4929,10 +8763,40 @@ try {
       orderRiskWarning: 'https://wiki.smartbi.com.cn/pages/viewpage.action?pageId=168629228',
     }); break;
     default:
-      throw new Error(`Unknown command: ${command}\nusage: smartbi.mjs <setup|doctor|login|health|config|codec-status|invoke|api-get|api-post|plain-get|plain-post|tree|catalog-audit|competition-home|folder-create|resource-rename|resource-move|resource-copy|resource-delete|upload|etl-node-list|etl-create|etl-union-create|etl-describe|etl-insert|etl-output-dataset|etl-get|etl-run|etl-row-number|model-get|model-create|model-clone|analysis-get|analysis-create|analysis-repair|analysis-run|analysis-profile|analysis-clone|dashboard-get|dashboard-create|dashboard-create-multi|dashboard-repair-multi|dashboard-clone|aichat-graph-list|aichat-graph-status|aichat-graph-fields|aichat-graph-build|aichat-query|aichat-report|aichat-export|agent-get|agent-create|agent-run|agent-deploy|nav|ui-open|ui-dashboard-check|manuals> ...`);
+      throw new Error(
+        `Unknown command: ${command}\nusage: smartbi.mjs <setup|doctor|login|health|config|codec-status|invoke|api-get|api-post|plain-get|plain-post|tree|catalog-audit|competition-home|folder-create|resource-rename|resource-move|resource-copy|resource-delete|upload|etl-node-list|etl-create|etl-union-create|etl-describe|etl-insert|etl-output-dataset|etl-get|etl-run|etl-row-number|model-get|model-create|model-create-relational|model-hierarchy-add|model-calc-measure-add|model-clone|analysis-get|analysis-create|analysis-create-hierarchy|analysis-repair|analysis-run|analysis-profile|analysis-clone|dashboard-get|dashboard-create|dashboard-create-multi|dashboard-create-interactive|dashboard-jump-add|dashboard-repair-multi|dashboard-clone|aichat-graph-list|aichat-graph-status|aichat-graph-fields|aichat-graph-build|aichat-query|aichat-report|aichat-export|agent-get|agent-create|agent-run|agent-deploy|nav|ui-open|ui-dashboard-check|manuals>`
+        + '\nupload: <localFile> [tableName] [--worksheet <exactWorksheetName>] '
+        + '[--replace --confirm-target <exactName>] [--source-url <publicProvenanceUrl>] '
+        + '(local CSV/TXT/XLS/XLSX only; --source-url is competition-profile provenance and is never fetched)'
+        + '\netl-describe: <flowId> <description> --confirm-name <exactFlowName>'
+        + '\netl-insert: <flowId> <nodeName> [configJson] [instanceKey] '
+        + '--confirm-name <exactFlowName>'
+        + '\netl-output-dataset: <flowId> <datasetName> --confirm-name <exactFlowName>'
+        + '\netl-row-number: <flowId> [column] --confirm-name <exactFlowName>'
+        + '\netl-run: <flowId> --confirm-target <exactTargetName>'
+        + '\naichat-query: <modelId> [--llm-id <exactId>] [--] <prompt>'
+        + '\naichat-report: <modelId> [--llm-id <exactId>] [--] <prompt>'
+        + '\naichat-export: <modelId> <absolutePrivateEnvelopePath> --mode <query|report> '
+        + '[--llm-id <exactId>] [--overwrite --confirm-path <exactPath>] [--] <prompt>'
+        + '\nmodel-create: <parentId> <dataSourceId> <tableId> <tableName> <name> '
+        + '[description] --measures <jsonArray> [--etl-flow <flowId>]'
+        + '\nmodel-create-relational: <parentId> <name> <specJson> [description]'
+        + '\nmodel-create-relational specJson: {"tables":[{"dataSourceId":"...","tableId":"...",'
+        + '"tableName":"...","measures":[{"field":"...","aggregator":"...",'
+        + '"alias":"...","format":"...","businessDefinition":"..."}]}],'
+        + '"relations":[{"from":0,"to":1,"fromField":"...","toField":"...",'
+        + '"confirmed":true,"grain":"...","linkType":"...","cardinalityType":"...",'
+        + '"filterDirection":"...","assumeReferentialIntegrity":"..."}]}'
+        + '\nmodel-hierarchy-add: <modelId> <hierarchyName> <levelSpecJson> '
+        + '[description] --confirm-name <exactModelName>'
+        + '\nmodel-calc-measure-add: <modelId> <measureName> <specJson> '
+        + '[description] --confirm-name <exactModelName>'
+        + '\nagent-run: <agentId> <question> --confirm-name <exactAgentName>'
+        + '\nagent-deploy: <agentId> --confirm-name <exactAgentName>',
+      );
   }
   process.exit(0);
 } catch (error) {
-  process.stderr.write(`${JSON.stringify({ error: error.message })}\n`);
+  process.stderr.write(`${JSON.stringify({ error: sanitizeErrorMessage(error) })}\n`);
   process.exit(1);
 }

@@ -14,6 +14,9 @@
 | Chrome/Chromium | 仅浏览器备用模式需要 | 支持 CDP | 是 |
 
 API 核心路径没有第三方 npm 依赖，因此不需要先运行 `npm install`。
+使用凭据登录时，Vision 地址必须是 HTTPS；凭据路径必须是当前用户拥有、
+非符号链接、权限精确为 `0600` 的普通文件。
+
 
 ## 1. 安装 Skill
 
@@ -209,7 +212,9 @@ macOS 示例：
 node scripts/smartbi.mjs doctor --require-browser
 ```
 
-默认 CDP 地址为 `http://127.0.0.1:9222`，可用 `SMARTBI_CDP_URL` 覆盖。
+默认 CDP 地址为 `http://127.0.0.1:9222`，可用 `SMARTBI_CDP_URL`
+覆盖。默认拒绝非本机 CDP；显式设置 `SMARTBI_ALLOW_REMOTE_CDP=1`
+后，远程地址仍必须使用 HTTPS/WSS，且不得内嵌凭据。
 
 ## 6. 首次配置
 
@@ -248,9 +253,10 @@ node scripts/smartbi.mjs competition-home --create
 node scripts/smartbi.mjs competition-home --migrate-legacy --confirm-name "<学校名称>"
 ```
 
-该 profile 要求 `upload --source-url` 提供公开数据源地址，AIChat 训练数据
-不得超过 10,000 条，禁止 Agent，并把工作区资源集中到精确的学校比赛目录。
-完整规则见 `references/competition-guardrails.md`。
+该 profile 要求 `upload --source-url` 提供经过校验的公开来源凭据，AIChat
+训练数据不得超过 10,000 条，禁止 Agent 和通用 RMI/API 重放，并把工作区
+资源集中到精确的学校比赛目录。该 URL 不会被下载或持久化，也不会替代本地
+上传文件的字节。完整规则见 `references/competition-guardrails.md`。
 
 凭据文件格式：
 
@@ -303,6 +309,7 @@ node scripts/smartbi.mjs doctor --require-browser
 | `SMARTBI_CONFIG_FILE` | 指定配置文件 |
 | `SMARTBI_BASE_URL` | 指定 Smartbi Vision 根地址 |
 | `SMARTBI_CDP_URL` | 指定浏览器 CDP 地址 |
+| `SMARTBI_ALLOW_REMOTE_CDP` | 设为 `1` 后才允许 HTTPS/WSS 远程 CDP |
 | `SMARTBI_CRED_FILE` | 指定两行凭据文件 |
 | `SMARTBI_CODEC_CACHE_FILE` | 指定传输编码器缓存 |
 | `SMARTBI_PLAYWRIGHT_PATH` | 指定 Playwright 包目录或入口文件 |
@@ -323,12 +330,7 @@ node --test tests/*.test.mjs
 语法检查：
 
 ```bash
-node --check scripts/install.mjs
-node --check scripts/transport-codec.mjs
-node --check scripts/aichat-stream.mjs
-node --check scripts/import-schema.mjs
-node --check scripts/deletion-guard.mjs
-node --check scripts/smartbi.mjs
+for file in scripts/*.mjs; do node --check "$file"; done
 sh -n scripts/install.sh
 ```
 
@@ -336,20 +338,31 @@ sh -n scripts/install.sh
 
 - 检查器只读取版本、文件是否存在和 CDP 状态；默认不安装任何软件。
 - 安装 Playwright 必须显式传入 `--install-playwright`。
-- 密码只从私有凭据文件读取，不进入环境报告、日志、缓存或 Git。
-- 所有平台写操作仍受命名空间与个人工作区所有权检查保护。
+- 密码只从当前用户拥有、非符号链接、权限精确为 `0600` 的普通文件读取，
+  且凭据登录只允许 HTTPS。密码不会进入环境报告、日志、传输缓存或 Git。
+- 所有平台写操作都校验命名空间、精确直接父子关系、权限与重新打开后的结果。
 - 常规目录管理必须使用受保护的 API 命令，而不是手动点击 Playwright
-  菜单；重命名、移动和复制都会校验直接父子关系、精确名称和保存结果。
-- 比赛 profile 必须显式启用且绑定官方域名；Agent、本地／私网主机名或 DNS
-  解析结果、带凭据的数据源地址及超过 10,000 条的 AIChat 训练都会被拒绝。
-- `upload --replace` 必须提供现有表的精确名称，并且仅在新文件字段名、顺序及类型
-  与现有表完全一致时执行。
-- 创建或运行会覆写物化表的 ETL、修复分析／仪表盘，以及发布 Agent，均须提供
-  目标资源或 Agent 的精确名称。
-- 比赛模式禁用通用资源移动／复制；每个产物必须直接创建在最终候选目录中，
-  防止血缘跨越候选方案边界。
-- 删除任何资源都必须提供当前精确名称：
-  `resource-delete <parentId> <resourceId> --confirm-name <exactName>`。
-  唯一的非命名空间例外仍是当前登录账号个人数据采集空间中的直接子级
+  菜单；复制／移动拒绝循环和目录域漂移，删除要求当前精确名称且不级联。
+- 比赛 profile 必须显式启用并绑定官方域名；它拒绝 Agent、通用 RMI/API
+  重放、本地／私网主机名或 DNS 结果、带凭据的来源 URL，以及超过
+  10,000 条的 AIChat 训练。
+- `upload` 只接受非空本地 CSV/TXT/XLS/XLSX；多工作表文件必须精确指定
+  工作表。`--source-url` 只作比赛来源凭据，绝不下载。替换要求精确目标名，
+  并先用独立暂存表证明字段顺序／类型和源文件字节完全一致。
+- ETL 变更保留未知元数据并清除陈旧运行标识。运行要求精确当前实例、所有已
+  保存节点成功、终端类型化预览及重新打开后的精确目标字段。由于当前接口
+  没有权威的重开目标行数，回执会明确返回 `reconciled:false`；行数须独立核验。
+- 模型创建必须显式指定度量聚合方式，数值字段不会自动变成 `SUM`；完整模型
+  变更会深度比对重开后的语义定义并拒绝陈旧基线。
+- 分析结果是 `executionPreview`，不是核验结论。仪表盘保存会深度比对；修复
+  失败时恢复并验证原定义。所有筛选、联动和跳转都必须在有头浏览器中实测。
+- AIChat 只绑定一个已就绪的自有模型并关闭外部上下文。问答／报告标准输出
+  仅为有界摘要；完整产物必须使用带显式模式和受保护覆盖的私有原子
+  `aichat-export` 信封。
+- ETL 目标覆盖、流程／模型／分析／仪表盘变更、Agent 运行或发布及旧目录迁移，
+  都必须提供相应资源的精确名称。
+- 比赛模式禁用通用资源移动／复制；工作区产物必须直接创建在最终候选目录。
+  导入表仍位于当前账号个人数据采集目录，并且必须按候选方案隔离。
+- 唯一的非命名空间删除例外，是当前账号个人数据采集空间中的直接子级
   `BASETABLE`；精确名称确认不会扩大这一边界。
 - 公开仓库不得包含私有项目名称、报名编号、投递地址、截止时间或验收证据。

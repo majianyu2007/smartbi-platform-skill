@@ -44,19 +44,21 @@ this profile is active.
 - Do not add private, purchased, partner-supplied, scraped-without-permission,
   or unrelated third-party data.
 - `upload` requires `--source-url <public-http(s)-url>` while this profile is
-  active. Local/private names and address literals, credential-bearing URLs,
-  non-HTTP(S) URLs, DNS failures, and hostnames with any private DNS answer are
-  rejected. The source URL is still provenance evidence, not proof of ownership
-  or a compatible license.
-  Verify access terms and redistribution rights before submission.
+  active. The URL is validated provenance metadata only: it is never fetched,
+  persisted, or substituted for the local file bytes. Local/private names and
+  address literals, credential-bearing URLs, non-HTTP(S) URLs, DNS failures, and
+  hostnames with any private DNS answer are rejected. A validated public URL is
+  still not proof of ownership or a compatible license; verify access terms and
+  redistribution rights before submission.
 - Keep candidate datasets isolated. Never join or append outcome rows across
   candidates before the final dataset is selected.
 
 ## AIChat and Agent restrictions
 
 - AIChat training data MUST NOT exceed 10,000 records. The graph-build command
-  reads the tenant validation response and rejects a larger reported count
-  before training starts.
+  requires the exact candidate parent/model/name and current same-folder ETL
+  evidence, reads every available tenant count, proves independent target count
+  provenance, and rejects any larger or ambiguous count before training starts.
 - Select only useful low-cardinality dimensions; exclude direct identifiers.
 - Agent creation, inspection, execution, and deployment are prohibited for this
   competition profile.
@@ -79,9 +81,12 @@ this profile is active.
   them across lineage boundaries.
 - Each mutation checks direct parent-child ownership, exact-name confirmation,
   target collisions, permissions, and postconditions. Every deletion,
-  materialized overwrite, analysis/dashboard repair, Agent deployment, and
-  legacy-folder migration requires the exact selected name. Folder copy is
-  available only on general tenants and attempts rollback if a child copy fails.
+  materialized overwrite, saved-flow mutation, model full-definition mutation,
+  analysis/dashboard repair, Agent run/deployment, and legacy-folder migration
+  requires the applicable exact selected name. Dashboard repair is
+  transactional and verifies restoration after a failed update. Folder copy is
+  available only on general tenants and rolls back invocation-created children
+  when a child copy fails.
 - Keep physical names stable when a visible alias is updated; IDs and dependency
   links must not be recreated merely to change display text.
 
@@ -92,10 +97,16 @@ Before submission, require all of the following:
 - `catalog-audit` shows every namespaced workspace resource inside the exact
   competition folder;
 - no temporary smoke-test resources remain;
-- all ETL definitions load, all models load, every submitted analysis executes
-  with a non-empty result, and every dashboard definition loads;
-- one headed-browser visual check confirms the selected dashboard renders after
-  the move;
-- AIChat status is successful, uses the exact selected model, and returns at
-  least one reconciled answer if AIChat is part of the final deliverable;
+- all ETL definitions load; the exact current ETL instance has every saved node
+  successful, a typed terminal preview, and an exact reopened target schema;
+  target rows are independently reconciled because the API receipt reports
+  `reconciled:false`;
+- all models load with exact source identity and deep semantic equivalence;
+  every submitted analysis returns a non-empty `executionPreview`; and every
+  dashboard definition and interaction contract reloads exactly;
+- one headed-browser visual check at the final location confirms the selected
+  dashboard renders and every configured filter/linkage/jump behaves as saved;
+- AIChat graph status is successful, the request binds exactly one selected
+  model with outside context disabled, and at least one returned answer is
+  independently reconciled if AIChat is part of the final deliverable;
 - the submission contains no Agent artifact and no undeclared third-party data.

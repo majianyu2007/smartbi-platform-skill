@@ -14,6 +14,9 @@ An API-first automation Skill for Smartbi Insight V11. It covers authentication,
 | Chrome/Chromium | Only for browser fallback | CDP-capable build | Yes |
 
 The API core has no third-party npm dependency, so `npm install` is not required before first use.
+Credential-backed login requires an HTTPS Vision URL and a current-user-owned,
+non-symlink regular credential file with exact mode `0600`.
+
 
 ## 1. Install the Skill
 
@@ -206,7 +209,10 @@ Replace the example URL with the configured tenant and keep the browser running.
 node scripts/smartbi.mjs doctor --require-browser
 ```
 
-The default CDP endpoint is `http://127.0.0.1:9222`. Override it with `SMARTBI_CDP_URL`.
+The default CDP endpoint is `http://127.0.0.1:9222`. Override it with
+`SMARTBI_CDP_URL`. Non-loopback CDP is disabled by default; opting in with
+`SMARTBI_ALLOW_REMOTE_CDP=1` still requires HTTPS or WSS and never permits
+embedded credentials.
 
 ## 6. First-Run Configuration
 
@@ -246,9 +252,11 @@ node scripts/smartbi.mjs competition-home --create
 node scripts/smartbi.mjs competition-home --migrate-legacy --confirm-name "<school>"
 ```
 
-This profile requires a public `upload --source-url`, limits AIChat training to
-10,000 rows, prohibits Agent, and places workspace artifacts under the exact
-school competition folder. See `references/competition-guardrails.md`.
+This profile requires `upload --source-url` as validated public provenance,
+limits AIChat training to 10,000 rows, prohibits Agent and generic replay
+commands, and places workspace artifacts under the exact school competition
+folder. The URL is never fetched or persisted and never replaces the local file
+bytes. See `references/competition-guardrails.md`.
 
 Credential file format:
 
@@ -302,6 +310,7 @@ The transport coder is rediscovered from the new tenant's frontend resources and
 | `SMARTBI_BASE_URL` | Smartbi Vision base URL |
 | `SMARTBI_CDP_URL` | Browser CDP endpoint |
 | `SMARTBI_CRED_FILE` | Two-line credential file |
+| `SMARTBI_ALLOW_REMOTE_CDP` | Set to `1` to opt in to HTTPS/WSS remote CDP |
 | `SMARTBI_CODEC_CACHE_FILE` | Transport-coder cache file |
 | `SMARTBI_PLAYWRIGHT_PATH` | Playwright package directory or entry file |
 | `SMARTBI_BROWSER_PATH` | Chrome/Chromium executable |
@@ -321,12 +330,7 @@ node --test tests/*.test.mjs
 Syntax checks:
 
 ```bash
-node --check scripts/install.mjs
-node --check scripts/transport-codec.mjs
-node --check scripts/aichat-stream.mjs
-node --check scripts/import-schema.mjs
-node --check scripts/deletion-guard.mjs
-node --check scripts/smartbi.mjs
+for file in scripts/*.mjs; do node --check "$file"; done
 sh -n scripts/install.sh
 ```
 
@@ -335,22 +339,41 @@ sh -n scripts/install.sh
 - Public documentation uses neutral tenant, account, dataset, namespace, and resource placeholders.
 - The environment inspector reads only runtime versions, file presence, and CDP status; it installs nothing by default.
 - Installing Playwright requires the explicit `--install-playwright` flag.
-- Passwords are read only from the private credential file and never enter environment reports, logs, transport caches, or Git.
-- Platform mutations remain protected by namespace and personal-workspace ownership checks.
-- Routine catalog management uses the guarded API commands, not manual
-  Playwright menu clicks. Rename/move/copy require an exact direct-child
-  confirmation and verify the saved postcondition.
-- The competition profile is opt-in and host-bound. It rejects Agent,
-  local/private host names or DNS answers, credential-bearing dataset source
-  URLs, and AIChat training counts above 10,000.
-- `upload --replace` requires the existing table's exact name and is allowed only
-  when incoming field names, order, and types match the existing schema.
-- ETL creation/runs that overwrite a materialized table, analysis/dashboard
-  repair, and Agent publication require the exact target or Agent name.
-- Competition mode rejects generic resource move/copy; create each artifact in
-  its final candidate folder so lineage cannot cross candidate boundaries.
-- Every deletion requires the selected resource's exact current name:
-  `resource-delete <parentId> <resourceId> --confirm-name <exactName>`.
-  The only non-namespaced exception remains a `BASETABLE` directly inside the
-  authenticated personal acquisition folder; confirmation never expands that boundary.
+- Passwords are read only from a current-user-owned, non-symlink regular file
+  with exact mode `0600`, over HTTPS credential transport. They never enter
+  environment reports, logs, transport caches, or Git.
+- Platform mutations remain protected by namespace, exact direct-child
+  ownership, permission, and reopened postcondition checks.
+- Routine catalog management uses guarded API commands, not manual Playwright
+  menu clicks. Copy/move reject cycles and catalog-domain drift; deletion
+  requires exact current-name confirmation and never cascades.
+- The competition profile is opt-in and host-bound. It rejects Agent, generic
+  RMI/API replay, local/private host names or DNS answers, credential-bearing
+  provenance URLs, and AIChat training counts above 10,000.
+- `upload` accepts only non-empty local CSV/TXT/XLS/XLSX. Multi-sheet workbooks
+  require one exact worksheet. `--source-url` is competition provenance only and
+  is never fetched. Replacement requires exact target confirmation plus a
+  proven distinct staging import with identical ordered schema and source bytes.
+- ETL mutations preserve unknown saved metadata and clear stale run identity.
+  Runs require the exact current instance, every saved node successful, a typed
+  terminal preview, and exact reopened target schema. Because no authoritative
+  reopened target-row count exists, receipts explicitly report
+  `reconciled:false`; reconcile rows independently.
+- Model creation requires explicit measure aggregators; numeric fields are never
+  auto-promoted to `SUM`. Full-model mutations deep-compare the reopened
+  semantic definition and reject stale baselines.
+- Analysis output is an `executionPreview`, not a reconciliation result.
+  Dashboard saves are deep-compared; repair restores and verifies the captured
+  original on failure. Browser-check every filter, linkage, and jump.
+- AIChat binds exactly one ready owned model and disables outside context.
+  Query/report stdout is a bounded summary; complete artifacts require a private
+  atomic `aichat-export` envelope with explicit mode and guarded overwrite.
+- ETL target overwrite, saved-flow/model/analysis/dashboard mutation, Agent run
+  or publication, and legacy migration require the applicable exact name.
+- Competition mode rejects generic resource move/copy; create each workspace
+  artifact directly in its final candidate folder. Imported tables remain in
+  the authenticated personal acquisition folder and must be candidate-isolated.
+- The only non-namespaced deletion exception is a `BASETABLE` directly inside
+  the authenticated personal acquisition folder; exact confirmation never
+  expands that boundary.
 - Keep private project titles, registration codes, delivery addresses, deadlines, and evidence outside this repository.

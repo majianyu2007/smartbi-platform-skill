@@ -107,6 +107,24 @@ test('legacy confirmation never authorizes shared catalog resources', () => {
       parentKind: DELETION_PARENT_KINDS.PERSONAL_ACQUISITION,
       confirmName: 'Legacy Table',
     }),
-    /refusing to delete non-namespaced resource/,
+    /accepts only BASETABLE/,
+  );
+});
+
+test('personal acquisition rejects namespaced non-table resources', () => {
+  assert.throws(
+    () => authorizeResourceDeletion({
+      resource: {
+        ...table,
+        id: 'SMARTBIX_PAGE.TEAM_dashboard',
+        name: 'TEAM_dashboard',
+        alias: 'TEAM_dashboard',
+        type: 'SMARTBIX_PAGE',
+      },
+      isNamespaced: true,
+      parentKind: DELETION_PARENT_KINDS.PERSONAL_ACQUISITION,
+      confirmName: 'TEAM_dashboard',
+    }),
+    /accepts only BASETABLE/,
   );
 });

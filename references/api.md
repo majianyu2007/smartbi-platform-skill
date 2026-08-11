@@ -98,11 +98,14 @@ structural permutation checks plus an actual low-risk server probe.
 | 2. Login | `UserService.login` `[user, password]` → `result: true` |
 | 3. Session probe | `AIextRemoteService.getCurrentUserName` `[]` → current user alias |
 
-Credentials are read from a two-line file (line 1 account, line 2 password).
-Guided setup writes it with mode `0600`; command output never contains either
-credential or the authenticated account identifier. Smartbix and plain-JSON
-clients seed/login automatically when the cookie jar is empty and retry exactly
-once after a login redirect or `REDIRECT_TO_SMARTBI` response.
+Credentials are read from a two-line current-user-owned regular file (line 1
+account, line 2 password). Symlinks and any mode other than exact `0600` are
+rejected on each read, and credential-backed login is HTTPS-only. Guided setup
+creates this file; command output never contains either credential or the
+authenticated account identifier. Smartbix and plain-JSON clients share one
+bounded RESEND budget across codec attempts after a verified authentication
+redirect/response. Exhausting that budget fails closed; browser mutation is not
+used as a transport fallback.
 
 ## 3. Resource tree (catalog)
 
@@ -171,19 +174,22 @@ multipart/form-data
   field file   = <binary>
 ```
 
-Response: `{"retCode":0,"result":{"clientId":"I0c...","sheetNames":["0|sheet1|true"],"fileName":"..."}}`
-Keep `clientId` for all following steps.
+Response: `{"retCode":0,"result":{"clientId":"I0c...","sheetNames":["0|sheet1|true", "..."],"fileName":"..."}}`
+Keep `clientId` for all following steps. The CLI parses every returned worksheet
+descriptor and requires one exact `--worksheet` selection whenever more than
+one sheet exists; missing, duplicate, malformed, or ambiguous names fail.
 
 ### 4.2 GET_PREVIEW_DATA — inspect parsed columns
 
 ```
-action=GET_PREVIEW_DATA&clientId=<id>&previewRows=30&sheetIndex=0
+action=GET_PREVIEW_DATA&clientId=<id>&previewRows=30&sheetIndex=<selected-index>
 ```
 
 Response `result`: `{rowCount, datas[][], fieldTypeList[], fieldNameList[], fieldAliasList[]}`.
 `fieldTypeList` values seen: `STRING`, `INTEGER`, `DOUBLE`, `DATETIME`/`DATE`.
-`rowCount` includes the configured header row; CLI output subtracts that row
-and reports imported data records.
+The CLI requires ordered non-blank unique headers, complete field types, and
+rows that match the header width. It labels the preview row count separately
+from terminal import evidence; it does not silently treat one as the other.
 
 ### 4.3 GET_TARGET_DATASOURCES — list importable data sources
 
@@ -204,7 +210,7 @@ Settings (verified live):
 ```json
 [{
   "createTable": true,
-  "sheetIndex": "0",
+  "sheetIndex": "<selected-index>",
   "headerRowIndex": 0,
   "fieldTypeList": ["STRING","INTEGER", ...],
   "dsId": "DS.input",
@@ -223,10 +229,16 @@ Settings (verified live):
 ```
 
 Notes:
-- `tableName` > 30 chars is truncated server-side with a warning dialog.
+- `tableName` > 30 chars is truncated server-side; the CLI applies the namespace
+  and platform limit deterministically before collision checks.
 - Table/column names are normalized to lowercase in the physical table.
-- `importType: "REPLACE"` overwrites an existing table with the same name.
-- `folderId: "PERSONAL_NODE"` places it in the caller's personal acquisition space.
+- `folderId: "PERSONAL_NODE"` places the table in the caller's personal
+  acquisition space.
+- The CLI never sends `REPLACE` directly against an unproven target. It first
+  imports a distinct invocation-owned staging table, verifies exact ordered
+  name/type schema and source digest, then imports the same bytes into the
+  exactly confirmed target. Staging is deleted only after final postconditions;
+  if target mutation fails, the proven staging table is preserved for recovery.
 
 ### 4.5 Import status polling
 
@@ -288,10 +300,14 @@ live contracts. `etl-insert` inserts or updates a named unary transformation,
 records the explicitly changed config keys, preserves target wiring, and marks
 the graph `INITED`. Its `instanceKey` makes retries idempotent.
 
-After a successful run, the CLI requires every reported node state to be
-successful, reads the output port immediately before an overwrite sink, reopens
-the materialized table, and compares field counts. Competition mode fails
-closed when terminal preview evidence is unavailable.
+After a successful run, the CLI requires the returned instance to remain the
+saved flow's exact current instance and every saved graph node state to be
+successful. It reads a typed output-port preview immediately before the
+materialized sink, reopens the exact source/target tables, and requires exact
+ordered field-name/type identity before and after the run. The tenant exposes
+no authoritative reopened target-row-count endpoint on this path, so the
+receipt explicitly reports `reconciled:false`; preview row counts remain
+source-labeled evidence, not a reconciliation claim.
 
 ### 6.1 Data models, analyses, dashboards, AIChat, and model graphs
 
@@ -321,9 +337,13 @@ Repair commands also require the exact current analysis/dashboard name.
 | `POST sdk/api/v1/aichat/conv/query-rpc` | Stream AIChat text/table/file artifacts |
 
 Model/report/dashboard creation is implemented from live saved-resource
-contracts. Exact field IDs and `refDataSetFieldId` values are fully qualified;
-do not fabricate bare IDs. Reconcile generated analysis/dashboard values
-against an independently validated aggregate.
+contracts. Model creation requires explicit measure specifications and exact
+source tuples; relational creation additionally requires explicit relation
+field, grain, cardinality, direction, and integrity metadata. Exact field IDs
+and `refDataSetFieldId` values are fully qualified; do not fabricate bare IDs.
+Analysis output is labeled `executionPreview`, and dashboard persistence is
+deep-compared after reopen. Reconcile all generated values against an
+independently validated aggregate.
 
 Model-graph build contract:
 
@@ -337,16 +357,31 @@ POST cgi/aichat-train/train-resource/<modelId>
 
 Poll `list-knowledge-graph-node` with statuses `SUCCESS`, `FAILED`, `BUILDING`,
 and `PENDING`. The terminal state and selected fields are stored in the
-returned node's JSON `extended` property. `scripts/smartbi.mjs` resolves field
-names to IDs, validates cardinality before training, refuses non-namespaced
-models, polls to `SUCCESS`, and skips an identical successful rebuild:
+returned node's JSON `extended` property. `scripts/smartbi.mjs` proves exact
+direct-child ownership, resolves field names/IDs uniquely, validates count
+provenance, rejects concurrent builds, and requires a newly observed terminal
+success. An existing `SUCCESS` with the same fields is not freshness evidence;
+pass `--rebuild` to start a new build. Competition additionally requires exact
+current ETL lineage:
 
 ```bash
 node scripts/smartbi.mjs aichat-graph-list TEAM_
 node scripts/smartbi.mjs aichat-graph-fields <modelId>
-node scripts/smartbi.mjs aichat-graph-build <modelId> survey_city,age_code
+node scripts/smartbi.mjs aichat-graph-build <parentId> <modelId> \
+  survey_city,age_code --confirm-name <exactModelName> \
+  [--etl-flow <flowId>] [--rebuild]
 node scripts/smartbi.mjs aichat-graph-status <modelId>
 ```
+
+Additional authenticated read routes observed live include
+`get-recommend-questions/{modelId}`, `get-model-background/{modelId}`,
+`get-link-llm-config/{modelId}`, `get-condition-format/{modelId}`,
+`get-knowledge-base-by-id/{modelId}`, `get-knowledge-base/{modelId}`, and
+`list-knowledge-edges/{modelId}` under `cgi/aichat-knowledge-graph-config/`.
+Related save routes also exist, but their complete request/response
+postconditions are not captured. The CLI therefore rejects recommended
+questions, background, dynamic-column, and condition mutations rather than
+guessing payloads.
 
 ### 6.2 Agent graph API
 

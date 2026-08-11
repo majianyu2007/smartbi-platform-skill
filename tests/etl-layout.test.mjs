@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { layoutLinearEtlGraph } from '../scripts/etl-layout.mjs';
+import {
+  layoutLinearEtlGraph,
+  positionEtlNodeBeforeTarget,
+} from '../scripts/etl-layout.mjs';
 
 test('lays a linear ETL chain out without overlapping nodes', () => {
   const graph = {
@@ -30,4 +33,14 @@ test('leaves branching ETL graphs untouched', () => {
     links: [{ from: 'source', to: 'left' }, { from: 'source', to: 'right' }],
   };
   assert.equal(layoutLinearEtlGraph(graph), false);
+});
+
+test('positions only the inserted node and terminal target', () => {
+  const inserted = { id: 'new' };
+  const target = { id: 'target', x: 830, y: 75 };
+  const untouched = { id: 'source', x: 123, y: 456 };
+  positionEtlNodeBeforeTarget(inserted, target);
+  assert.deepEqual(inserted, { id: 'new', x: 830, y: 75 });
+  assert.deepEqual(target, { id: 'target', x: 970, y: 75 });
+  assert.deepEqual(untouched, { id: 'source', x: 123, y: 456 });
 });

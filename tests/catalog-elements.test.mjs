@@ -27,4 +27,12 @@ test('rejects failed or malformed catalog responses', () => {
     () => normalizeCatalogElements({ retCode: 0, result: { unexpected: true } }),
     /unexpected catalog children result/,
   );
+  assert.throws(
+    () => normalizeCatalogElements({ retCode: 0, result: 'not-a-list' }),
+    /unexpected catalog children result shape: string/,
+  );
+  assert.throws(
+    () => normalizeCatalogElements({ retCode: 5, result: { message: 'raw server detail' } }),
+    (error) => !error.message.includes('raw server detail'),
+  );
 });

@@ -1,3 +1,5 @@
+import { assertEtlTableBindingsAllowed } from './etl-contracts.mjs';
+
 import { lookup as dnsLookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
 
@@ -122,10 +124,26 @@ const NON_MEANINGFUL_ETL_NODES = new Set([
   'JDBC_DATASOURCE',
   'JDBC_DATATARGER_OVERWRITE',
   'DATAPREPARE_ROW_NUMBER',
-  'SMARTBI_DATASET_OUTPUT',
 ]);
 
-const SUPPORTED_COMPETITION_TRANSFORM = /(?:FILTER|MAPPING|DERIVE|COLUMN|DEDUP|DISTINCT|CLEAN|SELECT|AGGREGAT|GROUP|PIVOT|SORT|ORDER|REPLACE|FILL|CAST|TYPE|RENAME|META|SAMPLE)/;
+const COMPETITION_TRANSFORM_CONTRACTS = new Map([
+  ['DATAPREPARE_FILTERING_MAPPING_V3', {
+    configuredKeys: ['condition'],
+    validate(configs) {
+      const parsed = parseConfiguredValue(configs.get('condition'));
+      if (typeof parsed !== 'string') return false;
+      const condition = parsed.trim();
+      return Boolean(condition) && !/^(?:true|false|1\s*=\s*1|\*)$/i.test(condition);
+    },
+  }],
+  ['DATAPREPARE_SAMPLE', {
+    configuredKeys: ['fraction'],
+    validate(configs) {
+      const fraction = Number(parseConfiguredValue(configs.get('fraction')));
+      return Number.isFinite(fraction) && fraction > 0 && fraction < 1;
+    },
+  }],
+]);
 
 function parseConfiguredValue(value) {
   if (typeof value !== 'string') return value;
@@ -138,50 +156,91 @@ function parseConfiguredValue(value) {
   }
 }
 
-function hasSubstantiveValue(value) {
+function hasConfiguredCompetitionValue(value) {
   const parsed = parseConfiguredValue(value);
-  if (parsed === null || parsed === undefined || parsed === '') return false;
-  if (Array.isArray(parsed)) return parsed.length > 0 && parsed.some(hasSubstantiveValue);
+  if (parsed == null || parsed === '') return false;
+  if (Array.isArray(parsed)) {
+    return parsed.length > 0 && parsed.every(hasConfiguredCompetitionValue);
+  }
   if (typeof parsed === 'object') {
-    return Object.values(parsed).some(hasSubstantiveValue);
+    const entries = Object.values(parsed);
+    return entries.length > 0 && entries.every(hasConfiguredCompetitionValue);
   }
-  if (typeof parsed === 'string') {
-    return !/^(?:true|false|1\s*=\s*1|\*)$/i.test(parsed.trim());
-  }
-  return true;
+  return typeof parsed !== 'string' || parsed.trim() !== '';
+}
+
+function competitionNodeType(node) {
+  const names = [...new Set([node?.name, node?.type].filter(Boolean).map((value) => (
+    String(value).toUpperCase()
+  )))];
+  if (names.length !== 1) return null;
+  return names[0];
 }
 
 function isMeaningfulCompetitionTransform(node) {
-  const nodeType = String(node?.name || node?.type || '').toUpperCase();
-  if (!SUPPORTED_COMPETITION_TRANSFORM.test(nodeType)) return false;
-  const configuredKeys = Array.isArray(node?.smartbiCliConfiguredKeys)
+  const nodeType = competitionNodeType(node);
+  const contract = COMPETITION_TRANSFORM_CONTRACTS.get(nodeType);
+  if (!contract) return false;
+  const configuredKeys = new Set(Array.isArray(node?.smartbiCliConfiguredKeys)
     ? node.smartbiCliConfiguredKeys
-    : [];
-  if (configuredKeys.length === 0) return false;
+    : []);
+  if (
+    configuredKeys.size === 0
+    || !contract.configuredKeys.every((key) => configuredKeys.has(key))
+  ) return false;
   const configs = new Map((node.configs || []).map((config) => [config.name, config.value]));
-  if (!configuredKeys.every((key) => configs.has(key) && hasSubstantiveValue(configs.get(key)))) {
-    return false;
-  }
-  if (nodeType === 'DATAPREPARE_SAMPLE') {
-    const fraction = Number(parseConfiguredValue(configs.get('fraction')));
-    return Number.isFinite(fraction) && fraction > 0 && fraction < 1;
-  }
-  return true;
+  if (
+    [...configuredKeys].some((key) => (
+      !configs.has(key) || !hasConfiguredCompetitionValue(configs.get(key))
+    ))
+  ) return false;
+  return contract.validate(configs);
 }
 
 export function assertCompetitionEtlGraph(profile, graph) {
   if (!profile || profile.id !== COMPETITION_2026_PROFILE_ID) return;
-  const transforms = (graph?.nodes || []).filter((node) => (
-    !NON_MEANINGFUL_ETL_NODES.has(node?.name)
-    && !NON_MEANINGFUL_ETL_NODES.has(node?.type)
+  if (!graph || !Array.isArray(graph.nodes)) throw new Error('competition ETL graph is invalid');
+  const typed = graph.nodes.map((node) => ({ node, type: competitionNodeType(node) }));
+  const unknown = typed.filter(({ type }) => (
+    !type
+    || (
+      !NON_MEANINGFUL_ETL_NODES.has(type)
+      && !COMPETITION_TRANSFORM_CONTRACTS.has(type)
+    )
   ));
-  const unsupported = transforms.filter((node) => !isMeaningfulCompetitionTransform(node));
-  if (transforms.length === 0 || unsupported.length > 0) {
+  const sources = typed.filter(({ type }) => type === 'JDBC_DATASOURCE');
+  const targets = typed.filter(({ type }) => type === 'JDBC_DATATARGER_OVERWRITE');
+  const transforms = typed.filter(({ type }) => COMPETITION_TRANSFORM_CONTRACTS.has(type));
+  const invalidTransforms = transforms.filter(({ node }) => !isMeaningfulCompetitionTransform(node));
+  if (
+    sources.length !== 1
+    || targets.length !== 1
+    || transforms.length === 0
+    || unknown.length > 0
+    || invalidTransforms.length > 0
+  ) {
+    const invalid = [...unknown, ...invalidTransforms]
+      .map(({ node, type }) => node?.alias || type || node?.name || node?.id)
+      .filter(Boolean);
     throw new Error(
-      'competition ETL requires at least one supported, explicitly configured material transformation; '
-      + `invalid nodes: ${unsupported.map((node) => node?.alias || node?.name || node?.id).join(',') || 'none'}`,
+      'competition ETL requires exactly one JDBC source, one overwrite target, and at least one '
+      + 'closed-set, explicitly configured material transformation; '
+      + `invalid nodes: ${invalid.join(',') || 'none'}`,
     );
   }
+}
+
+export function assertCompetitionEtlOutputMutationAllowed(profile) {
+  if (profile?.id === COMPETITION_2026_PROFILE_ID) {
+    throw new Error('competition ETL output must remain an exactly verified JDBC overwrite target');
+  }
+}
+
+export function assertCompetitionEtlTableBindings(profile, bindingContext) {
+  return assertEtlTableBindingsAllowed({
+    ...bindingContext,
+    competition: profile?.id === COMPETITION_2026_PROFILE_ID,
+  });
 }
 
 export function assertCompetitionUnionAllowed(profile) {
